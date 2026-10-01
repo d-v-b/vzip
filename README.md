@@ -8,6 +8,10 @@ A spec for storing two kinds of things in a Zip archive:
 
 read the [pitch](https://github.com/d-v-b/vzip/blob/main/PITCH.md), or the [spec](https://github.com/d-v-b/vzip/blob/main/SPEC.md). there are some implementations here too.
 
+## status
+
+experimental, proof of concept, anything can change
+
 ## how this was made
 
 I prompted Claude to explore serialization formats for the kind of virtual zarr stores created by [VirtualiZarr](https://virtualizarr.readthedocs.io/en/stable/index.html). Key to the prompt was the goal
