@@ -1,16 +1,20 @@
 #!/bin/bash
-# Builds the demo site and pushes it to the gh-pages branch:
-#   /               the demo (web/dist)
-#   /neuroglancer/  the Neuroglancer fork (neuroglancer/dist/client)
-# Both share one origin and one service worker scope, as the demo needs.
+# Builds the TIFF-to-Zarr demo and publishes it to the demo site
+# (https://d-v-b.github.io/vzip-demo/, the gh-pages branch of d-v-b/vzip-demo),
+# which hosts each demo in its own directory:
+#   <demo>/               the demo page (web/dist)
+#   <demo>/neuroglancer/  the Neuroglancer fork (neuroglancer/dist/client)
+# The demo page and Neuroglancer share one origin and one service worker
+# scope, as the demo needs. Only <demo>/ and the root index.html (a list of
+# the demos, from each directory's <title> and meta description) change.
 #
-# The site goes to its own public repository, since d-v-b/vzip is private.
-#
-# Usage: web/pages.sh [remote url]   (default: https://github.com/d-v-b/vzip-demo.git)
+# Usage: web/pages.sh [demo dir] [remote url]
+#   (defaults: tiff-to-zarr, https://github.com/d-v-b/vzip-demo.git)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
-remote_url="${1:-https://github.com/d-v-b/vzip-demo.git}"
+demo="${1:-tiff-to-zarr}"
+remote_url="${2:-https://github.com/d-v-b/vzip-demo.git}"
 commit="$(git rev-parse --short HEAD)"
 
 (cd neuroglancer && npm run build)
@@ -18,14 +22,21 @@ node web/build.mjs
 
 site="$(mktemp -d)"
 trap 'rm -rf "$site"' EXIT
-cp -R web/dist/. "$site"/
-mkdir "$site/neuroglancer"
-cp -R neuroglancer/dist/client/. "$site/neuroglancer/"
-find "$site" -name '*.map' -delete
+if git ls-remote --exit-code --heads "$remote_url" gh-pages > /dev/null; then
+  git clone --quiet --depth 1 --branch gh-pages "$remote_url" "$site"
+else
+  git -C "$site" init --quiet --initial-branch gh-pages
+fi
+rm -rf "${site:?}/$demo"
+mkdir -p "$site/$demo/neuroglancer"
+cp -R web/dist/. "$site/$demo/"
+cp -R neuroglancer/dist/client/. "$site/$demo/neuroglancer/"
+find "$site/$demo" -name '*.map' -delete
 touch "$site/.nojekyll"
-git -C "$site" init --quiet --initial-branch gh-pages
+node web/pages_index.mjs "$site"
+
 git -C "$site" add -A
 git -C "$site" -c user.name="$(git config user.name)" -c user.email="$(git config user.email)" \
-  commit --quiet -m "chore(pages): build demo from ${commit}"
-git -C "$site" push --force --quiet "$remote_url" gh-pages
-echo "pushed gh-pages (demo from ${commit})"
+  commit --quiet -m "chore(pages): build ${demo} from d-v-b/vzip@${commit}"
+git -C "$site" push --quiet "$remote_url" gh-pages
+echo "published ${demo}/ (from ${commit})"

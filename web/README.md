@@ -35,9 +35,10 @@ node web/build.mjs
 node web/serve.mjs 8080
 ```
 
-Live demo: https://d-v-b.github.io/vzip-demo/ (built by `web/pages.sh`, which
-pushes the demo and the Neuroglancer build to the public `d-v-b/vzip-demo`
-repository's `gh-pages` branch).
+Live demo: https://d-v-b.github.io/vzip-demo/tiff-to-zarr/. `web/pages.sh`
+publishes it, with the Neuroglancer build, to its own directory of the demo
+site (the `gh-pages` branch of `d-v-b/vzip-demo`, which hosts each vzip demo
+in a directory and lists them at https://d-v-b.github.io/vzip-demo/).
 
 ## What is supported
 
