@@ -7,24 +7,24 @@ from refstore.pb import Concat, Range, Source, decode_source_table, encode_sourc
 
 def _official():
     F = descriptor_pb2.FieldDescriptorProto
-    fdp = descriptor_pb2.FileDescriptorProto(name="vzip.proto", package="vzip.v1", syntax="proto3")
+    fdp = descriptor_pb2.FileDescriptorProto(name="vzip.proto", package="vzip.v0", syntax="proto3")
     rng = fdp.message_type.add(name="Range")
     for n, i, t in [("source", 1, F.TYPE_UINT32), ("offset", 3, F.TYPE_UINT64),
                     ("length", 4, F.TYPE_UINT64), ("data", 5, F.TYPE_BYTES)]:
         rng.field.add(name=n, number=i, type=t, label=F.LABEL_OPTIONAL)
     cat = fdp.message_type.add(name="Concat")
-    cat.field.add(name="parts", number=1, type=F.TYPE_MESSAGE, type_name=".vzip.v1.Range",
+    cat.field.add(name="parts", number=1, type=F.TYPE_MESSAGE, type_name=".vzip.v0.Range",
                   label=F.LABEL_REPEATED)
     src = fdp.message_type.add(name="Source")
     src.oneof_decl.add(name="kind")
     for n, i, t in [("url", 1, F.TYPE_STRING), ("key", 2, F.TYPE_STRING), ("data", 3, F.TYPE_BYTES)]:
         src.field.add(name=n, number=i, type=t, label=F.LABEL_OPTIONAL, oneof_index=0)
     tbl = fdp.message_type.add(name="SourceTable")
-    tbl.field.add(name="sources", number=1, type=F.TYPE_MESSAGE, type_name=".vzip.v1.Source",
+    tbl.field.add(name="sources", number=1, type=F.TYPE_MESSAGE, type_name=".vzip.v0.Source",
                   label=F.LABEL_REPEATED)
     pool = descriptor_pool.DescriptorPool()
     pool.Add(fdp)
-    get = lambda n: message_factory.GetMessageClass(pool.FindMessageTypeByName(f"vzip.v1.{n}"))
+    get = lambda n: message_factory.GetMessageClass(pool.FindMessageTypeByName(f"vzip.v0.{n}"))
     return get("Range"), get("Concat"), get("Source"), get("SourceTable")
 
 

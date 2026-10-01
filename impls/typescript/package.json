@@ -1,11 +1,10 @@
 {
   "name": "vzip-ts",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "vzip reader/writer and conformance CLI (TypeScript, no dependencies)",
-  "bin": { "vzip": "./vzip" },
+  "description": "vzip format version 0 reader/writer and conformance CLI",
   "scripts": {
-    "test": "node --no-warnings --test test/"
+    "test": "node --test test/"
   }
 }

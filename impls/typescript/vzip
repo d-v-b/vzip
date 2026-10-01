@@ -1,2 +1,2 @@
 #!/bin/sh
-exec node --no-warnings "$(dirname "$0")/src/cli.ts" "$@"
+exec node --disable-warning=ExperimentalWarning "$(dirname "$0")/src/cli.ts" "$@"

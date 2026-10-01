@@ -1,5 +1,7 @@
 # vzip conformance harness interface
 
+For format version 0, specification revision 6.
+
 Every implementation provides one executable (the "CLI") with two commands.
 The conformance runner calls it as a subprocess. All JSON is UTF-8. Byte
 strings in JSON are lowercase hex.
@@ -44,7 +46,8 @@ itself crashed, or the queries file was unreadable or invalid.
 | `{"op": "list", "prefix": P}` | spec §8.2 list | `{"ok": true, "keys": [ ... ]}` |
 
 A `range` object has exactly one of these forms. All numbers in queries and
-descriptions are non-negative integers below 2^53.
+descriptions are integers whose magnitude is below 2^53. Only
+`modified_not_after` may be negative.
 
 A malformed query object (unknown `op`, missing `key`, a `range` with several
 forms) is an invalid queries file: exit non-zero.
@@ -116,8 +119,10 @@ stderr, and do not create a file at `<out-path>`. The runner never passes an
 - Types are strict: flags are JSON booleans, numbers are JSON integers (`1.0`
   is invalid), and hex strings are lowercase with even length. A description
   that breaks these rules is invalid.
-- `null` is allowed only for `page_size`. Any other member that is `null` makes
-  the description invalid.
+- `null` is allowed only for `page_size`. Any other known member that is
+  `null` makes the description invalid; unknown members are ignored whatever
+  their value.
+- `compress: false` is allowed on reference entries.
 
 The written archive must satisfy the spec. The runner validates its
 structure, reads it back with the reference implementation and with your own

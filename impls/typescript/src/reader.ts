@@ -1,43 +1,38 @@
-// vzip reader (spec §3, §4, §6, §7, §8).
-import * as fs from "node:fs/promises";
+// vzip reader (spec §3, §4, §7, §8).
+import * as fs from "node:fs";
 import * as zlib from "node:zlib";
-import { MalformedError, VzipError } from "./errors.ts";
+import { MalformedError, VzError, decodeUtf8 } from "./errors.ts";
 import {
   type CdIndex,
-  type Pinned,
   type Range,
   type Source,
-  U64_MAX,
   decodeCdIndex,
   decodeConcat,
   decodeRange,
   decodeSourceTable,
-  decodeUtf8,
-  encodeUtf8,
-  rangeSize,
 } from "./proto.ts";
-import {
-  fileBaseUri,
-  fileUriToPath,
-  isUriReference,
-  parseUri,
-  resolveUri,
-} from "./uri.ts";
-import {
-  EXTRA_CONCAT,
-  EXTRA_RANGE,
-  EXTRA_ZIP64,
-  INDEX_KEY,
-  MAGIC,
-  SIG_CENTRAL,
-  SIG_EOCD,
-  SIG_ZIP64_EOCD,
-  SIG_ZIP64_LOCATOR,
-  SOURCES_KEY,
-  compareBytes,
-  isFormatKey,
-  isHidden,
-} from "./zipconst.ts";
+import { type Pins, readUrlRange } from "./fetch.ts";
+import { type Uri, fileBaseUri, parseUriRef } from "./url.ts";
+
+export const RESERVED_PREFIX = "__vz__/";
+export const SOURCES_KEY = "__vz__/sources";
+export const INDEX_KEY = "__vz__/index";
+export const EXTRA_RANGE = 0x7a76;
+export const EXTRA_CONCAT = 0x7a77;
+
+/**
+ * Resource limit (spec §10): the largest value a single request may produce, and the largest
+ * DEFLATE body this reader will inflate. Exceeding it is a request error.
+ */
+export const MAX_REQUEST_BYTES = 1 << 30;
+
+const U64_MAX = (1n << 64n) - 1n;
+const ALL32 = 0xffffffffn;
+
+const SIG_EOCD = 0x06054b50;
+const SIG_Z64_LOC = 0x07064b50;
+const SIG_Z64_EOCD = 0x06064b50;
+const SIG_CDR = 0x02014b50;
 
 export type Kind = "bytes" | "reference" | "missing";
 
@@ -47,734 +42,691 @@ export type Request =
   | { type: "offset"; start: bigint }
   | { type: "suffix"; count: bigint };
 
-export interface OpenOptions {
-  /**
-   * Upper bound on the bytes a single operation may materialise (decompressed
-   * body, or assembled reference window). Exceeding it is a request error
-   * (§10). Default: 256 MiB, or $VZIP_MAX_REQUEST_BYTES.
-   */
-  maxRequestBytes?: number;
-  /**
-   * Optional allow-list of URL prefixes (after resolution) that references may
-   * read. Default: undefined = everything allowed (§10).
-   */
-  allowedUrlPrefixes?: string[];
-}
-
-const DEFAULT_LIMIT = Number(process.env.VZIP_MAX_REQUEST_BYTES ?? 256 * 1024 * 1024);
-
-/** A central directory record, as parsed from the bytes (no validation of contents). */
-interface CdRecord {
-  nameBytes: Buffer;
-  name: string | null; // null when empty or invalid UTF-8 (record ignored)
-  flags: number;
-  method: number;
-  csize32: number;
-  usize32: number;
-  lho32: number;
-  extra: Buffer;
-}
-
-/** A fully classified entry. */
-interface EntryInfo {
+/** Where an entry lives and how it is stored. */
+interface Loc {
   kind: "bytes" | "reference";
   method: number;
-  bodyOffset: bigint;
   csize: bigint;
   usize: bigint;
-  payloadId?: number;
-  payload?: Buffer;
+  bodyOffset: bigint;
+  refId: number; // 0 for bytes
+  payload: Uint8Array | null;
+  error: string | null; // entry error
 }
 
-type Located =
-  | { t: "record"; rec: CdRecord }
-  | { t: "pinned"; p: Pinned }
-  | { t: "format"; key: string };
-
-const err = (c: VzipError["errorClass"], m: string) => new VzipError(c, m);
-
-function rdU16(b: Buffer, o: number): number {
-  return b.readUInt16LE(o);
+interface Rec {
+  nameBytes: Buffer;
+  name: string | null; // null if empty or not valid UTF-8
+  loc: Loc;
 }
-function rdU32(b: Buffer, o: number): number {
-  return b.readUInt32LE(o);
+
+function archiveErr(msg: string): VzError {
+  return new VzError("archive", msg);
 }
-function rdU64(b: Buffer, o: number): bigint {
-  return b.readBigUInt64LE(o);
+
+function u64(b: Buffer, off: number): bigint {
+  return b.readBigUInt64LE(off);
+}
+
+function isHidden(key: Buffer): boolean {
+  return key.length >= 7 && key.subarray(0, 7).toString("latin1") === RESERVED_PREFIX;
+}
+
+const SOURCES_BYTES = Buffer.from(SOURCES_KEY);
+const INDEX_BYTES = Buffer.from(INDEX_KEY);
+
+function isFormatKey(key: Buffer): boolean {
+  return key.equals(SOURCES_BYTES) || key.equals(INDEX_BYTES);
+}
+
+/** Smallest byte string greater than every string with this prefix, or null if unbounded. */
+function prefixUpper(prefix: Buffer): Buffer | null {
+  let n = prefix.length;
+  while (n > 0 && prefix[n - 1] === 0xff) n--;
+  if (n === 0) return null;
+  const out = Buffer.from(prefix.subarray(0, n));
+  out[n - 1]++;
+  return out;
 }
 
 /**
- * Parse a byte region as a sequence of whole central directory records that
- * exactly fills it. Returns null when it cannot be parsed.
+ * Inflate a raw DEFLATE body, requiring it to be a single complete stream that ends exactly at
+ * the end of the body (spec §8.1). Throws Error on failure, VzError("request") on the size limit.
  */
-function parseRecords(buf: Buffer): CdRecord[] | null {
-  const out: CdRecord[] = [];
-  let pos = 0;
-  while (pos < buf.length) {
-    if (pos + 46 > buf.length) return null;
-    if (rdU32(buf, pos) !== SIG_CENTRAL) return null;
-    const nlen = rdU16(buf, pos + 28);
-    const xlen = rdU16(buf, pos + 30);
-    const clen = rdU16(buf, pos + 32);
-    const end = pos + 46 + nlen + xlen + clen;
-    if (end > buf.length) return null;
-    const nameBytes = buf.subarray(pos + 46, pos + 46 + nlen);
-    const name = nlen === 0 ? null : decodeUtf8(nameBytes);
-    out.push({
-      nameBytes,
-      name: name === "" ? null : name,
-      flags: rdU16(buf, pos + 8),
-      method: rdU16(buf, pos + 10),
-      csize32: rdU32(buf, pos + 20),
-      usize32: rdU32(buf, pos + 24),
-      lho32: rdU32(buf, pos + 42),
-      extra: buf.subarray(pos + 46 + nlen, pos + 46 + nlen + xlen),
-    });
-    pos = end;
+export function inflateCleanly(body: Buffer, limit: number): Buffer {
+  let r: { buffer: Buffer; engine: zlib.InflateRaw };
+  try {
+    r = zlib.inflateRawSync(body, { info: true, maxOutputLength: limit }) as unknown as {
+      buffer: Buffer;
+      engine: zlib.InflateRaw;
+    };
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === "ERR_BUFFER_TOO_LARGE") {
+      throw new VzError("request", `inflated body exceeds the ${limit}-byte limit`);
+    }
+    throw new Error(`DEFLATE stream does not inflate: ${err.message}`);
+  }
+  if (r.engine.bytesWritten !== body.length) {
+    throw new Error(`DEFLATE stream ends after ${r.engine.bytesWritten} of ${body.length} bytes`);
+  }
+  return r.buffer;
+}
+
+/** Parse extra field blocks; null if they don't exactly fill the field. */
+function parseExtra(extra: Buffer): { id: number; data: Buffer }[] | null {
+  const out: { id: number; data: Buffer }[] = [];
+  let p = 0;
+  while (p < extra.length) {
+    if (p + 4 > extra.length) return null;
+    const id = extra.readUInt16LE(p);
+    const n = extra.readUInt16LE(p + 2);
+    if (p + 4 + n > extra.length) return null;
+    out.push({ id, data: extra.subarray(p + 4, p + 4 + n) });
+    p += 4 + n;
   }
   return out;
 }
 
-/** Classify and decode a record's contents (§4.1, §4.3); throws entry errors. */
-function entryFromRecord(rec: CdRecord): EntryInfo {
-  if (rec.flags & 1) throw err("entry", "entry is encrypted (general purpose bit 0 set)");
-  if (rec.method !== 0 && rec.method !== 8) {
-    throw err("entry", `unsupported compression method ${rec.method}`);
-  }
-  const blocks: { id: number; data: Buffer }[] = [];
-  let pos = 0;
-  const x = rec.extra;
-  while (pos < x.length) {
-    if (pos + 4 > x.length) throw err("entry", "extra field does not parse");
-    const id = rdU16(x, pos);
-    const size = rdU16(x, pos + 2);
-    if (pos + 4 + size > x.length) throw err("entry", "extra field does not parse");
-    blocks.push({ id, data: x.subarray(pos + 4, pos + 4 + size) });
-    pos += 4 + size;
-  }
-  const refs = blocks.filter((b) => b.id === EXTRA_RANGE || b.id === EXTRA_CONCAT);
-  if (refs.length > 1) throw err("entry", "several reference extra blocks");
-  const kind = refs.length === 1 ? "reference" : "bytes";
-  if (kind === "reference" && rec.method !== 0) {
-    throw err("entry", "reference entry uses method 8");
-  }
-  // ZIP64 extended information (APPNOTE 4.5.3): fields present in order for
-  // those header values that are all ones.
-  let usize = BigInt(rec.usize32);
-  let csize = BigInt(rec.csize32);
-  let lho = BigInt(rec.lho32);
-  if (rec.usize32 === 0xffffffff || rec.csize32 === 0xffffffff || rec.lho32 === 0xffffffff) {
-    const z = blocks.find((b) => b.id === EXTRA_ZIP64);
-    let zp = 0;
-    const take = (what: string): bigint => {
-      if (!z || zp + 8 > z.data.length) {
-        throw err("entry", `value 0xFFFFFFFF of ${what} without a ZIP64 extra block holding it`);
-      }
-      const v = rdU64(z.data, zp);
-      zp += 8;
-      return v;
-    };
-    if (rec.usize32 === 0xffffffff) usize = take("uncompressed size");
-    if (rec.csize32 === 0xffffffff) csize = take("compressed size");
-    if (rec.lho32 === 0xffffffff) lho = take("local header offset");
-  }
-  const info: EntryInfo = {
-    kind,
-    method: rec.method,
-    bodyOffset: lho + 30n + BigInt(rec.nameBytes.length),
-    csize,
-    usize,
+/** Analyse one central directory record's contents (spec §4.1, §3.2, §8.4 entry errors). */
+function analyseRecord(flags: number, method: number, csize32: number, usize32: number, lho32: number, nameLen: number, extra: Buffer): Loc {
+  const loc: Loc = {
+    kind: "bytes",
+    method,
+    csize: BigInt(csize32),
+    usize: BigInt(usize32),
+    bodyOffset: 0n,
+    refId: 0,
+    payload: null,
+    error: null,
   };
-  if (kind === "reference") {
-    info.payloadId = refs[0].id;
-    info.payload = refs[0].data;
+  const fail = (m: string): Loc => {
+    loc.error = m;
+    return loc;
+  };
+  const blocks = parseExtra(extra);
+  if (blocks === null) return fail("extra field does not parse");
+  const refs = blocks.filter((b) => b.id === EXTRA_RANGE || b.id === EXTRA_CONCAT);
+  if (refs.length > 1) return fail("more than one reference block");
+  if (refs.length === 1) {
+    loc.kind = "reference";
+    loc.refId = refs[0].id;
+    loc.payload = refs[0].data;
   }
-  return info;
-}
-
-/** Inflate a raw DEFLATE body cleanly (§8.1). Returns null if not clean. */
-function inflateClean(body: Buffer, maxOut: number): Buffer | "too-large" | null {
-  try {
-    const r = zlib.inflateRawSync(body, { info: true, maxOutputLength: Math.max(1, maxOut) }) as unknown as {
-      buffer: Buffer;
-      engine: { bytesWritten: number };
-    };
-    if (r.engine.bytesWritten !== body.length) return null; // trailing bytes
-    return r.buffer;
-  } catch (e) {
-    if ((e as { code?: string }).code === "ERR_BUFFER_TOO_LARGE") return "too-large";
-    return null;
+  if (method !== 0 && method !== 8) return fail(`unsupported compression method ${method}`);
+  if (flags & 1) return fail("entry is encrypted");
+  if (loc.kind === "reference" && method === 8) return fail("reference entry uses method 8");
+  // ZIP64 extended information.
+  const z64 = blocks.filter((b) => b.id === 0x0001);
+  let lho = BigInt(lho32);
+  const needU = BigInt(usize32) === ALL32;
+  const needC = BigInt(csize32) === ALL32;
+  const needO = lho === ALL32;
+  if (needO) {
+    if (z64.length !== 1) return fail(z64.length === 0 ? "offset is 0xFFFFFFFF but there is no ZIP64 block" : "more than one ZIP64 block");
   }
-}
-
-function bmin(a: bigint, b: bigint): bigint {
-  return a < b ? a : b;
-}
-function bmax(a: bigint, b: bigint): bigint {
-  return a > b ? a : b;
-}
-
-function windowOf(req: Request, n: bigint): [bigint, bigint] {
-  switch (req.type) {
-    case "whole":
-      return [0n, n];
-    case "range":
-      return [bmin(req.start, n), bmin(req.end, n)];
-    case "offset":
-      return [bmin(req.start, n), n];
-    case "suffix":
-      return [bmax(n - req.count, 0n), n];
+  if ((needU || needC || needO) && z64.length === 1) {
+    const d = z64[0].data;
+    const need = (needU ? 8 : 0) + (needC ? 8 : 0) + (needO ? 8 : 0);
+    if (d.length < need) {
+      if (needO) return fail("ZIP64 block too short");
+    } else {
+      let p = 0;
+      if (needU) { loc.usize = u64(d, p); p += 8; }
+      if (needC) { loc.csize = u64(d, p); p += 8; }
+      if (needO) { lho = u64(d, p); p += 8; }
+    }
   }
+  loc.bodyOffset = lho + 30n + BigInt(nameLen);
+  return loc;
 }
 
-/** Successor bound of all byte strings with prefix p, or null for +infinity. */
-function prefixUpper(p: Uint8Array): Buffer | null {
-  const b = Buffer.from(p);
-  let n = b.length;
-  while (n > 0 && b[n - 1] === 0xff) n--;
-  if (n === 0) return null;
-  const u = Buffer.from(b.subarray(0, n));
-  u[n - 1]++;
-  return u;
+/** Parse a run of central directory records that must exactly fill `buf`. Throws Error on failure. */
+function parseRecords(buf: Buffer): Rec[] {
+  const out: Rec[] = [];
+  let p = 0;
+  while (p < buf.length) {
+    if (p + 46 > buf.length) throw new Error(`truncated central directory record at +${p}`);
+    if (buf.readUInt32LE(p) !== SIG_CDR) throw new Error(`bad central directory signature at +${p}`);
+    const flags = buf.readUInt16LE(p + 8);
+    const method = buf.readUInt16LE(p + 10);
+    const csize = buf.readUInt32LE(p + 20);
+    const usize = buf.readUInt32LE(p + 24);
+    const nameLen = buf.readUInt16LE(p + 28);
+    const extraLen = buf.readUInt16LE(p + 30);
+    const commentLen = buf.readUInt16LE(p + 32);
+    const lho = buf.readUInt32LE(p + 42);
+    const end = p + 46 + nameLen + extraLen + commentLen;
+    if (end > buf.length) throw new Error(`central directory record at +${p} extends past its end`);
+    const nameBytes = Buffer.from(buf.subarray(p + 46, p + 46 + nameLen));
+    const extra = Buffer.from(buf.subarray(p + 46 + nameLen, p + 46 + nameLen + extraLen));
+    const name = nameLen === 0 ? null : decodeUtf8(nameBytes);
+    out.push({ nameBytes, name, loc: analyseRecord(flags, method, csize, usize, lho, nameLen, extra) });
+    p = end;
+  }
+  return out;
 }
 
-function startsWithBytes(a: Uint8Array, p: Uint8Array): boolean {
-  if (a.length < p.length) return false;
-  for (let i = 0; i < p.length; i++) if (a[i] !== p[i]) return false;
-  return true;
+interface Piece {
+  range: Range;
+  lo: bigint; // overlap relative to range start
+  hi: bigint;
 }
 
 export class Archive {
-  private fh: fs.FileHandle;
+  private fd: number;
   readonly fileSize: bigint;
-  readonly baseUri: string;
-  private limit: number;
-  private allowed?: string[];
-
-  private sourcesRaw!: Buffer;
-  private indexRaw: Buffer | null = null;
-  sources!: Source[];
-  private cdOffset!: bigint;
-  private cdSize!: bigint;
+  readonly baseUri: Uri;
+  readonly sources: Source[];
+  private sourcesBody: Buffer;
+  private indexBody: Buffer | null = null;
   private index: CdIndex | null = null;
-  private pageKeys: Buffer[] = [];
-  private pageCache = new Map<number, CdRecord[] | null>();
-  private pinnedMap = new Map<string, Pinned>();
-  private records: Map<string, CdRecord> | null = null; // unpaged archives
+  private cdOffset = 0n;
+  private cdSize = 0n;
+  private records: Map<string, Rec> | null = null; // unpaged
+  private allNames: Buffer[] = []; // unpaged, valid names
+  private pinned: Map<string, Loc> = new Map();
+  private pageCache: Map<number, Rec[] | Error> = new Map();
 
-  private constructor(fh: fs.FileHandle, size: bigint, baseUri: string, opts: OpenOptions) {
-    this.fh = fh;
-    this.fileSize = size;
+  private constructor(fd: number, fileSize: bigint, baseUri: Uri) {
+    this.fd = fd;
+    this.fileSize = fileSize;
     this.baseUri = baseUri;
-    this.limit = opts.maxRequestBytes ?? DEFAULT_LIMIT;
-    this.allowed = opts.allowedUrlPrefixes;
+    this.sources = [];
+    this.sourcesBody = Buffer.alloc(0);
   }
 
-  /** Open an archive from a local path or a file: URL. */
-  static async open(location: string, opts: OpenOptions = {}): Promise<Archive> {
-    let localPath: string | Buffer;
-    let base: string;
-    if (/^file:/i.test(location)) {
-      const p = fileUriToPath(location);
-      if (typeof p === "string") throw err("archive", p);
-      localPath = p;
-      base = location;
-    } else {
-      localPath = location;
-      base = fileBaseUri(location);
-    }
-    let fh: fs.FileHandle;
+  /** Open an archive from a local path. Throws VzError("archive") on failure. */
+  static open(localPath: string): Archive {
+    let fd: number;
     let size: bigint;
     try {
-      fh = await fs.open(localPath, "r");
-      const st = await fh.stat({ bigint: true });
+      fd = fs.openSync(localPath, "r");
+      const st = fs.fstatSync(fd, { bigint: true });
       if (!st.isFile()) {
-        await fh.close();
+        fs.closeSync(fd);
         throw new Error("not a regular file");
       }
       size = st.size;
     } catch (e) {
-      throw err("archive", `cannot open archive: ${(e as Error).message}`);
+      throw archiveErr(`cannot open ${localPath}: ${(e as Error).message}`);
     }
-    const a = new Archive(fh, size, base, opts);
+    const base = parseUriRef(fileBaseUri(localPath))!;
+    const a = new Archive(fd, size, base);
     try {
-      await a.init();
+      a.openChecks();
     } catch (e) {
-      await fh.close();
-      throw e;
+      a.close();
+      if (e instanceof VzError && e.cls === "archive") throw e;
+      throw archiveErr((e as Error).message);
     }
     return a;
   }
 
-  async close(): Promise<void> {
-    await this.fh.close();
+  close(): void {
+    if (this.fd >= 0) {
+      try {
+        fs.closeSync(this.fd);
+      } catch {
+        /* ignore */
+      }
+      this.fd = -1;
+    }
   }
 
-  private async readAt(offset: bigint, length: bigint): Promise<Buffer> {
-    const len = Number(length);
+  private readAt(off: bigint, len: number): Buffer {
     const buf = Buffer.alloc(len);
-    let done = 0;
-    while (done < len) {
-      const { bytesRead } = await this.fh.read(buf, done, len - done, Number(offset) + done);
-      if (bytesRead === 0) throw new Error("unexpected end of file");
-      done += bytesRead;
+    let got = 0;
+    while (got < len) {
+      const n = fs.readSync(this.fd, buf, got, len - got, Number(off) + got);
+      if (n === 0) throw new Error("unexpected end of file");
+      got += n;
     }
     return buf;
   }
 
-  // ------------------------------------------------------------- opening
+  private within(off: bigint, len: bigint): boolean {
+    return off >= 0n && len >= 0n && off + len <= this.fileSize;
+  }
 
-  private async init(): Promise<void> {
-    const size = this.fileSize;
-    // §3.4: locate the end of central directory record.
+  // ---------- §8.1 ----------
+
+  private openChecks(): void {
+    const fsz = this.fileSize;
     let eocdPos = -1n;
     let commentLen = 0;
-    if (size >= 60n) {
-      const b = await this.readAt(size - 60n, 22n);
-      if (rdU32(b, 0) === SIG_EOCD && rdU16(b, 20) === 38) {
-        eocdPos = size - 60n;
+    if (fsz >= 60n) {
+      const b = this.readAt(fsz - 60n, 22);
+      if (b.readUInt32LE(0) === SIG_EOCD && b.readUInt16LE(20) === 38) {
+        eocdPos = fsz - 60n;
         commentLen = 38;
       }
     }
-    if (eocdPos < 0n && size >= 44n) {
-      const b = await this.readAt(size - 44n, 22n);
-      if (rdU32(b, 0) === SIG_EOCD && rdU16(b, 20) === 22) {
-        eocdPos = size - 44n;
+    if (eocdPos < 0n && fsz >= 44n) {
+      const b = this.readAt(fsz - 44n, 22);
+      if (b.readUInt32LE(0) === SIG_EOCD && b.readUInt16LE(20) === 22) {
+        eocdPos = fsz - 44n;
         commentLen = 22;
       }
     }
-    if (eocdPos < 0n) throw err("archive", "no end of central directory record with a vzip comment");
-    const eocd = await this.readAt(eocdPos, BigInt(22 + commentLen));
+    if (eocdPos < 0n) throw archiveErr("not a vzip archive: no end of central directory record with a vzip comment");
+    const eocd = this.readAt(eocdPos, 22 + commentLen);
     const comment = eocd.subarray(22);
-    if (comment.subarray(0, 6).toString("latin1") !== MAGIC) {
-      throw err("archive", "archive comment does not start with vzip/1");
-    }
-    const sourcesOffset = rdU64(comment, 6);
-    const sourcesSize = rdU64(comment, 14);
-    let indexOffset: bigint | null = null;
-    let indexSize = 0n;
-    if (commentLen === 38) {
-      indexOffset = rdU64(comment, 22);
-      indexSize = rdU64(comment, 30);
-    }
+    if (comment.subarray(0, 5).toString("latin1") !== "vzip/") throw archiveErr("not a vzip archive: comment does not start with vzip/");
+    if (comment[5] !== 0x30) throw archiveErr(`unsupported vzip format version (magic ${JSON.stringify(comment.subarray(0, 6).toString("latin1"))})`);
 
-    // §3.2: ZIP64 end records.
-    const entriesDisk = rdU16(eocd, 8);
-    const entriesTotal = rdU16(eocd, 10);
-    let cdSize = BigInt(rdU32(eocd, 12));
-    let cdOffset = BigInt(rdU32(eocd, 16));
-    if (entriesDisk === 0xffff || entriesTotal === 0xffff || cdSize === 0xffffffffn || cdOffset === 0xffffffffn) {
-      if (eocdPos < 20n) throw err("archive", "zip64 end of central directory locator missing");
-      const loc = await this.readAt(eocdPos - 20n, 20n);
-      if (rdU32(loc, 0) !== SIG_ZIP64_LOCATOR) {
-        throw err("archive", "zip64 end of central directory locator missing");
-      }
-      const recOff = rdU64(loc, 8);
-      if (recOff + 56n > size) throw err("archive", "zip64 end of central directory record outside the file");
-      const z = await this.readAt(recOff, 56n);
-      if (rdU32(z, 0) !== SIG_ZIP64_EOCD) throw err("archive", "bad zip64 end of central directory signature");
-      if (rdU64(z, 4) !== 44n) throw err("archive", "zip64 end of central directory record size is not 44");
-      cdSize = rdU64(z, 40);
-      cdOffset = rdU64(z, 48);
+    const entriesDisk = eocd.readUInt16LE(8);
+    const entriesTotal = eocd.readUInt16LE(10);
+    let cdSize = BigInt(eocd.readUInt32LE(12));
+    let cdOffset = BigInt(eocd.readUInt32LE(16));
+    if (entriesDisk === 0xffff || entriesTotal === 0xffff || cdSize === ALL32 || cdOffset === ALL32) {
+      if (eocdPos < 20n) throw archiveErr("ZIP64 end of central directory locator missing");
+      const loc = this.readAt(eocdPos - 20n, 20);
+      if (loc.readUInt32LE(0) !== SIG_Z64_LOC) throw archiveErr("ZIP64 end of central directory locator missing");
+      const recOff = u64(loc, 8);
+      if (!this.within(recOff, 56n)) throw archiveErr("ZIP64 end of central directory record lies outside the file");
+      const rec = this.readAt(recOff, 56);
+      if (rec.readUInt32LE(0) !== SIG_Z64_EOCD) throw archiveErr("bad ZIP64 end of central directory signature");
+      if (u64(rec, 4) !== 44n) throw archiveErr("ZIP64 end of central directory record size field is not 44");
+      cdSize = u64(rec, 40);
+      cdOffset = u64(rec, 48);
     }
-    if (cdOffset + cdSize > size) throw err("archive", "central directory lies outside the file");
+    if (!this.within(cdOffset, cdSize)) throw archiveErr("central directory lies outside the file");
     this.cdOffset = cdOffset;
     this.cdSize = cdSize;
 
     // Format entries.
-    const readFormat = async (off: bigint, len: bigint, what: string): Promise<Buffer> => {
-      if (off + len > size) throw err("archive", `${what} body lies outside the file`);
-      if (len > BigInt(this.limit)) throw err("archive", `${what} exceeds the reader's size limit`);
-      const body = await this.readAt(off, len);
-      const out = inflateClean(body, this.limit);
-      if (out === "too-large") throw err("archive", `${what} inflates beyond the reader's size limit`);
-      if (out === null) throw err("archive", `${what} does not inflate cleanly`);
-      return out;
-    };
-    this.sourcesRaw = await readFormat(sourcesOffset, sourcesSize, SOURCES_KEY);
+    const srcOff = u64(comment, 6);
+    const srcSize = u64(comment, 14);
+    this.sourcesBody = this.readFormatBody("__vz__/sources", srcOff, srcSize);
+    let table: Source[];
     try {
-      this.sources = decodeSourceTable(this.sourcesRaw);
+      table = decodeSourceTable(this.sourcesBody);
     } catch (e) {
-      throw err("archive", `source table is malformed: ${(e as Error).message}`);
+      throw archiveErr(`source table is malformed: ${(e as Error).message}`);
     }
-    this.sources.forEach((s, i) => {
-      if (s.kind === undefined) throw err("archive", `source ${i} has no kind`);
-      if (s.kind === "url" && s.url === "") throw err("archive", `source ${i} has an empty url`);
-      const pinned = s.size !== undefined || s.etag !== undefined || s.modifiedNotAfter !== undefined;
-      if (pinned && s.kind !== "url") throw err("archive", `source ${i} has a pin but is not a url source`);
-      if (s.etag !== undefined && !/^"[\x21\x23-\x7e]*"$/.test(s.etag)) {
-        throw err("archive", `source ${i} has an etag pin that is not a strong entity tag`);
-      }
-    });
+    for (let i = 0; i < table.length; i++) {
+      const s = table[i];
+      if (s.kind === null) throw archiveErr(`source ${i} has no kind`);
+      if (s.kind.type === "url" && s.kind.value === "") throw archiveErr(`source ${i} has an empty url`);
+      const hasPin = s.size !== null || s.etag !== null || s.modifiedNotAfter !== null;
+      if (hasPin && s.kind.type !== "url") throw archiveErr(`source ${i} has a pin on a ${s.kind.type} source`);
+      if (s.etag !== null && !isStrongEtag(s.etag)) throw archiveErr(`source ${i} has an etag pin that is not a strong entity tag`);
+    }
+    (this as { sources: Source[] }).sources = table;
 
-    if (indexOffset !== null) {
-      this.indexRaw = await readFormat(indexOffset, indexSize, INDEX_KEY);
+    if (commentLen === 38) {
+      const idxOff = u64(comment, 22);
+      const idxSize = u64(comment, 30);
+      this.indexBody = this.readFormatBody("__vz__/index", idxOff, idxSize);
       let idx: CdIndex;
       try {
-        idx = decodeCdIndex(this.indexRaw);
+        idx = decodeCdIndex(this.indexBody);
       } catch (e) {
-        throw err("archive", `page index is malformed: ${(e as Error).message}`);
+        throw archiveErr(`page index is malformed: ${(e as Error).message}`);
       }
-      let expect = 0n;
-      let prev: Buffer | null = null;
-      for (const [i, p] of idx.pages.entries()) {
-        if (p.length === 0n) throw err("archive", `page index is malformed: page ${i} is empty`);
-        if (p.offset + p.length > cdSize) throw err("archive", `page index is malformed: page ${i} lies outside the central directory`);
-        if (p.offset !== expect) throw err("archive", `page index is malformed: page ${i} is not contiguous`);
-        expect = p.offset + p.length;
-        const fk = Buffer.from(encodeUtf8(p.firstKey));
-        if (prev !== null && compareBytes(prev, fk) >= 0) {
-          throw err("archive", `page index is malformed: first_key values do not strictly increase at page ${i}`);
-        }
-        prev = fk;
-        this.pageKeys.push(fk);
-      }
-      for (const p of idx.pinned) {
-        if (isFormatKey(p.key)) throw err("archive", `page index is malformed: format entry ${p.key} is pinned`);
-        if (this.pinnedMap.has(p.key)) throw err("archive", `page index is malformed: ${p.key} pinned twice`);
-        if (p.method !== 0 && p.method !== 8) throw err("archive", `page index is malformed: pinned method ${p.method}`);
-        if (p.dataOffset + p.csize > size) throw err("archive", `page index is malformed: pinned body of ${p.key} lies outside the file`);
-        this.pinnedMap.set(p.key, p);
-      }
+      this.checkIndex(idx);
       this.index = idx;
+      for (const p of idx.pinned) {
+        this.pinned.set(Buffer.from(p.key).toString("latin1"), {
+          kind: "bytes",
+          method: p.method,
+          csize: p.csize,
+          usize: p.size,
+          bodyOffset: p.dataOffset,
+          refId: 0,
+          payload: null,
+          error: null,
+        });
+      }
     } else {
-      if (cdSize > BigInt(this.limit)) throw err("archive", "central directory exceeds the reader's size limit");
-      const cd = await this.readAt(cdOffset, cdSize);
-      const recs = parseRecords(cd);
-      if (recs === null) throw err("archive", "central directory does not parse");
+      if (cdSize > BigInt(MAX_REQUEST_BYTES)) throw archiveErr("central directory too large for this reader");
+      const cd = this.readAt(cdOffset, Number(cdSize));
+      let recs: Rec[];
+      try {
+        recs = parseRecords(cd);
+      } catch (e) {
+        throw archiveErr(`central directory does not parse: ${(e as Error).message}`);
+      }
       this.records = new Map();
       for (const r of recs) {
         if (r.name === null) continue;
-        if (r.name === INDEX_KEY) throw err("archive", "archive without a page index has an __vz__/index entry");
-        if (!this.records.has(r.name)) this.records.set(r.name, r); // duplicates: first wins
+        if (r.nameBytes.equals(INDEX_BYTES)) throw archiveErr("archive without a page index has an __vz__/index entry");
+        const k = r.nameBytes.toString("latin1");
+        if (!this.records.has(k)) {
+          this.records.set(k, r);
+          this.allNames.push(r.nameBytes);
+        }
       }
+      this.allNames.sort(Buffer.compare);
     }
   }
 
-  get paged(): boolean {
-    return this.index !== null;
+  private readFormatBody(what: string, off: bigint, size: bigint): Buffer {
+    if (!this.within(off, size)) throw archiveErr(`${what} body lies outside the file`);
+    if (size > BigInt(MAX_REQUEST_BYTES)) throw archiveErr(`${what} body too large for this reader`);
+    const body = this.readAt(off, Number(size));
+    try {
+      return inflateCleanly(body, MAX_REQUEST_BYTES);
+    } catch (e) {
+      throw archiveErr(`${what} does not inflate cleanly: ${(e as Error).message}`);
+    }
   }
 
-  // ------------------------------------------------------------- lookup
+  private checkIndex(idx: CdIndex): void {
+    const bad = (m: string) => archiveErr(`page index is malformed: ${m}`);
+    let expect = 0n;
+    let prev: Buffer | null = null;
+    for (let i = 0; i < idx.pages.length; i++) {
+      const p = idx.pages[i];
+      if (p.length === 0n) throw bad(`page ${i} has length 0`);
+      if (p.offset + p.length > this.cdSize) throw bad(`page ${i} lies outside the central directory`);
+      if (p.offset !== expect) throw bad(`page ${i} does not start where the previous page ends`);
+      expect = p.offset + p.length;
+      if (p.firstKey === "") throw bad(`page ${i} has an empty first_key`);
+      const k = Buffer.from(p.firstKey);
+      if (prev !== null && Buffer.compare(prev, k) >= 0) throw bad(`first_key values do not strictly increase at page ${i}`);
+      prev = k;
+    }
+    const seen = new Set<string>();
+    for (const p of idx.pinned) {
+      if (p.key === "") throw bad("a pinned key is empty");
+      const k = Buffer.from(p.key);
+      const ks = k.toString("latin1");
+      if (seen.has(ks)) throw bad(`pinned key ${JSON.stringify(p.key)} is listed twice`);
+      seen.add(ks);
+      if (isFormatKey(k)) throw bad(`pinned key ${JSON.stringify(p.key)} is a format entry`);
+      if (p.method !== 0 && p.method !== 8) throw bad(`pinned key ${JSON.stringify(p.key)} has method ${p.method}`);
+      if (!this.within(p.dataOffset, p.csize)) throw bad(`pinned body of ${JSON.stringify(p.key)} lies outside the file`);
+    }
+  }
 
-  private async loadPage(i: number): Promise<CdRecord[]> {
-    let recs = this.pageCache.get(i);
-    if (recs === undefined) {
+  // ---------- lookup (§7.2) ----------
+
+  private pageRecords(i: number): Rec[] {
+    let r = this.pageCache.get(i);
+    if (r === undefined) {
       const p = this.index!.pages[i];
-      const buf = await this.readAt(this.cdOffset + p.offset, p.length);
-      recs = parseRecords(buf);
-      this.pageCache.set(i, recs);
+      try {
+        if (p.length > BigInt(MAX_REQUEST_BYTES)) throw new Error("page too large for this reader");
+        r = parseRecords(this.readAt(this.cdOffset + p.offset, Number(p.length)));
+      } catch (e) {
+        r = e as Error;
+      }
+      this.pageCache.set(i, r);
     }
-    if (recs === null) throw err("entry", `page ${i} of the central directory cannot be parsed`);
-    return recs;
+    if (r instanceof Error) throw new VzError("entry", `page ${i} cannot be parsed: ${r.message}`);
+    return r;
   }
 
-  /** Find the entry for `key` (any key, hidden or not). Throws entry errors. */
-  private async locate(key: string): Promise<Located | null> {
-    if (key === "") return null;
-    if (isFormatKey(key)) {
-      if (key === INDEX_KEY && this.indexRaw === null) return null;
-      return { t: "format", key };
-    }
+  private pageFirstKeys: Buffer[] | null = null;
+  private firstKeys(): Buffer[] {
+    if (this.pageFirstKeys === null) this.pageFirstKeys = this.index!.pages.map((p) => Buffer.from(p.firstKey));
+    return this.pageFirstKeys;
+  }
+
+  /**
+   * Find the record for a key that is not a format entry. Returns null if missing.
+   * Throws VzError("entry") if the page holding it cannot be parsed. Does not check the record's own entry error.
+   */
+  private lookup(key: Buffer): Loc | null {
     if (this.index === null) {
-      const r = this.records!.get(key);
-      return r ? { t: "record", rec: r } : null;
+      const r = this.records!.get(key.toString("latin1"));
+      return r ? r.loc : null;
     }
-    const pin = this.pinnedMap.get(key);
-    if (pin) return { t: "pinned", p: pin };
-    const kb = Buffer.from(encodeUtf8(key));
+    const pin = this.pinned.get(key.toString("latin1"));
+    if (pin) return pin;
+    const fk = this.firstKeys();
     // last page with first_key <= key
     let lo = 0;
-    let hi = this.pageKeys.length; // invariant: answer in [lo-1, hi-1]
+    let hi = fk.length;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      if (compareBytes(this.pageKeys[mid], kb) <= 0) lo = mid + 1;
+      if (Buffer.compare(fk[mid], key) <= 0) lo = mid + 1;
       else hi = mid;
     }
-    const pageIdx = lo - 1;
-    if (pageIdx < 0) return null;
-    const recs = await this.loadPage(pageIdx);
-    for (const r of recs) {
-      if (r.name !== null && compareBytes(r.nameBytes, kb) === 0) return { t: "record", rec: r };
+    const pi = lo - 1;
+    if (pi < 0) return null;
+    for (const r of this.pageRecords(pi)) {
+      if (r.name !== null && r.nameBytes.equals(key)) return r.loc;
     }
     return null;
   }
 
-  private entryOf(loc: Located): EntryInfo {
-    if (loc.t === "record") return entryFromRecord(loc.rec);
-    if (loc.t === "pinned") {
-      return {
-        kind: "bytes",
-        method: loc.p.method,
-        bodyOffset: loc.p.dataOffset,
-        csize: loc.p.csize,
-        usize: loc.p.size,
-      };
-    }
-    throw new Error("format entries have no EntryInfo");
+  /** Lookup plus entry-error check (§8.4 step 3). */
+  private lookupChecked(key: Buffer): Loc | null {
+    const loc = this.lookup(key);
+    if (loc && loc.error !== null) throw new VzError("entry", loc.error);
+    return loc;
   }
 
-  // ------------------------------------------------------------- bodies
+  // ---------- bodies ----------
 
-  /** Read bytes [a, b) of a bytes entry's value, checking the body (§8.4 step 4). */
-  private async readBody(e: EntryInfo, a: bigint | null, b: bigint | null): Promise<Buffer> {
-    if (e.bodyOffset + e.csize > this.fileSize) throw err("body", "body lies outside the file");
-    if (e.method === 0) {
-      if (e.csize !== e.usize) throw err("body", "STORED entry with differing compressed and uncompressed sizes");
-      const s = a ?? 0n;
-      const t = b ?? e.usize;
-      if (t - s > BigInt(this.limit)) throw err("request", `request exceeds the reader's limit of ${this.limit} bytes`);
-      return this.readAt(e.bodyOffset + s, t - s);
-    }
-    if (e.usize > BigInt(this.limit) || e.csize > BigInt(this.limit)) {
-      throw err("request", `entry exceeds the reader's limit of ${this.limit} bytes`);
-    }
-    const body = await this.readAt(e.bodyOffset, e.csize);
-    const out = inflateClean(body, Number(e.usize) + 1);
-    if (out === null || out === "too-large" || out.length !== Number(e.usize)) {
-      throw err("body", "DEFLATE body does not inflate cleanly to the recorded size");
-    }
-    return out.subarray(Number(a ?? 0n), Number(b ?? e.usize));
+  private checkBodyBounds(loc: Loc): void {
+    if (!this.within(loc.bodyOffset, loc.csize)) throw new VzError("body", "entry body lies outside the file");
   }
 
-  // ------------------------------------------------------------- operations
-
-  async classify(key: string): Promise<Kind> {
-    if (isHidden(key)) return "missing";
-    const loc = await this.locate(key);
-    if (loc === null) return "missing";
-    return this.entryOf(loc).kind;
-  }
-
-  async raw(key: string): Promise<Buffer | null> {
-    const loc = await this.locate(key);
-    if (loc === null) return null;
-    if (loc.t === "format") return loc.key === SOURCES_KEY ? this.sourcesRaw : this.indexRaw!;
-    const e = this.entryOf(loc);
-    return this.readBody(e, null, null);
-  }
-
-  async get(key: string, req: Request = { type: "whole" }): Promise<Buffer | null> {
-    if (req.type === "range" && req.start > req.end) throw err("request", "range start > end");
-    if (isHidden(key)) return null;
-    const loc = await this.locate(key);
-    if (loc === null) return null;
-    const e = this.entryOf(loc);
-    if (e.kind === "bytes") {
-      const [a, b] = windowOf(req, e.usize);
-      return this.readBody(e, a, b);
-    }
-    // Reference (§8.3).
-    let parts: Range[];
-    try {
-      parts = e.payloadId === EXTRA_RANGE ? [decodeRange(e.payload!)] : decodeConcat(e.payload!);
-    } catch (x) {
-      if (x instanceof MalformedError) throw err("payload", `malformed reference payload: ${x.message}`);
-      throw x;
-    }
-    let total = 0n;
-    for (const [i, p] of parts.entries()) {
-      if (p.data === undefined && p.source >= this.sources.length) {
-        throw err("payload", `range ${i} names source ${p.source}, but there are ${this.sources.length} sources`);
+  /** Inflate (method 8) or validate (method 0) the body; returns full value for method 8, null for method 0. */
+  private inflateBody(loc: Loc): Buffer | null {
+    this.checkBodyBounds(loc);
+    if (loc.method === 8) {
+      if (loc.csize > BigInt(MAX_REQUEST_BYTES) || loc.usize > BigInt(MAX_REQUEST_BYTES)) {
+        throw new VzError("request", `entry larger than the ${MAX_REQUEST_BYTES}-byte limit`);
       }
-      total += rangeSize(p);
-    }
-    if (total > U64_MAX) throw err("payload", "reference size exceeds 2^64-1");
-    const [a, b] = windowOf(req, total);
-    const chunks: Buffer[] = [];
-    let acc = 0n;
-    let start = 0n;
-    for (const p of parts) {
-      const sz = rangeSize(p);
-      const rs = start;
-      const re = start + sz;
-      start = re;
-      const lo = bmax(a, rs);
-      const hi = bmin(b, re);
-      if (lo >= hi) continue;
-      const i = lo - rs;
-      const j = hi - rs;
-      if (p.data !== undefined) {
-        acc += j - i;
-        if (acc > BigInt(this.limit)) throw err("request", `request exceeds the reader's limit of ${this.limit} bytes`);
-        chunks.push(Buffer.from(p.data.subarray(Number(i), Number(j))));
-      } else {
-        const got = await this.readSource(p.source, p.offset + i, p.offset + j, acc);
-        acc += j - i;
-        chunks.push(got);
+      const comp = this.readAt(loc.bodyOffset, Number(loc.csize));
+      let out: Buffer;
+      try {
+        out = inflateCleanly(comp, MAX_REQUEST_BYTES);
+      } catch (e) {
+        if (e instanceof VzError) throw e;
+        throw new VzError("body", (e as Error).message);
       }
+      if (BigInt(out.length) !== loc.usize) {
+        throw new VzError("body", `inflated to ${out.length} bytes, record says ${loc.usize}`);
+      }
+      return out;
     }
-    return Buffer.concat(chunks);
+    if (loc.csize !== loc.usize) throw new VzError("body", "STORED entry's compressed and uncompressed sizes differ");
+    return null;
   }
 
-  async list(prefix: string): Promise<string[]> {
-    const pb = Buffer.from(encodeUtf8(prefix));
-    const found = new Map<string, Buffer>();
-    const consider = (name: string | null, nb: Buffer) => {
-      if (name === null || isHidden(name) || !startsWithBytes(nb, pb)) return;
-      found.set(name, nb);
+  /** Bytes [a, b) of a bytes entry's (or raw) value, with body checks. */
+  private readBodyWindow(loc: Loc, a: bigint, b: bigint): Buffer {
+    const full = this.inflateBody(loc);
+    if (full !== null) return full.subarray(Number(a), Number(b));
+    if (b - a > BigInt(MAX_REQUEST_BYTES)) throw new VzError("request", `request larger than the ${MAX_REQUEST_BYTES}-byte limit`);
+    return this.readAt(loc.bodyOffset + a, Number(b - a));
+  }
+
+  // ---------- operations (§8.2) ----------
+
+  classify(key: string): Kind {
+    const kb = Buffer.from(key, "utf8");
+    if (!key.isWellFormed() || kb.length === 0) return "missing";
+    if (isHidden(kb)) return "missing";
+    const loc = this.lookupChecked(kb);
+    return loc ? loc.kind : "missing";
+  }
+
+  async get(key: string, req: Request = { type: "whole" }): Promise<Uint8Array | null> {
+    if (req.type === "range" && req.start > req.end) throw new VzError("request", "range start > end");
+    const kb = Buffer.from(key, "utf8");
+    if (!key.isWellFormed() || kb.length === 0) return null;
+    if (isHidden(kb)) return null;
+    const loc = this.lookupChecked(kb);
+    if (!loc) return null;
+    if (loc.kind === "bytes") {
+      // Body checks judge the whole body first (§8.4 step 4).
+      this.checkBodyBounds(loc);
+      if (loc.method === 8) {
+        const full = this.inflateBody(loc)!;
+        const [a, b] = windowOf(req, loc.usize);
+        return full.subarray(Number(a), Number(b));
+      }
+      if (loc.csize !== loc.usize) throw new VzError("body", "STORED entry's compressed and uncompressed sizes differ");
+      const [a, b] = windowOf(req, loc.usize);
+      return this.readBodyWindow(loc, a, b);
+    }
+    return this.resolveReference(loc, req);
+  }
+
+  async raw(key: string): Promise<Uint8Array | null> {
+    const kb = Buffer.from(key, "utf8");
+    if (!key.isWellFormed() || kb.length === 0) return null;
+    if (kb.equals(SOURCES_BYTES)) return this.sourcesBody;
+    if (kb.equals(INDEX_BYTES)) return this.indexBody;
+    const loc = this.lookupChecked(kb);
+    if (!loc) return null;
+    const full = this.inflateBody(loc);
+    if (full !== null) return full;
+    return this.readBodyWindow(loc, 0n, loc.usize);
+  }
+
+  list(prefix: string): string[] {
+    const pb = Buffer.from(prefix, "utf8");
+    const out = new Map<string, Buffer>();
+    const consider = (name: Buffer) => {
+      if (isHidden(name)) return;
+      if (name.length < pb.length || !name.subarray(0, pb.length).equals(pb)) return;
+      out.set(name.toString("latin1"), name);
     };
     if (this.index === null) {
-      for (const r of this.records!.values()) consider(r.name, r.nameBytes);
+      for (const n of this.allNames) consider(n);
     } else {
-      for (const p of this.index.pinned) consider(p.key === "" ? null : p.key, Buffer.from(encodeUtf8(p.key)));
+      for (const p of this.index.pinned) consider(Buffer.from(p.key));
+      const fk = this.firstKeys();
       const upper = prefixUpper(pb);
-      const n = this.pageKeys.length;
-      for (let i = 0; i < n; i++) {
-        const fk = this.pageKeys[i];
-        const next = i + 1 < n ? this.pageKeys[i + 1] : null;
-        if (upper !== null && compareBytes(fk, upper) >= 0) break;
-        if (next !== null && compareBytes(next, pb) <= 0) continue;
-        const recs = await this.loadPage(i);
-        for (const r of recs) {
+      for (let i = 0; i < fk.length; i++) {
+        const lo = fk[i];
+        const hi = i + 1 < fk.length ? fk[i + 1] : null;
+        // Page range [lo, hi) intersects prefix range [pb, upper)?
+        const maxLo = Buffer.compare(lo, pb) >= 0 ? lo : pb;
+        let minHi: Buffer | null;
+        if (hi === null) minHi = upper;
+        else if (upper === null) minHi = hi;
+        else minHi = Buffer.compare(hi, upper) <= 0 ? hi : upper;
+        if (minHi !== null && Buffer.compare(maxLo, minHi) >= 0) continue;
+        for (const r of this.pageRecords(i)) {
           if (r.name === null) continue;
-          if (compareBytes(r.nameBytes, fk) < 0) continue;
-          if (next !== null && compareBytes(r.nameBytes, next) >= 0) continue;
-          if (this.pinnedMap.has(r.name) || isFormatKey(r.name)) continue;
-          consider(r.name, r.nameBytes);
+          if (Buffer.compare(r.nameBytes, lo) < 0) continue;
+          if (hi !== null && Buffer.compare(r.nameBytes, hi) >= 0) continue;
+          consider(r.nameBytes);
         }
       }
     }
-    return [...found.entries()].sort((x, y) => compareBytes(x[1], y[1])).map((x) => x[0]);
+    return [...out.values()].sort(Buffer.compare).map((b) => b.toString("utf8"));
   }
 
-  // ------------------------------------------------------------- sources
+  // ---------- references (§8.3) ----------
 
-  private checkLimit(acc: bigint, n: bigint): void {
-    if (acc + n > BigInt(this.limit)) {
-      throw err("request", `request exceeds the reader's limit of ${this.limit} bytes`);
-    }
-  }
-
-  /** Read [s, t) of source `idx`'s value (§6, §8.3 step 3). */
-  private async readSource(idx: number, s: bigint, t: bigint, acc: bigint): Promise<Buffer> {
-    const src = this.sources[idx];
-    if (src.kind === "data") {
-      if (BigInt(src.data!.length) < t) throw err("resolution", `data source ${idx} is shorter than ${t} bytes`);
-      this.checkLimit(acc, t - s);
-      return Buffer.from(src.data!.subarray(Number(s), Number(t)));
-    }
-    if (src.kind === "key") {
-      const k = src.key!;
-      if (isFormatKey(k)) throw err("resolution", `key source ${idx} names format entry ${k}`);
-      let e: EntryInfo;
-      try {
-        const loc = await this.locate(k);
-        if (loc === null) throw err("resolution", `key source ${idx}: key '${k}' is missing`);
-        e = this.entryOf(loc);
-      } catch (x) {
-        if (x instanceof VzipError && x.errorClass === "entry") {
-          throw err("resolution", `key source ${idx}: ${x.message}`);
-        }
-        throw x;
-      }
-      if (e.kind !== "bytes") throw err("resolution", `key source ${idx}: '${k}' is a reference entry`);
-      if (e.usize < t) throw err("resolution", `key source ${idx}: '${k}' is shorter than ${t} bytes`);
-      this.checkLimit(acc, t - s);
-      try {
-        return await this.readBody(e, s, t);
-      } catch (x) {
-        if (x instanceof VzipError && x.errorClass === "body") {
-          throw err("resolution", `key source ${idx}: ${x.message}`);
-        }
-        throw x;
-      }
-    }
-    return this.readUrl(idx, src, s, t, acc);
-  }
-
-  private async readUrl(idx: number, src: Source, s: bigint, t: bigint, acc: bigint): Promise<Buffer> {
-    const ref = src.url!;
-    if (!isUriReference(ref)) throw err("resolution", `source ${idx}: '${ref}' is not a valid URI reference`);
-    const target = resolveUri(this.baseUri, ref);
-    if (this.allowed && !this.allowed.some((p) => target.startsWith(p))) {
-      throw err("resolution", `source ${idx}: '${target}' is not in the allowed URL prefixes`);
-    }
-    const scheme = (parseUri(target).scheme ?? "").toLowerCase();
-    if (scheme === "file") {
-      const p = fileUriToPath(target);
-      if (typeof p === "string") throw err("resolution", `source ${idx}: ${p}`);
-      if (src.etag !== undefined) throw err("resolution", `source ${idx}: an etag pin cannot be checked for file: URLs`);
-      let fh: fs.FileHandle;
-      try {
-        fh = await fs.open(p, "r");
-      } catch (e) {
-        throw err("resolution", `source ${idx}: cannot open ${target}: ${(e as Error).message}`);
-      }
-      try {
-        const st = await fh.stat({ bigint: true });
-        if (!st.isFile()) throw err("resolution", `source ${idx}: ${target} is not a regular file`);
-        if (src.size !== undefined && st.size !== src.size) {
-          throw err("resolution", `source ${idx}: size pin failed (pinned ${src.size}, actual ${st.size})`);
-        }
-        if (src.modifiedNotAfter !== undefined) {
-          const ns = st.mtimeNs;
-          let sec = ns / 1000000000n;
-          if (ns < 0n && ns % 1000000000n !== 0n) sec -= 1n; // floor
-          if (sec > src.modifiedNotAfter) {
-            throw err("resolution", `source ${idx}: modified_not_after pin failed (mtime ${sec} > ${src.modifiedNotAfter})`);
-          }
-        }
-        if (st.size < t) throw err("resolution", `source ${idx}: ${target} is shorter than ${t} bytes`);
-        this.checkLimit(acc, t - s);
-        const len = Number(t - s);
-        const buf = Buffer.alloc(len);
-        let done = 0;
-        while (done < len) {
-          const { bytesRead } = await fh.read(buf, done, len - done, Number(s) + done);
-          if (bytesRead === 0) throw err("resolution", `source ${idx}: unexpected end of ${target}`);
-          done += bytesRead;
-        }
-        return buf;
-      } finally {
-        await fh.close();
-      }
-    }
-    if (scheme === "http" || scheme === "https") {
-      return this.readHttp(idx, src, target, s, t, acc);
-    }
-    throw err("resolution", `source ${idx}: unsupported URL scheme '${scheme}'`);
-  }
-
-  private async readHttp(idx: number, src: Source, target: string, s: bigint, t: bigint, acc: bigint): Promise<Buffer> {
-    this.checkLimit(acc, t - s);
-    const url = target.replace(/#.*$/s, "");
-    const headers: Record<string, string> = { Range: `bytes=${s}-${t - 1n}` };
-    if (src.etag !== undefined) headers["If-Match"] = src.etag;
-    if (src.modifiedNotAfter !== undefined) {
-      const d = new Date(Number(src.modifiedNotAfter) * 1000);
-      if (Number.isNaN(d.getTime())) throw err("resolution", `source ${idx}: modified_not_after pin cannot be expressed as an HTTP-date`);
-      headers["If-Unmodified-Since"] = d.toUTCString();
-    }
-    let res: Response;
+  private decodePayload(loc: Loc): Range[] {
+    let parts: Range[];
     try {
-      res = await fetch(url, { headers });
+      parts = loc.refId === EXTRA_RANGE ? [decodeRange(loc.payload!)] : decodeConcat(loc.payload!);
     } catch (e) {
-      throw err("resolution", `source ${idx}: request to ${url} failed: ${(e as Error).message}`);
+      if (e instanceof MalformedError) throw new VzError("payload", `reference payload is malformed: ${e.message}`);
+      throw e;
     }
-    if (res.status === 412) throw err("resolution", `source ${idx}: pin failed (412 Precondition Failed)`);
-    if (res.status === 416) throw err("resolution", `source ${idx}: ${url} is shorter than ${t} bytes`);
-    if (res.status === 206) {
-      const cr = res.headers.get("content-range") ?? "";
-      const m = /^bytes (\d+)-(\d+)\/(\d+|\*)$/.exec(cr.trim());
-      if (!m) throw err("resolution", `source ${idx}: bad Content-Range '${cr}'`);
-      const total = m[3] === "*" ? null : BigInt(m[3]);
-      if (src.size !== undefined && (total === null || total !== src.size)) {
-        throw err("resolution", `source ${idx}: size pin failed`);
+    let total = 0n;
+    for (let i = 0; i < parts.length; i++) {
+      const r = parts[i];
+      if (r.data !== null) {
+        if (r.source !== 0 || r.offset !== 0n || r.length !== 0n) {
+          throw new VzError("payload", `range ${i}: literal range with non-zero source, offset or length`);
+        }
+        total += BigInt(r.data.length);
+      } else {
+        if (r.source >= this.sources.length) {
+          throw new VzError("payload", `range ${i}: source ${r.source} out of bounds (${this.sources.length} sources)`);
+        }
+        if (r.offset + r.length > U64_MAX) throw new VzError("payload", `range ${i}: offset + length exceeds 2^64-1`);
+        total += r.length;
       }
-      if (BigInt(m[1]) !== s || BigInt(m[2]) !== t - 1n) {
-        throw err("resolution", `source ${idx}: server returned a different range (${cr}); object shorter than ${t} bytes?`);
-      }
-      const body = Buffer.from(await res.arrayBuffer());
-      if (BigInt(body.length) !== t - s) throw err("resolution", `source ${idx}: short response body`);
-      return body;
     }
-    if (res.status === 200) {
-      const body = Buffer.from(await res.arrayBuffer());
-      if (src.size !== undefined && BigInt(body.length) !== src.size) throw err("resolution", `source ${idx}: size pin failed`);
-      if (BigInt(body.length) < t) throw err("resolution", `source ${idx}: ${url} is shorter than ${t} bytes`);
-      return body.subarray(Number(s), Number(t));
-    }
-    throw err("resolution", `source ${idx}: HTTP status ${res.status} from ${url}`);
+    if (total > U64_MAX) throw new VzError("payload", "reference size exceeds 2^64-1");
+    return parts;
   }
+
+  private async resolveReference(loc: Loc, req: Request): Promise<Uint8Array> {
+    const parts = this.decodePayload(loc);
+    const size = (r: Range) => (r.data !== null ? BigInt(r.data.length) : r.length);
+    const n = parts.reduce((s, r) => s + size(r), 0n);
+    const [a, b] = windowOf(req, n);
+    const pieces: Piece[] = [];
+    let pos = 0n;
+    for (const r of parts) {
+      const s = size(r);
+      const lo = a > pos ? a : pos;
+      const hi = b < pos + s ? b : pos + s;
+      if (hi > lo) pieces.push({ range: r, lo: lo - pos, hi: hi - pos });
+      pos += s;
+    }
+    const out: Uint8Array[] = [];
+    let acc = 0n;
+    for (const pc of pieces) {
+      acc += pc.hi - pc.lo;
+      if (acc > BigInt(MAX_REQUEST_BYTES)) {
+        // Check resolvability of this piece first where that needs no I/O-heavy allocation.
+        throw new VzError("request", `request larger than the ${MAX_REQUEST_BYTES}-byte limit`);
+      }
+      const r = pc.range;
+      if (r.data !== null) {
+        out.push(r.data.subarray(Number(pc.lo), Number(pc.hi)));
+      } else {
+        out.push(await this.readSource(r.source, r.offset + pc.lo, r.offset + pc.hi));
+      }
+    }
+    return Buffer.concat(out);
+  }
+
+  /** Bytes [a, b) (a < b) of the source value of source `idx`. Throws resolution errors. */
+  private async readSource(idx: number, a: bigint, b: bigint): Promise<Uint8Array> {
+    const s = this.sources[idx];
+    const k = s.kind!;
+    if (k.type === "data") {
+      if (BigInt(k.value.length) < b) throw new VzError("resolution", `data source ${idx} has ${k.value.length} bytes, range needs ${b}`);
+      return k.value.subarray(Number(a), Number(b));
+    }
+    if (k.type === "key") {
+      const kb = Buffer.from(k.value, "utf8");
+      if (isFormatKey(kb)) throw new VzError("resolution", `key source ${idx} names a format entry`);
+      let loc: Loc | null;
+      try {
+        loc = this.lookupChecked(kb);
+        if (loc === null) throw new VzError("resolution", `key source ${idx} names missing key ${JSON.stringify(k.value)}`);
+        if (loc.kind !== "bytes") throw new VzError("resolution", `key source ${idx} names a reference entry`);
+        this.checkBodyBounds(loc);
+        const full = this.inflateBody(loc);
+        if (loc.usize < b) throw new VzError("resolution", `key source ${idx} has ${loc.usize} bytes, range needs ${b}`);
+        if (full !== null) return full.subarray(Number(a), Number(b));
+        return this.readBodyWindow(loc, a, b);
+      } catch (e) {
+        if (e instanceof VzError && e.cls !== "resolution" && e.cls !== "request") {
+          throw new VzError("resolution", `key source ${idx}: ${e.message}`);
+        }
+        throw e;
+      }
+    }
+    const pins: Pins = { size: s.size, etag: s.etag, modifiedNotAfter: s.modifiedNotAfter };
+    return readUrlRange(this.baseUri, k.value, pins, a, b);
+  }
+}
+
+/** The requested window [a, b) of a value of size n (§8.2). */
+export function windowOf(req: Request, n: bigint): [bigint, bigint] {
+  const min = (x: bigint, y: bigint) => (x < y ? x : y);
+  switch (req.type) {
+    case "whole":
+      return [0n, n];
+    case "range":
+      return [min(req.start, n), min(req.end, n)];
+    case "offset":
+      return [min(req.start, n), n];
+    case "suffix":
+      return [n - req.count > 0n ? n - req.count : 0n, n];
+  }
+}
+
+export function isStrongEtag(s: string): boolean {
+  return /^"[\x21\x23-\x7e]*"$/.test(s);
 }

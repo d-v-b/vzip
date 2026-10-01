@@ -122,10 +122,75 @@ def _abs_range(size: int, br: ByteRequest | None) -> tuple[int, int]:
     raise TypeError(f"unexpected byte request {br!r}")
 
 
+def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int | None]:
+    """Bytes [start, end) of an http(s) object, and its size if known (spec §6.2)."""
+    import email.utils
+    import urllib.error
+    import urllib.request
+
+    headers = {"Range": f"bytes={start}-{end - 1}", "Accept-Encoding": "identity"}
+    if src.etag is not None:
+        headers["If-Match"] = src.etag
+    if src.modified_not_after is not None:
+        t = src.modified_not_after
+        if not -62135596800 <= t <= 253402300799:  # years 1..9999
+            raise ResolutionError("modified_not_after cannot be written as an HTTP-date")
+        when = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc) + datetime.timedelta(
+            seconds=t)
+        headers["If-Unmodified-Since"] = email.utils.format_datetime(when, usegmt=True)
+    class Redirects(urllib.request.HTTPRedirectHandler):
+        max_redirections = 5  # spec §6.2
+
+        def redirect_request(self, req, fp, code, msg, hdrs, newurl):
+            if urlparse(newurl).scheme.lower() not in ("http", "https"):
+                raise ResolutionError(f"redirect to a non-http URL: {newurl}")
+            return super().redirect_request(req, fp, code, msg, hdrs, newurl)
+
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.build_opener(Redirects).open(req, timeout=60) as r:
+            status, body = r.status, r.read()
+            enc = (r.headers.get("Content-Encoding") or "identity").lower()
+            crange = r.headers.get("Content-Range")
+            etag, last_modified = r.headers.get("ETag"), r.headers.get("Last-Modified")
+    except urllib.error.HTTPError as e:
+        what = {412: "a pin failed (412)", 416: "the object is shorter than the range (416)"}
+        raise ResolutionError(f"{url}: {what.get(e.code, f'HTTP {e.code}')}") from None
+    except ResolutionError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise ResolutionError(f"{url}: {type(e).__name__}: {e}") from None
+    # spec §6.2: servers may ignore conditional headers, so check the response itself
+    if src.etag is not None and etag != src.etag:
+        raise ResolutionError(f"{url}: ETag {etag!r} does not match the pin {src.etag!r}")
+    if src.modified_not_after is not None:
+        try:
+            lm = email.utils.parsedate_to_datetime(last_modified).timestamp()
+        except (TypeError, ValueError):
+            raise ResolutionError(f"{url}: no usable Last-Modified to check the pin") from None
+        if lm > src.modified_not_after:
+            raise ResolutionError(f"{url}: Last-Modified {last_modified} is after the pin")
+    if enc != "identity":
+        raise ResolutionError(f"{url}: response has Content-Encoding {enc!r}")
+    if status == 200:  # the server ignored Range
+        if len(body) < end:
+            raise ResolutionError(f"{url} is shorter than {end} bytes")
+        return body[start:end], len(body)
+    if status != 206 or not crange or not crange.startswith("bytes "):
+        raise ResolutionError(f"{url}: unexpected response {status} {crange!r}")
+    rng, _, total = crange[6:].partition("/")
+    a, _, z = rng.partition("-")
+    if int(a) != start or int(z) != end - 1 or len(body) != end - start:
+        raise ResolutionError(f"{url}: server returned {crange!r} for [{start}, {end})")
+    return body, None if total == "*" else int(total)
+
+
 def _check_index(pages, pinned, cd_size: int, file_size: int) -> None:
     """Spec §7.2: a malformed page index is an archive error."""
     pos, prev = 0, None
     for p in pages:
+        if not p.first_key:
+            raise ArchiveError("a page has an empty first_key")
         if p.length == 0 or p.offset != pos or p.offset + p.length > cd_size:
             raise ArchiveError("pages are not contiguous, empty, or outside the directory")
         if prev is not None and p.first_key.encode() <= prev.encode():
@@ -133,6 +198,8 @@ def _check_index(pages, pinned, cd_size: int, file_size: int) -> None:
         pos, prev = p.offset + p.length, p.first_key
     seen = set()
     for e in pinned:
+        if not e.key:
+            raise ArchiveError("a pinned key is empty")
         if e.key in seen or e.key in (SOURCES_KEY, INDEX_KEY):
             raise ArchiveError(f"pinned key {e.key!r} is duplicated or a format entry")
         if e.method not in (0, 8):
@@ -404,6 +471,12 @@ class VZipStore(Store):
     async def _url_bytes(self, src: Source, start: int, end: int) -> bytes:
         """Bytes [start, end) of a url source, checking its pins (spec §6.1)."""
         url = resolve_reference(self.url, src.url)
+        if urlparse(url).scheme.lower() in ("http", "https"):  # spec §6.2, pinned or not
+            data, size = await asyncio.to_thread(http_range, url, start, end, src)
+            self.stats.record(url, start, len(data), external=True)
+            if src.size is not None and size != src.size:
+                raise ResolutionError(f"size pin {src.size} != {size}")
+            return data
         if not src.pinned:
             return await self._read(url, start, end, external=True)
         if urlparse(url).scheme.lower() == "file":

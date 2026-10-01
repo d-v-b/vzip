@@ -1,8 +1,8 @@
-"""Error classes (spec section 8.4)."""
+"""Error classes of spec §8.4."""
 
 
 class VzipError(Exception):
-    cls = "archive"
+    cls = "unknown"
 
 
 class ArchiveError(VzipError):
@@ -27,7 +27,3 @@ class ResolutionError(VzipError):
 
 class RequestError(VzipError):
     cls = "request"
-
-
-class WriteError(Exception):
-    """The writer rejected its input (spec section 9.1)."""

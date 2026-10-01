@@ -137,7 +137,70 @@ def _basic(root: Path) -> dict:
     }
 
 
-def descriptions(root: Path) -> dict[str, dict]:
+def _http(server_base: str) -> dict:
+    """A description whose sources are served by conformance/http_server.py (spec §6.2)."""
+    from http_server import etag_for
+
+    B = server_base + "vectors/"
+    blob = B + "data/blob.bin"
+    return {
+        "page_size": None,
+        "mirror": True,
+        "sources": [
+            {"url": blob},                                                       # 0
+            {"url": B + "data/sub/my%20file.bin"},                               # 1
+            {"url": B + "data/%C3%A9.bin"},                                      # 2
+            {"url": B + "data/missing.bin"},                                     # 3
+            {"url": blob, "size": 1024, "etag": etag_for(BLOB),
+             "modified_not_after": MTIME},                                       # 4
+            {"url": blob, "etag": '"not-the-etag"'},                             # 5
+            {"url": blob, "size": 1023},                                         # 6
+            {"url": blob, "modified_not_after": MTIME - 1},                      # 7
+            {"url": server_base + "norange/vectors/data/blob.bin", "size": 1024},  # 8
+            {"url": server_base + "nototal/vectors/data/blob.bin"},              # 9
+            {"url": server_base + "nototal/vectors/data/blob.bin", "size": 1024},  # 10
+            {"url": server_base + "gzip/vectors/data/blob.bin"},                 # 11
+            {"url": B + "data/short.bin"},                                       # 12
+            {"url": server_base + "nocond/vectors/data/blob.bin", "etag": '"not-the-etag"'},  # 13
+            {"url": server_base + "nocond/vectors/data/blob.bin",
+             "modified_not_after": MTIME - 1},                                   # 14
+            {"url": server_base + "nocond/vectors/data/blob.bin", "etag": etag_for(BLOB),
+             "modified_not_after": MTIME},                                       # 15
+            {"url": server_base + "noetag/vectors/data/blob.bin", "etag": etag_for(BLOB)},  # 16
+            {"url": server_base + "noetag/vectors/data/blob.bin"},               # 17
+            {"url": server_base + "redirect/2/vectors/data/blob.bin", "etag": etag_for(BLOB)},  # 18
+            {"url": server_base + "redirect/6/vectors/data/blob.bin"},           # 19
+        ],
+        "entries": [
+            {"key": "meta", "bytes": H(b"{}")},
+            {"key": "h/plain", "ranges": [{"source": 0, "offset": 10, "length": 20}]},
+            {"key": "h/space", "ranges": [{"source": 1, "offset": 0, "length": 6}]},
+            {"key": "h/accent", "ranges": [{"source": 2, "offset": 0, "length": 8}]},
+            {"key": "h/missing", "ranges": [{"data": H(b"ok")}, {"source": 3, "length": 4}]},
+            {"key": "h/pinned", "ranges": [{"source": 4, "offset": 100, "length": 4}]},
+            {"key": "h/bad_etag", "ranges": [{"source": 5, "offset": 1, "length": 2}]},
+            {"key": "h/bad_size", "ranges": [{"source": 6, "offset": 1, "length": 2}]},
+            {"key": "h/bad_mtime", "ranges": [{"source": 7, "offset": 1, "length": 2}]},
+            {"key": "h/norange", "ranges": [{"source": 8, "offset": 500, "length": 3}]},
+            {"key": "h/nototal", "ranges": [{"source": 9, "offset": 3, "length": 3}]},
+            {"key": "h/nototal_size_pin", "ranges": [{"source": 10, "offset": 3, "length": 3}]},
+            {"key": "h/gzip", "ranges": [{"source": 11, "offset": 0, "length": 2}]},
+            {"key": "h/clipped", "ranges": [{"source": 12, "offset": 5, "length": 10}]},
+            {"key": "h/past_end", "ranges": [{"source": 12, "offset": 20, "length": 2}]},
+            {"key": "h/two_ranges", "ranges": [{"source": 0, "offset": 0, "length": 2},
+                                               {"source": 0, "offset": 700, "length": 2}]},
+            {"key": "h/nocond_bad_etag", "ranges": [{"source": 13, "offset": 1, "length": 2}]},
+            {"key": "h/nocond_bad_mtime", "ranges": [{"source": 14, "offset": 1, "length": 2}]},
+            {"key": "h/nocond_good", "ranges": [{"source": 15, "offset": 1, "length": 2}]},
+            {"key": "h/noetag_pinned", "ranges": [{"source": 16, "offset": 1, "length": 2}]},
+            {"key": "h/noetag_unpinned", "ranges": [{"source": 17, "offset": 1, "length": 2}]},
+            {"key": "h/redirect_2", "ranges": [{"source": 18, "offset": 40, "length": 3}]},
+            {"key": "h/redirect_6", "ranges": [{"source": 19, "offset": 40, "length": 3}]},
+        ],
+    }
+
+
+def descriptions(root: Path, http_base: str | None = None) -> dict[str, dict]:
     basic = _basic(root)
     nomirror = {**basic, "mirror": False}
     paged = {
@@ -178,6 +241,8 @@ def descriptions(root: Path) -> dict[str, dict]:
         "empty_paged": empty_paged,
         "max_payload": max_payload,
         "path needs encoding é": {**basic, "entries": basic["entries"][:12]},
+        **({"http_basic": _http(http_base),
+            "http_paged": {**_http(http_base), "page_size": 128}} if http_base else {}),
     }
 
 

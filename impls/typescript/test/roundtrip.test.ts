@@ -1,184 +1,165 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { spawnSync } from "node:child_process";
+import { readQueries, tmpdir, writeDesc } from "./helpers.ts";
 import { Archive } from "../src/reader.ts";
-import { CLI, tmpDir, unzipTest } from "./helpers.ts";
-import { validateArchive } from "./validate.ts";
 
-const enc = (s: string) => Buffer.from(s, "utf8").toString("hex");
+const hex = (s: string) => Buffer.from(s).toString("hex");
 
-function runCli(args: string[], cwd: string) {
-  return spawnSync(CLI, args, { cwd, encoding: "utf8" });
+function unzipOk(p: string): void {
+  const r = spawnSync("unzip", ["-tq", p], { encoding: "utf8", maxBuffer: 1 << 28 });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
 }
 
-test("write/read round trip across layouts, via library and CLI", async () => {
-  const dir = tmpDir();
+function utf8Sort(keys: string[]): string[] {
+  return [...keys].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+}
+
+test("round trip: every page size, mirror setting and pinning gives the same values", () => {
+  const dir = tmpdir();
   fs.mkdirSync(path.join(dir, "data"));
-  const ext = Buffer.from("0123456789abcdefghijKLMNOPQRST");
-  fs.writeFileSync(path.join(dir, "data", "a b.bin"), ext);
-  const mtime = Math.floor(fs.statSync(path.join(dir, "data", "a b.bin")).mtimeMs / 1000);
-  const hdr = Buffer.from("HDR!");
-  const big = Buffer.alloc(5000, 7);
-  const keys = ["\u{1F600}", "\u{FF5E}", "﻿bom", "a/../b", "x/", "x/zarr.json", "x/c/0", "x/c/1", "x/c/2", "x/c/3", "x/big", "y"];
-  const sources = [
-    { url: "data/a%20b.bin", size: ext.length, modified_not_after: mtime },
-    { key: "__vz__/hdr" },
-    { data: enc("shared") },
-    { url: "#frag" }, // the archive itself
-    { key: "x/big" },
+  fs.writeFileSync(path.join(dir, "data", "a b.bin"), "0123456789abcdefghijklmnopqrstuvwxyz");
+  const keys = ["zarr.json", "a/zarr.json", "a/c/0", "a/c/1", "a/c/2", "b/x", "\u{FF5E}", "\u{1F600}", "﻿bom", "x/", "a/../b", "__vz__/hdr", "empty"];
+  const entries: any[] = [
+    { key: "zarr.json", bytes: hex('{"zarr_format":3}'), compress: true, pinned: true },
+    { key: "a/zarr.json", bytes: hex("{}"), pinned: true },
+    { key: "a/c/0", ranges: [{ source: 0, offset: 10, length: 4 }] },
+    { key: "a/c/1", ranges: [{ source: 2, offset: 0, length: 3 }, { data: "00ff" }, { source: 1, offset: 1, length: 2 }] },
+    { key: "a/c/2", ranges: [] },
+    { key: "b/x", bytes: hex("hello".repeat(100)), compress: true },
+    { key: "\u{FF5E}", bytes: "01" },
+    { key: "\u{1F600}", bytes: "02" },
+    { key: "﻿bom", bytes: "03" },
+    { key: "x/", ranges: [{ data: "" }] },
+    { key: "a/../b", ranges: [{ source: 3, offset: 0, length: 2 }] },
+    { key: "__vz__/hdr", bytes: "aabbccdd", compress: true, pinned: true },
+    { key: "empty", bytes: "" },
   ];
-  const expected = new Map<string, Buffer>();
-  const entries: Record<string, unknown>[] = [];
-  const addBytes = (key: string, b: Buffer, extra: Record<string, unknown> = {}) => {
-    entries.push({ key, bytes: b.toString("hex"), ...extra });
-    expected.set(key, b);
-  };
-  addBytes("\u{1F600}", Buffer.from("emoji"), { compress: true });
-  addBytes("\u{FF5E}", Buffer.from("tilde"));
-  addBytes("﻿bom", Buffer.from(""), { compress: true });
-  addBytes("a/../b", Buffer.from("dots"));
-  addBytes("x/", Buffer.from("dir?"));
-  addBytes("x/zarr.json", Buffer.from("{}"), { pinned: "maybe" });
-  addBytes("x/big", big, { compress: true });
-  entries.push({ key: "__vz__/hdr", bytes: hdr.toString("hex"), compress: true });
-  entries.push({ key: "x/c/0", ranges: [{ source: 0, offset: 10, length: 4 }] });
-  expected.set("x/c/0", ext.subarray(10, 14));
-  entries.push({ key: "x/c/1", ranges: [{ source: 2, offset: 0, length: 3 }, { data: "00ff" }, { source: 1, offset: 1, length: 2 }, { source: 4, offset: 4990, length: 10 }] });
-  expected.set("x/c/1", Buffer.concat([Buffer.from("sha"), Buffer.from([0, 0xff]), hdr.subarray(1, 3), big.subarray(4990)]));
-  entries.push({ key: "x/c/2", ranges: [] });
-  expected.set("x/c/2", Buffer.alloc(0));
-  entries.push({ key: "x/c/3", ranges: [{ data: "" }, { source: 3, offset: 0, length: 4 }, { source: 0, offset: 0, length: 0 }] });
-  expected.set("x/c/3", Buffer.from("PK\x03\x04", "latin1"));
-  entries.push({ key: "y", ranges: [{ data: "abcdef" }] });
-  expected.set("y", Buffer.from("abcdef", "hex"));
-
-  let n = 0;
-  for (const pageSize of [null, 1, 120, 100000]) {
+  const sources = [{ url: "data/a%20b.bin", size: 36 }, { key: "__vz__/hdr" }, { data: "48445221" }, { url: "#frag" }];
+  const queries: any[] = [
+    { op: "list", prefix: "" },
+    { op: "list", prefix: "a/" },
+    { op: "list", prefix: "a/c/" },
+    { op: "list", prefix: "\u{1F600}" },
+    { op: "list", prefix: "zz" },
+    ...keys.map((k) => ({ op: "classify", key: k })),
+    ...keys.map((k) => ({ op: "get", key: k })),
+    { op: "get", key: "a/c/1", range: { start: 2, end: 5 } },
+    { op: "get", key: "a/c/1", range: { start: 5, end: 100 } },
+    { op: "get", key: "a/c/1", range: { offset: 6 } },
+    { op: "get", key: "a/c/1", range: { suffix: 100 } },
+    { op: "get", key: "b/x", range: { start: 498, end: 1000 } },
+    { op: "get", key: "zarr.json", range: { suffix: 2 } },
+    { op: "get_raw", key: "__vz__/hdr" },
+    { op: "get", key: "missing" },
+    { op: "classify", key: "__vz__/sources" },
+  ];
+  const visible = utf8Sort(keys.filter((k) => !k.startsWith("__vz__/")));
+  let reference: any = null;
+  for (const pageSize of [null, 1, 50, 200, 100000]) {
     for (const mirror of [true, false]) {
-      const desc = {
-        page_size: pageSize,
-        mirror,
-        sources,
-        entries: entries.map((e) => {
-          const c = { ...e };
-          if (c.pinned === "maybe") c.pinned = pageSize !== null;
-          return c;
-        }),
-        unknown_member: 1,
-      };
-      const dp = path.join(dir, `d${n}.json`);
-      const ap = path.join(dir, `a${n}.vzip`);
-      n++;
-      fs.writeFileSync(dp, JSON.stringify(desc));
-      const w = runCli(["write", dp, ap], "/");
+      const desc = { page_size: pageSize, mirror, sources, entries: entries.map((e) => (pageSize === null ? { ...e, pinned: false } : e)) };
+      const w = writeDesc(dir, desc, `rt-${pageSize}-${mirror}.vzip`);
       assert.equal(w.status, 0, w.stderr);
-      const u = unzipTest(ap);
-      assert.ok(u.ok, u.out);
-      validateArchive(fs.readFileSync(ap));
-
-      const a = await Archive.open(ap);
-      assert.equal(a.paged, pageSize !== null);
-      for (const k of keys) {
-        const want = expected.get(k)!;
-        const kind = entries.find((e) => e.key === k)!.bytes !== undefined ? "bytes" : "reference";
-        assert.equal(await a.classify(k), kind, k);
-        assert.deepEqual(await a.get(k), want, k);
-        const L = BigInt(want.length);
-        for (const [s, e] of [[0n, 0n], [1n, 3n], [2n, 100n], [L, L + 5n], [L + 2n, L + 9n]]) {
-          const lo = Math.min(Number(s), want.length);
-          const hi = Math.min(Number(e), want.length);
-          assert.deepEqual(await a.get(k, { type: "range", start: s, end: e }), want.subarray(lo, hi), `${k} ${s}-${e}`);
-        }
-        assert.deepEqual(await a.get(k, { type: "offset", start: 2n }), want.subarray(Math.min(2, want.length)));
-        assert.deepEqual(await a.get(k, { type: "suffix", count: 3n }), want.subarray(Math.max(0, want.length - 3)));
-        assert.deepEqual(await a.get(k, { type: "suffix", count: 0n }), Buffer.alloc(0));
-        const raw = await a.raw(k);
-        if (kind === "bytes") assert.deepEqual(raw, want);
-        else if (!mirror) assert.equal(raw!.length, 0);
-        else assert.ok(raw!.length > 0 || k === "x/c/2");
-      }
-      for (const k of ["__vz__/hdr", "__vz__/sources", "__vz__/index", "nope", "x", "x/c", ""]) {
-        assert.equal(await a.classify(k), "missing", k);
-        assert.equal(await a.get(k), null, k);
-      }
-      assert.deepEqual(await a.raw("__vz__/hdr"), hdr);
-      assert.ok((await a.raw("__vz__/sources"))!.length > 0);
-      assert.equal((await a.raw("__vz__/index")) === null, pageSize === null);
-      const sorted = [...keys].sort((p, q) => Buffer.compare(Buffer.from(p), Buffer.from(q)));
-      assert.deepEqual(await a.list(""), sorted);
-      assert.deepEqual(await a.list("x/"), ["x/", "x/big", "x/c/0", "x/c/1", "x/c/2", "x/c/3", "x/zarr.json"]);
-      assert.deepEqual(await a.list("x/c/"), ["x/c/0", "x/c/1", "x/c/2", "x/c/3"]);
-      assert.deepEqual(await a.list("\u{1F600}"), ["\u{1F600}"]);
-      assert.deepEqual(await a.list("﻿"), ["﻿bom"]);
-      assert.deepEqual(await a.list("__vz__/"), []);
-      assert.deepEqual(await a.list("z"), []);
-      assert.deepEqual(await a.list("\xff"), []);
-      await a.close();
-
-      // CLI read, run from another directory with a relative archive path
-      const qp = path.join(dir, "q.json");
-      fs.writeFileSync(qp, JSON.stringify([
-        { op: "classify", key: "x/c/1" },
-        { op: "get", key: "x/c/1", range: { start: 1, end: 4 } },
-        { op: "get", key: "x/c/0", range: { suffix: 2 } },
-        { op: "get", key: "x/c/0", range: { offset: 3 } },
-        { op: "get", key: "missing" },
-        { op: "get", key: "x/c/0", range: { start: 3, end: 2 } },
-        { op: "get_raw", key: "__vz__/hdr" },
-        { op: "list", prefix: "x/c" },
-      ]));
-      const r = runCli(["read", path.basename(ap), qp], dir);
-      assert.equal(r.status, 0, r.stderr);
-      assert.deepEqual(JSON.parse(r.stdout), {
-        open: { ok: true },
-        results: [
-          { ok: true, kind: "reference" },
-          { ok: true, value: expected.get("x/c/1")!.subarray(1, 4).toString("hex") },
-          { ok: true, value: enc("cd") },
-          { ok: true, value: enc("d") },
-          { ok: true, value: null },
-          { ok: false, class: "request", error: "range start > end" },
-          { ok: true, value: hdr.toString("hex") },
-          { ok: true, keys: ["x/c/0", "x/c/1", "x/c/2", "x/c/3"] },
-        ],
-      });
+      unzipOk(w.out);
+      const r = readQueries(w.out, queries);
+      assert.deepEqual(r.open, { ok: true });
+      const res = r.results;
+      assert.deepEqual(res[0].keys, visible);
+      assert.deepEqual(res[1].keys, ["a/../b", "a/c/0", "a/c/1", "a/c/2", "a/zarr.json"]);
+      assert.deepEqual(res[2].keys, ["a/c/0", "a/c/1", "a/c/2"]);
+      assert.deepEqual(res[3].keys, ["\u{1F600}"]);
+      assert.deepEqual(res[4].keys, []);
+      if (reference === null) reference = res;
+      else assert.deepEqual(res, reference, `page_size=${pageSize} mirror=${mirror}`);
     }
+  }
+  const byKey = (op: string, k: string) => reference[queries.findIndex((q) => q.op === op && q.key === k && !q.range)];
+  assert.equal(byKey("classify", "a/c/0").kind, "reference");
+  assert.equal(byKey("classify", "zarr.json").kind, "bytes");
+  assert.equal(byKey("classify", "__vz__/hdr").kind, "missing");
+  assert.equal(byKey("get", "a/c/0").value, hex("abcd"));
+  assert.equal(byKey("get", "a/c/1").value, "48445200ffbbcc");
+  assert.equal(byKey("get", "a/c/2").value, "");
+  assert.equal(byKey("get", "x/").value, "");
+  assert.equal(byKey("get", "empty").value, "");
+  assert.equal(byKey("get", "__vz__/hdr").value, null);
+  // a/../b: "#frag" resolves to the archive itself; its first two bytes are a local header signature.
+  assert.equal(byKey("get", "a/../b").value, "504b");
+  const n = keys.length * 2 + 5;
+  assert.deepEqual(reference.slice(n, n + 6).map((r: any) => r.value), ["5200ff", "bbcc", "cc", "48445200ffbbcc", hex("lo"), hex("3}")]);
+  assert.equal(reference[n + 6].value, "aabbccdd");
+  assert.equal(reference[n + 7].value, null);
+  assert.equal(reference[n + 8].kind, "missing");
+});
+
+test("writer output layout: comment, ZIP flags, page index structure", () => {
+  const dir = tmpdir();
+  const entries = Array.from({ length: 30 }, (_, i) => ({ key: `k/${String(i).padStart(3, "0")}`, bytes: "00" }));
+  const w = writeDesc(dir, { page_size: 300, entries: [...entries, { key: "p", bytes: "abcd", pinned: true }] });
+  assert.equal(w.status, 0, w.stderr);
+  const buf = fs.readFileSync(w.out);
+  assert.equal(buf.readUInt32LE(buf.length - 60), 0x06054b50);
+  assert.equal(buf.readUInt16LE(buf.length - 60 + 20), 38);
+  assert.equal(buf.subarray(buf.length - 38, buf.length - 32).toString(), "vzip/0");
+  // Every local header: extra length 0, bit 11 set, no bit 3.
+  let p = 0;
+  while (buf.readUInt32LE(p) === 0x04034b50) {
+    assert.equal(buf.readUInt16LE(p + 28), 0);
+    assert.equal(buf.readUInt16LE(p + 6) & 0x808, 0x800);
+    p += 30 + buf.readUInt16LE(p + 26) + buf.readUInt32LE(p + 18);
+  }
+  // Library-level look at the page index via the archive.
+  const a = Archive.open(w.out);
+  assert.equal(a.list("k/").length, 30);
+  assert.equal(a.classify("p"), "bytes");
+  a.close();
+  unzipOk(w.out);
+});
+
+test("empty description writes a valid archive", () => {
+  const dir = tmpdir();
+  for (const d of [{}, { page_size: 1 }]) {
+    const w = writeDesc(dir, d, `e${JSON.stringify(d).length}.vzip`);
+    assert.equal(w.status, 0, w.stderr);
+    const r = readQueries(w.out, [{ op: "list", prefix: "" }, { op: "get_raw", key: "__vz__/sources" }]);
+    assert.deepEqual(r.results, [{ ok: true, keys: [] }, { ok: true, value: "" }]);
+    unzipOk(w.out);
   }
 });
 
-test("writer output is byte-identical for identical input and uses ZIP64 only when needed", async () => {
-  const dir = tmpDir();
-  // 70000 entries: entry count needs the zip64 end records
-  const entries = [];
-  for (let i = 0; i < 70000; i++) entries.push({ key: `k/${String(i).padStart(6, "0")}`, bytes: "" });
-  for (const pageSize of [null, 4096]) {
-    const dp = path.join(dir, `d${pageSize}.json`);
-    fs.writeFileSync(dp, JSON.stringify({ page_size: pageSize, entries }));
-    const p1 = path.join(dir, `a${pageSize}.vzip`);
-    const p2 = path.join(dir, `b${pageSize}.vzip`);
-    assert.equal(runCli(["write", dp, p1], dir).status, 0);
-    assert.equal(runCli(["write", dp, p2], dir).status, 0);
-    const b = fs.readFileSync(p1);
-    assert.deepEqual(b, fs.readFileSync(p2));
-    const commentLen = pageSize === null ? 22 : 38;
-    const eocd = b.length - 22 - commentLen;
-    assert.equal(b.readUInt16LE(eocd + 10), 0xffff);
-    assert.equal(b.readUInt32LE(eocd - 20), 0x07064b50);
-    assert.ok(unzipTest(p1).ok);
-    validateArchive(b);
-    const a = await Archive.open(p1);
-    assert.equal((await a.list("k/")).length, 70000);
-    assert.deepEqual(await a.get("k/069999"), Buffer.alloc(0));
-    assert.equal(await a.classify("k/070000"), "missing");
-    await a.close();
+test("writer output is deterministic and canonical", () => {
+  const dir = tmpdir();
+  const desc = { sources: [{ data: "" }, { url: "x", size: 0, etag: '""', modified_not_after: -1 }], entries: [{ key: "a", ranges: [{ source: 1 }] }, { key: "b", ranges: [{}, {}] }] };
+  const a = writeDesc(dir, desc, "d1.vzip");
+  const b = writeDesc(dir, desc, "d2.vzip");
+  assert.equal(a.status, 0, a.stderr);
+  assert.ok(fs.readFileSync(a.out).equals(fs.readFileSync(b.out)));
+  const r = readQueries(a.out, [{ op: "get_raw", key: "__vz__/sources" }, { op: "get_raw", key: "a" }, { op: "get_raw", key: "b" }, { op: "get", key: "b" }]);
+  // SourceTable: data "" (emitted, empty), url "x" with size 0, etag "\"\"", mna -1 (10-byte varint).
+  assert.equal(r.results[0].value, "0a021a00" + "0a14" + "0a0178" + "2000" + "2a022222" + "30ffffffffffffffffff01");
+  assert.equal(r.results[1].value, "0801");
+  assert.equal(r.results[2].value, "0a000a00");
+  assert.equal(r.results[3].value, "");
+});
+
+test("ZIP64 end records when there are 0xFFFF or more entries", () => {
+  const dir = tmpdir();
+  const entries = Array.from({ length: 0x10000 }, (_, i) => ({ key: `k${i}`, bytes: "" }));
+  for (const page_size of [null, 4096]) {
+    const w = writeDesc(dir, { page_size, entries }, `z64-${page_size}.vzip`);
+    assert.equal(w.status, 0, w.stderr);
+    const buf = fs.readFileSync(w.out);
+    const eocd = buf.length - (page_size === null ? 44 : 60);
+    assert.equal(buf.readUInt16LE(eocd + 10), 0xffff);
+    assert.equal(buf.readUInt32LE(eocd - 20), 0x07064b50);
+    const r = readQueries(w.out, [{ op: "get", key: "k65535" }, { op: "classify", key: "k12345" }]);
+    assert.deepEqual(r.results, [{ ok: true, value: "" }, { ok: true, kind: "bytes" }]);
+    const a = Archive.open(w.out);
+    assert.equal(a.list("").length, 0x10000);
+    a.close();
+    unzipOk(w.out);
   }
-  // small archive: no zip64 end records
-  const dp = path.join(dir, "small.json");
-  fs.writeFileSync(dp, JSON.stringify({ entries: [{ key: "a", bytes: "00" }] }));
-  const sp = path.join(dir, "small.vzip");
-  assert.equal(runCli(["write", dp, sp], dir).status, 0);
-  const s = fs.readFileSync(sp);
-  assert.notEqual(s.readUInt32LE(s.length - 44 - 20), 0x07064b50);
 });

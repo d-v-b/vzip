@@ -1,33 +1,26 @@
-export type ErrorClass =
-  | "archive"
-  | "entry"
-  | "body"
-  | "payload"
-  | "resolution"
-  | "request";
+export type ErrorClass = "archive" | "entry" | "body" | "payload" | "resolution" | "request";
 
-/** An error of one of the six classes of spec §8.4. */
-export class VzipError extends Error {
-  errorClass: ErrorClass;
-  constructor(errorClass: ErrorClass, message: string) {
+export class VzError extends Error {
+  cls: ErrorClass;
+  constructor(cls: ErrorClass, message: string) {
     super(message);
-    this.errorClass = errorClass;
-    this.name = "VzipError";
+    this.cls = cls;
   }
 }
 
-/** Thrown by the protobuf decoder for a malformed message (§5.1). */
-export class MalformedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "MalformedError";
-  }
-}
+/** Thrown by the protobuf decoder; callers map it to the right error class. */
+export class MalformedError extends Error {}
 
-/** Thrown by the writer when its input must be rejected (§9.1). */
-export class WriterInputError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "WriterInputError";
+/** Thrown by the writer for invalid input. */
+export class InputError extends Error {}
+
+const utf8Fatal = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+/** Decode UTF-8 strictly, keeping a leading BOM. Returns null if invalid. */
+export function decodeUtf8(b: Uint8Array): string | null {
+  try {
+    return utf8Fatal.decode(b);
+  } catch {
+    return null;
   }
 }

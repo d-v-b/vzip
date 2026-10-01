@@ -1,288 +1,245 @@
-// Conformance-harness CLI (HARNESS.md): `read` and `write`.
+// Conformance harness CLI (HARNESS.md): `read` and `write`.
 import * as fs from "node:fs";
-import { VzipError, WriterInputError } from "./errors.ts";
+import { InputError, VzError } from "./errors.ts";
+import { JNum, type JValue, parseJson } from "./json.ts";
 import type { Range, Source } from "./proto.ts";
 import { Archive, type Request } from "./reader.ts";
-import { type WriterEntry, writeArchive } from "./writer.ts";
+import { type EntryInput, type WriteInput, writeArchive } from "./writer.ts";
 
-class InvalidInput extends Error {}
+class UsageError extends Error {}
 
-/** A JSON integer, kept exactly as its source text. */
-class JInt {
-  value: bigint;
-  constructor(v: bigint) {
-    this.value = v;
+function readJsonFile(p: string): JValue {
+  const raw = fs.readFileSync(p);
+  const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(raw);
+  return parseJson(text);
+}
+
+type Obj = { [k: string]: JValue };
+
+function isObj(v: JValue | undefined): v is Obj {
+  return typeof v === "object" && v !== null && !Array.isArray(v) && !(v instanceof JNum);
+}
+
+const hex = (b: Uint8Array) => Buffer.from(b.buffer, b.byteOffset, b.byteLength).toString("hex");
+
+// ---------------- read ----------------
+
+function nonNegInt(v: JValue | undefined, what: string, Err: new (m: string) => Error): bigint {
+  if (!(v instanceof JNum) || !v.isInteger) throw new Err(`${what} must be an integer`);
+  const n = v.toBigInt();
+  if (n < 0n) throw new Err(`${what} must be non-negative`);
+  return n;
+}
+
+interface Query {
+  op: "classify" | "get" | "get_raw" | "list";
+  key: string;
+  req: Request;
+}
+
+function parseQuery(q: JValue): Query {
+  if (!isObj(q)) throw new UsageError("query is not an object");
+  const op = q.op;
+  if (op === "list") {
+    if (typeof q.prefix !== "string") throw new UsageError("list query needs a string prefix");
+    return { op, key: q.prefix, req: { type: "whole" } };
   }
-}
-/** A JSON number that is not an integer literal (e.g. 1.0, 1e3). */
-class JNonInt {}
-
-/** Parse JSON keeping integers exact and distinguishing `1` from `1.0`. */
-export function parseJson(text: string): unknown {
-  return JSON.parse(text, function (_k, v, ctx?: { source?: string }) {
-    if (typeof v === "number") {
-      const src = ctx?.source ?? String(v);
-      if (/^-?(0|[1-9][0-9]*)$/.test(src)) return new JInt(BigInt(src));
-      return new JNonInt();
+  if (op !== "classify" && op !== "get" && op !== "get_raw") throw new UsageError(`unknown op ${JSON.stringify(op)}`);
+  if (typeof q.key !== "string") throw new UsageError("query needs a string key");
+  let req: Request = { type: "whole" };
+  if (op === "get" && q.range !== undefined) {
+    const r = q.range;
+    if (!isObj(r)) throw new UsageError("range must be an object");
+    const forms = ["start", "offset", "suffix"].filter((k) => k in r);
+    const hasEnd = "end" in r;
+    if (forms.length !== 1) throw new UsageError("range must have exactly one form");
+    if (forms[0] === "start") {
+      if (!hasEnd) throw new UsageError("range with start needs end");
+      req = { type: "range", start: nonNegInt(r.start, "start", UsageError), end: nonNegInt(r.end, "end", UsageError) };
+    } else if (hasEnd) {
+      throw new UsageError("range must have exactly one form");
+    } else if (forms[0] === "offset") {
+      req = { type: "offset", start: nonNegInt(r.offset, "offset", UsageError) };
+    } else {
+      req = { type: "suffix", count: nonNegInt(r.suffix, "suffix", UsageError) };
     }
-    return v;
-  });
-}
-
-const bad = (m: string): never => {
-  throw new InvalidInput(m);
-};
-
-function isObj(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v) && !(v instanceof JInt) && !(v instanceof JNonInt);
-}
-
-function has(o: Record<string, unknown>, k: string): boolean {
-  return Object.prototype.hasOwnProperty.call(o, k);
-}
-
-function getInt(o: Record<string, unknown>, k: string, what: string, min = 0n): bigint | undefined {
-  if (!has(o, k)) return undefined;
-  const v = o[k];
-  if (!(v instanceof JInt)) bad(`${what}.${k} must be an integer`);
-  if ((v as JInt).value < min) bad(`${what}.${k} must be >= ${min}`);
-  return (v as JInt).value;
-}
-
-function getBool(o: Record<string, unknown>, k: string, what: string, dflt: boolean): boolean {
-  if (!has(o, k)) return dflt;
-  const v = o[k];
-  if (typeof v !== "boolean") bad(`${what}.${k} must be a boolean`);
-  return v as boolean;
-}
-
-function getStr(o: Record<string, unknown>, k: string, what: string): string | undefined {
-  if (!has(o, k)) return undefined;
-  const v = o[k];
-  if (typeof v !== "string") bad(`${what}.${k} must be a string`);
-  return v as string;
-}
-
-function getHex(o: Record<string, unknown>, k: string, what: string): Uint8Array | undefined {
-  const s = getStr(o, k, what);
-  if (s === undefined) return undefined;
-  if (!/^([0-9a-f]{2})*$/.test(s)) bad(`${what}.${k} must be lowercase hex of even length`);
-  return Buffer.from(s, "hex");
-}
-
-function noNulls(v: unknown, path: string): void {
-  if (v === null) bad(`${path} is null`);
-  if (Array.isArray(v)) v.forEach((x, i) => noNulls(x, `${path}[${i}]`));
-  else if (isObj(v)) for (const [k, x] of Object.entries(v)) noNulls(x, `${path}.${k}`);
-}
-
-function parseDescription(d: unknown): { sources: Source[]; entries: WriterEntry[]; pageSize: number | null; mirror: boolean } {
-  if (!isObj(d)) bad("description must be a JSON object");
-  const top = d as Record<string, unknown>;
-  for (const [k, v] of Object.entries(top)) if (k !== "page_size") noNulls(v, k);
-  let pageSize: number | null = null;
-  if (has(top, "page_size") && top.page_size !== null) {
-    const v = top.page_size;
-    if (!(v instanceof JInt) || v.value < 1n) bad("page_size must be null or an integer >= 1");
-    const n = (v as JInt).value;
-    pageSize = n > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(n);
+  } else if (q.range !== undefined) {
+    throw new UsageError(`${op} does not take a range`);
   }
-  const mirror = getBool(top, "mirror", "description", true);
-  const srcArr = has(top, "sources") ? top.sources : [];
-  const entArr = has(top, "entries") ? top.entries : [];
-  if (!Array.isArray(srcArr)) bad("sources must be an array");
-  if (!Array.isArray(entArr)) bad("entries must be an array");
-
-  const sources: Source[] = (srcArr as unknown[]).map((s, i) => {
-    const what = `sources[${i}]`;
-    if (!isObj(s)) bad(`${what} must be an object`);
-    const o = s as Record<string, unknown>;
-    const kinds = ["url", "key", "data"].filter((k) => has(o, k));
-    if (kinds.length !== 1) bad(`${what} must have exactly one of url, key, data`);
-    const src: Source = { kind: kinds[0] as Source["kind"] };
-    if (src.kind === "url") src.url = getStr(o, "url", what);
-    else if (src.kind === "key") src.key = getStr(o, "key", what);
-    else src.data = getHex(o, "data", what);
-    src.size = getInt(o, "size", what);
-    src.etag = getStr(o, "etag", what);
-    src.modifiedNotAfter = getInt(o, "modified_not_after", what, -(1n << 63n));
-    return src;
-  });
-
-  const entries: WriterEntry[] = (entArr as unknown[]).map((e, i) => {
-    const what = `entries[${i}]`;
-    if (!isObj(e)) bad(`${what} must be an object`);
-    const o = e as Record<string, unknown>;
-    const key = getStr(o, "key", what);
-    if (key === undefined) bad(`${what} has no key`);
-    if (has(o, "bytes") === has(o, "ranges")) bad(`${what} must have exactly one of bytes, ranges`);
-    const compress = getBool(o, "compress", what, false);
-    const pinned = getBool(o, "pinned", what, false);
-    if (has(o, "bytes")) {
-      if (pinned && pageSize === null) bad(`${what} is pinned but page_size is null`);
-      return { key: key!, bytes: getHex(o, "bytes", what)!, compress, pinned };
-    }
-    if (compress) bad(`${what}: compress is only allowed on bytes entries`);
-    if (pinned) bad(`${what}: only bytes entries may be pinned`);
-    const ra = o.ranges;
-    if (!Array.isArray(ra)) bad(`${what}.ranges must be an array`);
-    const ranges: Range[] = (ra as unknown[]).map((r, j) => {
-      const rw = `${what}.ranges[${j}]`;
-      if (!isObj(r)) bad(`${rw} must be an object`);
-      const ro = r as Record<string, unknown>;
-      const isLit = has(ro, "data");
-      const isSrc = has(ro, "source") || has(ro, "offset") || has(ro, "length");
-      if (isLit && isSrc) bad(`${rw} mixes a literal and a source range`);
-      if (isLit) return { source: 0, offset: 0n, length: 0n, data: getHex(ro, "data", rw) };
-      const source = getInt(ro, "source", rw) ?? 0n;
-      return {
-        source: source > 0xffffffffn ? 0xffffffff + 1 : Number(source),
-        offset: getInt(ro, "offset", rw) ?? 0n,
-        length: getInt(ro, "length", rw) ?? 0n,
-      };
-    });
-    return { key: key!, ranges };
-  });
-  return { sources, entries, pageSize, mirror };
+  return { op, key: q.key, req };
 }
 
-function cmdWrite(descPath: string, outPath: string): number {
-  let desc;
-  try {
-    desc = parseDescription(parseJson(fs.readFileSync(descPath, "utf8")));
-  } catch (e) {
-    if (e instanceof InvalidInput || e instanceof SyntaxError) {
-      process.stderr.write(`invalid description: ${e.message}\n`);
-      return 2;
-    }
-    throw e;
-  }
-  let out: Buffer;
-  try {
-    out = writeArchive(desc.sources, desc.entries, { pageSize: desc.pageSize, mirror: desc.mirror });
-  } catch (e) {
-    if (e instanceof WriterInputError) {
-      process.stderr.write(`invalid description: ${e.message}\n`);
-      return 2;
-    }
-    throw e;
-  }
-  fs.writeFileSync(outPath, out, { flag: "wx" });
-  return 0;
+function errResult(e: unknown): object {
+  if (e instanceof VzError) return { ok: false, class: e.cls, error: e.message };
+  throw e;
 }
 
-type Query =
-  | { op: "classify"; key: string }
-  | { op: "get"; key: string; req: Request }
-  | { op: "get_raw"; key: string }
-  | { op: "list"; prefix: string };
-
-function parseQueries(v: unknown): Query[] {
-  if (!Array.isArray(v)) bad("queries must be a JSON array");
-  return (v as unknown[]).map((q, i) => {
-    const what = `queries[${i}]`;
-    if (!isObj(q)) bad(`${what} must be an object`);
-    const o = q as Record<string, unknown>;
-    const op = o.op;
-    if (op === "list") {
-      const prefix = getStr(o, "prefix", what);
-      if (prefix === undefined) bad(`${what} has no prefix`);
-      return { op, prefix: prefix! };
-    }
-    if (op !== "classify" && op !== "get" && op !== "get_raw") bad(`${what} has unknown op`);
-    const key = getStr(o, "key", what);
-    if (key === undefined) bad(`${what} has no key`);
-    if (op === "get") {
-      let req: Request = { type: "whole" };
-      if (has(o, "range")) {
-        const r = o.range;
-        if (!isObj(r)) bad(`${what}.range must be an object`);
-        const ro = r as Record<string, unknown>;
-        const forms = [has(ro, "start") || has(ro, "end"), has(ro, "offset"), has(ro, "suffix")].filter(Boolean).length;
-        if (forms !== 1) bad(`${what}.range must have exactly one form`);
-        if (has(ro, "offset")) req = { type: "offset", start: getInt(ro, "offset", what)! };
-        else if (has(ro, "suffix")) req = { type: "suffix", count: getInt(ro, "suffix", what)! };
-        else {
-          const start = getInt(ro, "start", what);
-          const end = getInt(ro, "end", what);
-          if (start === undefined || end === undefined) bad(`${what}.range needs start and end`);
-          req = { type: "range", start: start!, end: end! };
-        }
-      }
-      return { op, key: key!, req };
-    }
-    if (op === "get_raw" && has(o, "range")) bad(`${what}: get_raw takes no range`);
-    return { op, key: key! } as Query;
-  });
-}
-
-function errorResult(e: unknown): Record<string, unknown> {
-  if (e instanceof VzipError) return { ok: false, class: e.errorClass, error: e.message };
-  return { ok: false, class: "internal", error: String((e as Error)?.stack ?? e) };
-}
-
-async function cmdRead(archivePath: string, queriesPath: string): Promise<number> {
-  let queries: Query[];
-  try {
-    queries = parseQueries(parseJson(fs.readFileSync(queriesPath, "utf8")));
-  } catch (e) {
-    process.stderr.write(`invalid queries file: ${(e as Error).message}\n`);
-    return 2;
-  }
+async function cmdRead(archivePath: string, queriesPath: string): Promise<void> {
+  const qv = readJsonFile(queriesPath);
+  if (!Array.isArray(qv)) throw new UsageError("queries file must hold a JSON array");
+  const queries = qv.map(parseQuery);
   let archive: Archive;
   try {
-    archive = await Archive.open(archivePath);
+    archive = Archive.open(archivePath);
   } catch (e) {
-    if (e instanceof VzipError) {
-      process.stdout.write(JSON.stringify({ open: { ok: false, class: "archive", error: e.message }, results: [] }) + "\n");
-      return 0;
-    }
-    throw e;
+    const msg = e instanceof Error ? e.message : String(e);
+    process.stdout.write(JSON.stringify({ open: { ok: false, class: "archive", error: msg }, results: [] }) + "\n");
+    return;
   }
-  const results: unknown[] = [];
+  const results: object[] = [];
   for (const q of queries) {
     try {
       switch (q.op) {
         case "classify":
-          results.push({ ok: true, kind: await archive.classify(q.key) });
+          results.push({ ok: true, kind: archive.classify(q.key) });
           break;
         case "get": {
           const v = await archive.get(q.key, q.req);
-          results.push({ ok: true, value: v === null ? null : v.toString("hex") });
+          results.push({ ok: true, value: v === null ? null : hex(v) });
           break;
         }
         case "get_raw": {
           const v = await archive.raw(q.key);
-          results.push({ ok: true, value: v === null ? null : v.toString("hex") });
+          results.push({ ok: true, value: v === null ? null : hex(v) });
           break;
         }
         case "list":
-          results.push({ ok: true, keys: await archive.list(q.prefix) });
+          results.push({ ok: true, keys: archive.list(q.key) });
           break;
       }
     } catch (e) {
-      results.push(errorResult(e));
+      results.push(errResult(e));
     }
   }
-  await archive.close();
+  archive.close();
   process.stdout.write(JSON.stringify({ open: { ok: true }, results }) + "\n");
-  return 0;
 }
+
+// ---------------- write ----------------
+
+function hexBytes(v: JValue | undefined, what: string): Uint8Array {
+  if (typeof v !== "string" || !/^(?:[0-9a-f]{2})*$/.test(v)) throw new InputError(`${what} must be a lowercase even-length hex string`);
+  return Buffer.from(v, "hex");
+}
+
+function bool(o: Obj, k: string, dflt: boolean): boolean {
+  if (!(k in o)) return dflt;
+  const v = o[k];
+  if (typeof v !== "boolean") throw new InputError(`${k} must be a boolean`);
+  return v;
+}
+
+function intOf(v: JValue, what: string): bigint {
+  if (!(v instanceof JNum) || !v.isInteger) throw new InputError(`${what} must be an integer`);
+  return v.toBigInt();
+}
+
+function parseDescription(d: JValue): WriteInput {
+  if (!isObj(d)) throw new InputError("description must be an object");
+  let pageSize: number | null = null;
+  if ("page_size" in d && d.page_size !== null) {
+    const n = intOf(d.page_size, "page_size");
+    if (n < 1n) throw new InputError("page_size must be at least 1");
+    pageSize = n > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(n);
+  }
+  const mirror = bool(d, "mirror", true);
+  const sources: Source[] = [];
+  if ("sources" in d) {
+    if (!Array.isArray(d.sources)) throw new InputError("sources must be an array");
+    d.sources.forEach((s, i) => {
+      if (!isObj(s)) throw new InputError(`source ${i} must be an object`);
+      const kinds = ["url", "key", "data"].filter((k) => k in s);
+      if (kinds.length !== 1) throw new InputError(`source ${i} must have exactly one of url, key, data`);
+      const src: Source = { kind: null, size: null, etag: null, modifiedNotAfter: null };
+      const kk = kinds[0];
+      if (kk === "data") src.kind = { type: "data", value: hexBytes(s.data, `source ${i} data`) };
+      else {
+        const v = s[kk];
+        if (typeof v !== "string") throw new InputError(`source ${i} ${kk} must be a string`);
+        src.kind = kk === "url" ? { type: "url", value: v } : { type: "key", value: v };
+      }
+      if ("size" in s) {
+        src.size = intOf(s.size, `source ${i} size`);
+        if (src.size < 0n) throw new InputError(`source ${i} size must be non-negative`);
+      }
+      if ("etag" in s) {
+        if (typeof s.etag !== "string") throw new InputError(`source ${i} etag must be a string`);
+        src.etag = s.etag;
+      }
+      if ("modified_not_after" in s) src.modifiedNotAfter = intOf(s.modified_not_after, `source ${i} modified_not_after`);
+      sources.push(src);
+    });
+  }
+  const entries: EntryInput[] = [];
+  if ("entries" in d) {
+    if (!Array.isArray(d.entries)) throw new InputError("entries must be an array");
+    d.entries.forEach((e, i) => {
+      if (!isObj(e)) throw new InputError(`entry ${i} must be an object`);
+      if (typeof e.key !== "string") throw new InputError(`entry ${i} needs a string key`);
+      const hasB = "bytes" in e;
+      const hasR = "ranges" in e;
+      if (hasB === hasR) throw new InputError(`entry ${i} must have exactly one of bytes and ranges`);
+      const compress = bool(e, "compress", false);
+      const pinned = bool(e, "pinned", false);
+      if (hasB) {
+        entries.push({ key: e.key, bytes: hexBytes(e.bytes, `entry ${i} bytes`), compress, pinned });
+        return;
+      }
+      if (compress) throw new InputError(`entry ${i}: compress is only allowed on bytes entries`);
+      if (pinned) throw new InputError(`entry ${i}: only bytes entries may be pinned`);
+      if (!Array.isArray(e.ranges)) throw new InputError(`entry ${i} ranges must be an array`);
+      const ranges: Range[] = e.ranges.map((r, j) => {
+        if (!isObj(r)) throw new InputError(`entry ${i} range ${j} must be an object`);
+        const lit = "data" in r;
+        const srcFields = ["source", "offset", "length"].filter((k) => k in r);
+        if (lit && srcFields.length > 0) throw new InputError(`entry ${i} range ${j} mixes literal and source fields`);
+        if (lit) return { source: 0, offset: 0n, length: 0n, data: hexBytes(r.data, `entry ${i} range ${j} data`) };
+        const get = (k: string) => {
+          if (!(k in r)) return 0n;
+          const n = intOf(r[k], `entry ${i} range ${j} ${k}`);
+          if (n < 0n) throw new InputError(`entry ${i} range ${j} ${k} must be non-negative`);
+          return n;
+        };
+        const source = get("source");
+        if (source > 0xffffffffn) throw new InputError(`entry ${i} range ${j} source exceeds uint32`);
+        return { source: Number(source), offset: get("offset"), length: get("length"), data: null };
+      });
+      entries.push({ key: e.key, ranges });
+    });
+  }
+  return { pageSize, mirror, sources, entries };
+}
+
+function cmdWrite(descPath: string, outPath: string): void {
+  let input: WriteInput;
+  try {
+    input = parseDescription(readJsonFile(descPath));
+  } catch (e) {
+    if (e instanceof SyntaxError) throw new InputError(e.message);
+    throw e;
+  }
+  writeArchive(input, outPath);
+}
+
+// ---------------- main ----------------
 
 async function main(argv: string[]): Promise<number> {
   const [cmd, a, b] = argv;
-  if (cmd === "read" && a !== undefined && b !== undefined && argv.length === 3) return cmdRead(a, b);
-  if (cmd === "write" && a !== undefined && b !== undefined && argv.length === 3) return cmdWrite(a, b);
-  process.stderr.write("usage: vzip read <archive> <queries.json>\n       vzip write <description.json> <out>\n");
-  return 2;
+  try {
+    if (cmd === "read" && argv.length === 3) {
+      await cmdRead(a, b);
+      return 0;
+    }
+    if (cmd === "write" && argv.length === 3) {
+      cmdWrite(a, b);
+      return 0;
+    }
+    process.stderr.write("usage: vzip read <archive> <queries.json> | vzip write <description.json> <out.vzip>\n");
+    return 2;
+  } catch (e) {
+    process.stderr.write(`vzip: ${e instanceof Error ? e.message : String(e)}\n`);
+    return e instanceof InputError ? 1 : 2;
+  }
 }
 
-main(process.argv.slice(2)).then(
-  (code) => {
-    process.exitCode = code;
-  },
-  (e) => {
-    process.stderr.write(`vzip: internal error: ${(e as Error)?.stack ?? e}\n`);
-    process.exitCode = 1;
-  },
-);
+process.exitCode = await main(process.argv.slice(2));

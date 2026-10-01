@@ -1,132 +1,70 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
-import * as path from "node:path";
-import { spawnSync } from "node:child_process";
-import { CLI, tmpDir, unzipTest } from "./helpers.ts";
-import { Archive } from "../src/reader.ts";
-import { validateArchive } from "./validate.ts";
+import { tmpdir, writeDesc } from "./helpers.ts";
 
-const dir = tmpDir();
+const dir = tmpdir();
 let n = 0;
 
-function write(descText: string): { status: number | null; stderr: string; out: string } {
-  const dp = path.join(dir, `d${n}.json`);
-  const out = path.join(dir, `o${n}.vzip`);
-  n++;
-  fs.writeFileSync(dp, descText);
-  const r = spawnSync(CLI, ["write", dp, out], { encoding: "utf8" });
-  return { status: r.status, stderr: r.stderr, out };
-}
-
-test("writer accepts boundary inputs", async () => {
-  // payload of exactly 65519 bytes: literal of 65515 bytes = 1 tag + 3 length + 65515
-  const lit = "ab".repeat(65515);
-  const r = write(JSON.stringify({
-    page_size: 1,
-    sources: [{ url: "x.bin", size: 0, etag: '"!~"', modified_not_after: 0 }, { data: "" }, { key: "__vz__/h" }],
-    entries: [
-      { key: "big", ranges: [{ data: lit }] },
-      { key: "__vz__/h", bytes: "", pinned: true, compress: true },
-      { key: "e", ranges: [{}] },
-      { key: "f", ranges: [{ source: 2, length: 0 }], compress: false, pinned: false },
-    ],
-  }));
-  assert.equal(r.status, 0, r.stderr);
-  assert.ok(unzipTest(r.out).ok);
-  validateArchive(fs.readFileSync(r.out));
-  const a = await Archive.open(r.out);
-  assert.equal((await a.get("big"))!.length, 65515);
-  assert.deepEqual(await a.get("e"), Buffer.alloc(0));
-  assert.deepEqual(a.sources[0], { kind: "url", url: "x.bin", size: 0n, etag: '"!~"', modifiedNotAfter: 0n });
-  await a.close();
-});
-
-const rejected: [string, unknown][] = [
-  ["empty key", { entries: [{ key: "", bytes: "" }] }],
-  ["duplicate key", { entries: [{ key: "a", bytes: "" }, { key: "a", bytes: "00" }] }],
-  ["key __vz__/sources", { entries: [{ key: "__vz__/sources", bytes: "" }] }],
-  ["key __vz__/index", { entries: [{ key: "__vz__/index", bytes: "" }] }],
-  ["source index out of range", { sources: [{ data: "00" }], entries: [{ key: "a", ranges: [{ source: 1, length: 1 }] }] }],
-  ["source range with no sources", { entries: [{ key: "a", ranges: [{}] }] }],
-  ["empty url", { sources: [{ url: "" }] }],
-  ["url not a URI-reference", { sources: [{ url: "a b.bin" }] }],
-  ["url with non-ASCII", { sources: [{ url: "é.bin" }] }],
-  ["key source absent", { sources: [{ key: "nope" }] }],
-  ["key source names a reference entry", { sources: [{ key: "r" }, { data: "00" }], entries: [{ key: "r", ranges: [{ source: 1, length: 1 }] }] }],
-  ["key source names a format entry", { sources: [{ key: "__vz__/sources" }] }],
-  ["pin on key source", { sources: [{ key: "a", size: 1 }], entries: [{ key: "a", bytes: "" }] }],
-  ["pin on data source", { sources: [{ data: "", etag: '"x"' }] }],
-  ["weak etag", { sources: [{ url: "x", etag: 'W/"x"' }] }],
-  ["etag without quotes", { sources: [{ url: "x", etag: "x" }] }],
-  ["payload over 65519 bytes", { entries: [{ key: "a", ranges: [{ data: "ab".repeat(65516) }] }] }],
-  ["pinned reference entry", { page_size: 1, sources: [{ data: "00" }], entries: [{ key: "a", ranges: [{ length: 1 }], pinned: true }] }],
-  ["pinned without page index", { entries: [{ key: "a", bytes: "", pinned: true }] }],
-  ["compress on reference entry", { entries: [{ key: "a", ranges: [], compress: true }] }],
-  ["page_size 0", { page_size: 0 }],
-  ["page_size string", { page_size: "1" }],
-  ["mirror not boolean", { mirror: 1 }],
-  ["compress not boolean", { entries: [{ key: "a", bytes: "", compress: "yes" }] }],
-  ["uppercase hex", { entries: [{ key: "a", bytes: "AB" }] }],
-  ["odd-length hex", { entries: [{ key: "a", bytes: "abc" }] }],
-  ["null sources", { sources: null }],
-  ["null member of entry", { entries: [{ key: "a", bytes: "", compress: null }] }],
-  ["null range member", { sources: [{ data: "00" }], entries: [{ key: "a", ranges: [{ source: 0, offset: null }] }] }],
-  ["both bytes and ranges", { entries: [{ key: "a", bytes: "", ranges: [] }] }],
-  ["neither bytes nor ranges", { entries: [{ key: "a" }] }],
-  ["entry without key", { entries: [{ bytes: "" }] }],
-  ["source with two kinds", { sources: [{ data: "", url: "x" }] }],
-  ["source with no kind", { sources: [{}] }],
-  ["range mixing literal and source", { sources: [{ data: "00" }], entries: [{ key: "a", ranges: [{ data: "00", source: 0 }] }] }],
-  ["negative offset", { sources: [{ data: "00" }], entries: [{ key: "a", ranges: [{ offset: -1 }] }] }],
-  ["description not an object", []],
-];
-for (const [name, desc] of rejected) {
+function rejects(name: string, desc: unknown): void {
   test(`writer rejects: ${name}`, () => {
-    const r = write(JSON.stringify(desc));
-    assert.notEqual(r.status, 0);
-    assert.ok(r.stderr.length > 0);
-    assert.equal(fs.existsSync(r.out), false);
+    const w = writeDesc(dir, desc, `bad${n++}.vzip`);
+    assert.notEqual(w.status, 0, "expected non-zero exit");
+    assert.ok(w.stderr.length > 0, "expected a message on stderr");
+    assert.equal(fs.existsSync(w.out), false, "no file may be created");
   });
 }
 
-const rejectedText: [string, string][] = [
-  ["invalid UTF-8 key (lone surrogate)", '{"entries":[{"key":"\\ud800","bytes":""}]}'],
-  ["non-integer number 1.0", '{"page_size":1.0}'],
-  ["exponent number", '{"sources":[{"data":"00"}],"entries":[{"key":"a","ranges":[{"length":1e0}]}]}'],
-  ["not JSON", "{"],
-];
-for (const [name, text] of rejectedText) {
-  test(`writer rejects: ${name}`, () => {
-    const r = write(text);
-    assert.notEqual(r.status, 0);
-    assert.equal(fs.existsSync(r.out), false);
-  });
-}
+const big = "ab".repeat(70000);
 
-const badQueries: [string, unknown][] = [
-  ["unknown op", [{ op: "frob", key: "a" }]],
-  ["missing key", [{ op: "get" }]],
-  ["range with several forms", [{ op: "get", key: "a", range: { offset: 1, suffix: 1 } }]],
-  ["not an array", { op: "get", key: "a" }],
-];
-for (const [name, q] of badQueries) {
-  test(`read rejects queries file: ${name}`, () => {
-    const okDesc = write("{}");
-    const qp = path.join(dir, `q${n++}.json`);
-    fs.writeFileSync(qp, JSON.stringify(q));
-    const r = spawnSync(CLI, ["read", okDesc.out, qp], { encoding: "utf8" });
-    assert.notEqual(r.status, 0);
-  });
-}
+// §9.1
+rejects("empty key", { entries: [{ key: "", bytes: "" }] });
+rejects("key with lone surrogate (not valid UTF-8)", '{"entries":[{"key":"a\\ud800","bytes":""}]}');
+rejects("duplicate key", { entries: [{ key: "a", bytes: "" }, { key: "a", bytes: "00" }] });
+rejects("format entry key __vz__/sources", { entries: [{ key: "__vz__/sources", bytes: "" }] });
+rejects("format entry key __vz__/index", { entries: [{ key: "__vz__/index", bytes: "" }] });
+rejects("source index out of range", { sources: [{ data: "00" }], entries: [{ key: "a", ranges: [{ source: 1, length: 1 }] }] });
+rejects("source range with no sources ({} range)", { entries: [{ key: "a", ranges: [{}] }] });
+rejects("empty url", { sources: [{ url: "" }] });
+rejects("url not a URI-reference (space)", { sources: [{ url: "a b.bin" }] });
+rejects("url not a URI-reference (non-ASCII)", { sources: [{ url: "é.bin" }] });
+rejects("url not a URI-reference (colon in first segment)", { sources: [{ url: "1a:b" }] });
+rejects("url not a URI-reference (bad percent)", { sources: [{ url: "a%2" }] });
+rejects("key source names absent key", { sources: [{ key: "nope" }] });
+rejects("key source names a reference entry", { sources: [{ key: "r" }, { data: "00" }], entries: [{ key: "r", ranges: [{ source: 1, length: 1 }] }] });
+rejects("key source names a format entry", { sources: [{ key: "__vz__/sources" }] });
+rejects("pin on key source", { sources: [{ key: "a", size: 1 }], entries: [{ key: "a", bytes: "00" }] });
+rejects("pin on data source", { sources: [{ data: "00", etag: '"x"' }] });
+rejects("weak etag", { sources: [{ url: "a", etag: 'W/"x"' }] });
+rejects("etag without quotes", { sources: [{ url: "a", etag: "x" }] });
+rejects("etag with space", { sources: [{ url: "a", etag: '"a b"' }] });
+rejects("reference payload over 65519 bytes", { entries: [{ key: "a", ranges: [{ data: big }] }] });
+rejects("key longer than 65535 bytes", { entries: [{ key: "k".repeat(65536), bytes: "" }] });
+rejects("pinned reference entry", { page_size: 10, sources: [{ data: "00" }], entries: [{ key: "a", ranges: [{ source: 0, length: 1 }], pinned: true }] });
+rejects("pinned without page index", { entries: [{ key: "a", bytes: "", pinned: true }] });
 
-test("read reports an archive error as JSON with exit status 0", () => {
-  const qp = path.join(dir, `q${n++}.json`);
-  fs.writeFileSync(qp, JSON.stringify([{ op: "list", prefix: "" }]));
-  const r = spawnSync(CLI, ["read", path.join(dir, "does-not-exist.vzip"), qp], { encoding: "utf8" });
-  assert.equal(r.status, 0);
-  const j = JSON.parse(r.stdout);
-  assert.equal(j.open.ok, false);
-  assert.equal(j.open.class, "archive");
-  assert.deepEqual(j.results, []);
+// HARNESS.md rules
+rejects("compress on reference entry", { sources: [{ data: "00" }], entries: [{ key: "a", ranges: [{ length: 1 }], compress: true }] });
+rejects("range mixing literal and source fields", { sources: [{ data: "00" }], entries: [{ key: "a", ranges: [{ data: "00", source: 0 }] }] });
+rejects("entry with both bytes and ranges", { entries: [{ key: "a", bytes: "", ranges: [] }] });
+rejects("entry with neither bytes nor ranges", { entries: [{ key: "a" }] });
+rejects("source with two kinds", { sources: [{ url: "a", data: "00" }] });
+rejects("source with no kind", { sources: [{}] });
+rejects("page_size 0", { page_size: 0 });
+rejects("page_size not an integer", { page_size: 1.5 });
+rejects("page_size 1.0", '{"page_size": 1.0}');
+rejects("offset 1.0", '{"sources":[{"data":"00"}],"entries":[{"key":"a","ranges":[{"offset":1.0}]}]}');
+rejects("uppercase hex", { entries: [{ key: "a", bytes: "AB" }] });
+rejects("odd-length hex", { entries: [{ key: "a", bytes: "abc" }] });
+rejects("compress not boolean", { entries: [{ key: "a", bytes: "", compress: 1 }] });
+rejects("mirror null", { mirror: null });
+rejects("sources null", { sources: null });
+rejects("compress null", { entries: [{ key: "a", bytes: "", compress: null }] });
+rejects("negative offset", { sources: [{ data: "00" }], entries: [{ key: "a", ranges: [{ offset: -1 }] }] });
+rejects("negative size pin", { sources: [{ url: "a", size: -1 }] });
+rejects("invalid JSON", "{");
+
+test("writer accepts unknown members, null unknowns, compress:false on references", () => {
+  const w = writeDesc(dir, { extra: null, sources: [{ data: "00", foo: 1 }], entries: [{ key: "a", ranges: [{ length: 1 }], compress: false, x: null }] }, "ok.vzip");
+  assert.equal(w.status, 0, w.stderr);
 });

@@ -32,7 +32,9 @@ def _utf8_key(k: str) -> bytes:
 
 
 class Model:
-    def __init__(self, desc: dict, archive_path: Path, index_body: bytes | None = None):
+    def __init__(self, desc: dict, archive_path: Path, index_body: bytes | None = None,
+                 http: tuple[str, Path] | None = None):
+        self.http = http  # (server base URL, directory it serves)
         self.desc = desc
         # spec §6: absolute, lexically normalised, symlinks not resolved, and
         # every byte other than unreserved / sub-delims / ":" "@" "/" percent-encoded
@@ -62,6 +64,8 @@ class Model:
             raise ModelError("not a URI reference")
         url = v if _SCHEME.match(v) else urljoin(self.base, v)
         p = urlparse(url)
+        if p.scheme == "http" and self.http and url.startswith(self.http[0]):
+            return self._http_bytes(url, src)
         if p.scheme != "file":
             raise ModelError("unsupported scheme")
         has_query = "?" in v.split("#")[0]
@@ -81,6 +85,35 @@ class Model:
         if "modified_not_after" in src and math.floor(st.st_mtime) > src["modified_not_after"]:
             raise ModelError("modified pin")
         return path.read_bytes()
+
+    def _http_bytes(self, url: str, src: dict) -> bytes:
+        """What a §6.2 reader gets from conformance/http_server.py for this source."""
+        from http_server import QUIRKS, etag_for
+
+        rel = unquote(url[len(self.http[0]):].split("?")[0])
+        quirk, _, rest = rel.partition("/")
+        if quirk not in QUIRKS:
+            quirk, rest = None, rel
+        if quirk == "redirect":  # readers follow up to 5 redirects (spec §6.2)
+            n, _, rest = rest.partition("/")
+            if int(n) > 5:
+                raise ModelError("too many redirects")
+            quirk = None
+        path = self.http[1] / rest
+        if not path.is_file():
+            raise ModelError("404")
+        data = path.read_bytes()
+        if quirk == "gzip":
+            raise ModelError("content-encoding")
+        if quirk == "noetag" and ("etag" in src or "modified_not_after" in src):
+            raise ModelError("pin uncheckable: no ETag / Last-Modified")
+        if "etag" in src and src["etag"] != etag_for(data):
+            raise ModelError("412")
+        if "modified_not_after" in src and int(path.stat().st_mtime) > src["modified_not_after"]:
+            raise ModelError("412")
+        if "size" in src and (quirk == "nototal" or src["size"] != len(data)):
+            raise ModelError("size pin")
+        return data
 
     def _parts(self, ranges: list[dict]):
         """[(size, bytes or None, hard_error, source_len)] per range."""

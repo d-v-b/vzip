@@ -1,130 +1,11 @@
-//! Hand-written protobuf wire format encoding/decoding for the vzip schema
-//! (SPEC §5, Appendix A).
+//! Hand-written protobuf (proto3) encoding and decoding for the vzip schema
+//! (spec §5, Appendix A).
 
-pub type PResult<T> = Result<T, String>;
+pub type DecodeResult<T> = Result<T, String>;
 
-#[derive(Debug, Clone)]
-pub enum Wire<'a> {
-    Varint(u64),
-    I64,
-    Len(&'a [u8]),
-    I32,
-}
-
-fn read_varint(buf: &[u8], pos: &mut usize) -> PResult<u64> {
-    let mut v: u64 = 0;
-    for i in 0..10 {
-        let b = *buf.get(*pos).ok_or("truncated varint")?;
-        *pos += 1;
-        if i == 9 {
-            if b & 0x80 != 0 {
-                return Err("varint longer than 10 bytes".into());
-            }
-            if b > 1 {
-                return Err("varint exceeds 2^64-1".into());
-            }
-        }
-        v |= ((b & 0x7f) as u64) << (7 * i);
-        if b & 0x80 == 0 {
-            return Ok(v);
-        }
-    }
-    unreachable!()
-}
-
-/// Parse a message into its (field number, value) list, checking the
-/// message-independent rules of §5.1.
-pub fn parse_fields(buf: &[u8]) -> PResult<Vec<(u32, Wire<'_>)>> {
-    let mut out = Vec::new();
-    let mut pos = 0usize;
-    while pos < buf.len() {
-        let tag = read_varint(buf, &mut pos)?;
-        let field = tag >> 3;
-        let wt = tag & 7;
-        if field == 0 || field > (1 << 29) - 1 {
-            return Err(format!("invalid field number {field}"));
-        }
-        let field = field as u32;
-        let v = match wt {
-            0 => Wire::Varint(read_varint(buf, &mut pos)?),
-            1 => {
-                if buf.len() - pos < 8 {
-                    return Err("truncated I64".into());
-                }
-                pos += 8;
-                Wire::I64
-            }
-            2 => {
-                let len = read_varint(buf, &mut pos)?;
-                if len > (buf.len() - pos) as u64 {
-                    return Err("LEN field extends past end of message".into());
-                }
-                let s = &buf[pos..pos + len as usize];
-                pos += len as usize;
-                Wire::Len(s)
-            }
-            5 => {
-                if buf.len() - pos < 4 {
-                    return Err("truncated I32".into());
-                }
-                pos += 4;
-                Wire::I32
-            }
-            _ => return Err(format!("invalid wire type {wt}")),
-        };
-        out.push((field, v));
-    }
-    Ok(out)
-}
-
-fn want_varint(f: u32, w: &Wire) -> PResult<u64> {
-    match w {
-        Wire::Varint(v) => Ok(*v),
-        _ => Err(format!("field {f}: wrong wire type (expected VARINT)")),
-    }
-}
-fn want_u32(f: u32, w: &Wire) -> PResult<u32> {
-    let v = want_varint(f, w)?;
-    u32::try_from(v).map_err(|_| format!("field {f}: uint32 overflow"))
-}
-fn want_len<'a>(f: u32, w: &Wire<'a>) -> PResult<&'a [u8]> {
-    match w {
-        Wire::Len(s) => Ok(s),
-        _ => Err(format!("field {f}: wrong wire type (expected LEN)")),
-    }
-}
-fn want_str(f: u32, w: &Wire) -> PResult<String> {
-    let b = want_len(f, w)?;
-    String::from_utf8(b.to_vec()).map_err(|_| format!("field {f}: string is not valid UTF-8"))
-}
-
-// ---------------------------------------------------------------- encoding
-
-pub fn put_varint(out: &mut Vec<u8>, mut v: u64) {
-    while v >= 0x80 {
-        out.push((v as u8) | 0x80);
-        v >>= 7;
-    }
-    out.push(v as u8);
-}
-fn put_tag(out: &mut Vec<u8>, field: u32, wt: u8) {
-    put_varint(out, ((field as u64) << 3) | wt as u64);
-}
-fn put_uint(out: &mut Vec<u8>, field: u32, v: u64, always: bool) {
-    if v != 0 || always {
-        put_tag(out, field, 0);
-        put_varint(out, v);
-    }
-}
-fn put_bytes(out: &mut Vec<u8>, field: u32, v: &[u8], always: bool) {
-    if !v.is_empty() || always {
-        put_tag(out, field, 2);
-        put_varint(out, v.len() as u64);
-        out.extend_from_slice(v);
-    }
-}
-
-// ---------------------------------------------------------------- messages
+// ---------------------------------------------------------------------------
+// Messages
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Range {
@@ -135,74 +16,18 @@ pub struct Range {
 }
 
 impl Range {
+    /// Size of the described byte sequence (§5.2).
     pub fn size(&self) -> u64 {
         match &self.data {
             Some(d) => d.len() as u64,
             None => self.length,
         }
     }
-    /// Decode and check against the number of sources (§5.2).
-    pub fn decode(buf: &[u8], nsources: usize) -> PResult<Range> {
-        let mut r = Range::default();
-        for (f, w) in parse_fields(buf)? {
-            match f {
-                1 => r.source = want_u32(f, &w)?,
-                3 => r.offset = want_varint(f, &w)?,
-                4 => r.length = want_varint(f, &w)?,
-                5 => r.data = Some(want_len(f, &w)?.to_vec()),
-                _ => {}
-            }
-        }
-        if r.data.is_some() {
-            if r.source != 0 || r.offset != 0 || r.length != 0 {
-                return Err("literal range with non-zero source, offset or length".into());
-            }
-        } else {
-            if (r.source as usize) >= nsources {
-                return Err(format!(
-                    "source index {} out of bounds ({} sources)",
-                    r.source, nsources
-                ));
-            }
-            if r.offset.checked_add(r.length).is_none() {
-                return Err("offset + length exceeds 2^64-1".into());
-            }
-        }
-        Ok(r)
-    }
-    pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        put_uint(&mut out, 1, self.source as u64, false);
-        put_uint(&mut out, 3, self.offset, false);
-        put_uint(&mut out, 4, self.length, false);
-        if let Some(d) = &self.data {
-            put_bytes(&mut out, 5, d, true);
-        }
-        out
-    }
 }
 
-pub fn decode_concat(buf: &[u8], nsources: usize) -> PResult<Vec<Range>> {
-    let mut parts = Vec::new();
-    let mut total: u64 = 0;
-    for (f, w) in parse_fields(buf)? {
-        if f == 1 {
-            let r = Range::decode(want_len(f, &w)?, nsources)?;
-            total = total
-                .checked_add(r.size())
-                .ok_or("concat size exceeds 2^64-1")?;
-            parts.push(r);
-        }
-    }
-    Ok(parts)
-}
-
-pub fn encode_concat(parts: &[Range]) -> Vec<u8> {
-    let mut out = Vec::new();
-    for p in parts {
-        put_bytes(&mut out, 1, &p.encode(), true);
-    }
-    out
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Concat {
+    pub parts: Vec<Range>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,97 +37,17 @@ pub enum SourceKind {
     Data(Vec<u8>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Source {
-    pub kind: SourceKind,
+    pub kind: Option<SourceKind>,
     pub size: Option<u64>,
     pub etag: Option<String>,
     pub modified_not_after: Option<i64>,
 }
 
-impl Source {
-    pub fn has_pins(&self) -> bool {
-        self.size.is_some() || self.etag.is_some() || self.modified_not_after.is_some()
-    }
-    pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        match &self.kind {
-            SourceKind::Url(u) => put_bytes(&mut out, 1, u.as_bytes(), true),
-            SourceKind::Key(k) => put_bytes(&mut out, 2, k.as_bytes(), true),
-            SourceKind::Data(d) => put_bytes(&mut out, 3, d, true),
-        }
-        if let Some(s) = self.size {
-            put_uint(&mut out, 4, s, true);
-        }
-        if let Some(e) = &self.etag {
-            put_bytes(&mut out, 5, e.as_bytes(), true);
-        }
-        if let Some(m) = self.modified_not_after {
-            put_uint(&mut out, 6, m as u64, true);
-        }
-        out
-    }
-}
-
-/// `DQUOTE *etagc DQUOTE`, etagc = %x21 / %x23-7E (§6.1).
-pub fn is_strong_etag(s: &str) -> bool {
-    let b = s.as_bytes();
-    b.len() >= 2
-        && b[0] == b'"'
-        && b[b.len() - 1] == b'"'
-        && b[1..b.len() - 1]
-            .iter()
-            .all(|&c| (0x21..=0x7e).contains(&c) && c != b'"')
-}
-
-/// Decode and validate a SourceTable (§6). Errors are archive errors.
-pub fn decode_source_table(buf: &[u8]) -> PResult<Vec<Source>> {
-    let mut out = Vec::new();
-    for (f, w) in parse_fields(buf)? {
-        if f != 1 {
-            continue;
-        }
-        let sb = want_len(f, &w)?;
-        let mut kind = None;
-        let mut size = None;
-        let mut etag = None;
-        let mut mna = None;
-        for (f, w) in parse_fields(sb)? {
-            match f {
-                1 => kind = Some(SourceKind::Url(want_str(f, &w)?)),
-                2 => kind = Some(SourceKind::Key(want_str(f, &w)?)),
-                3 => kind = Some(SourceKind::Data(want_len(f, &w)?.to_vec())),
-                4 => size = Some(want_varint(f, &w)?),
-                5 => etag = Some(want_str(f, &w)?),
-                6 => mna = Some(want_varint(f, &w)? as i64),
-                _ => {}
-            }
-        }
-        let kind = kind.ok_or("source has no kind")?;
-        let s = Source { kind, size, etag, modified_not_after: mna };
-        if let SourceKind::Url(u) = &s.kind {
-            if u.is_empty() {
-                return Err("empty url source".into());
-            }
-        } else if s.has_pins() {
-            return Err("pin on a key or data source".into());
-        }
-        if let Some(e) = &s.etag {
-            if !is_strong_etag(e) {
-                return Err(format!("etag pin {e:?} is not a strong entity tag"));
-            }
-        }
-        out.push(s);
-    }
-    Ok(out)
-}
-
-pub fn encode_source_table(sources: &[Source]) -> Vec<u8> {
-    let mut out = Vec::new();
-    for s in sources {
-        put_bytes(&mut out, 1, &s.encode(), true);
-    }
-    out
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SourceTable {
+    pub sources: Vec<Source>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -327,52 +72,332 @@ pub struct CdIndex {
     pub pinned: Vec<Pinned>,
 }
 
-pub fn decode_index(buf: &[u8]) -> PResult<CdIndex> {
-    let mut idx = CdIndex::default();
-    for (f, w) in parse_fields(buf)? {
-        match f {
-            1 => {
-                let mut p = Page::default();
-                for (f, w) in parse_fields(want_len(f, &w)?)? {
-                    match f {
-                        1 => p.first_key = want_str(f, &w)?,
-                        2 => p.offset = want_varint(f, &w)?,
-                        3 => p.length = want_varint(f, &w)?,
-                        _ => {}
-                    }
+// ---------------------------------------------------------------------------
+// Low-level reader
+// ---------------------------------------------------------------------------
+
+const WT_VARINT: u8 = 0;
+const WT_I64: u8 = 1;
+const WT_LEN: u8 = 2;
+const WT_I32: u8 = 5;
+
+enum Value<'a> {
+    Varint(u64),
+    Len(&'a [u8]),
+    Fixed,
+}
+
+struct Reader<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn new(buf: &'a [u8]) -> Self {
+        Reader { buf, pos: 0 }
+    }
+
+    fn varint(&mut self) -> DecodeResult<u64> {
+        let mut v: u64 = 0;
+        for i in 0..10 {
+            let b = *self
+                .buf
+                .get(self.pos)
+                .ok_or_else(|| "truncated varint".to_string())?;
+            self.pos += 1;
+            if i == 9 {
+                // 10th byte: only the lowest bit fits in 64 bits, and it must
+                // terminate the varint.
+                if b & 0x80 != 0 {
+                    return Err("varint longer than 10 bytes".into());
                 }
-                idx.pages.push(p);
-            }
-            2 => {
-                let mut p = Pinned::default();
-                for (f, w) in parse_fields(want_len(f, &w)?)? {
-                    match f {
-                        1 => p.key = want_str(f, &w)?,
-                        2 => p.data_offset = want_varint(f, &w)?,
-                        3 => p.size = want_varint(f, &w)?,
-                        4 => p.csize = want_varint(f, &w)?,
-                        5 => p.method = want_u32(f, &w)?,
-                        _ => {}
-                    }
+                if b > 1 {
+                    return Err("varint exceeds 2^64-1".into());
                 }
-                idx.pinned.push(p);
             }
+            v |= ((b & 0x7f) as u64) << (7 * i);
+            if b & 0x80 == 0 {
+                return Ok(v);
+            }
+        }
+        unreachable!()
+    }
+
+    /// Reads the next field. Returns (field number, wire type, value).
+    fn field(&mut self) -> DecodeResult<(u32, u8, Value<'a>)> {
+        let tag = self.varint()?;
+        let wt = (tag & 7) as u8;
+        let num = tag >> 3;
+        if num == 0 {
+            return Err("field number 0".into());
+        }
+        if num > (1 << 29) - 1 {
+            return Err("field number above 2^29-1".into());
+        }
+        let val = match wt {
+            WT_VARINT => Value::Varint(self.varint()?),
+            WT_I64 => {
+                if self.buf.len() - self.pos < 8 {
+                    return Err("truncated I64 field".into());
+                }
+                self.pos += 8;
+                Value::Fixed
+            }
+            WT_LEN => {
+                let len = self.varint()?;
+                let rem = (self.buf.len() - self.pos) as u64;
+                if len > rem {
+                    return Err("LEN field extends past end of message".into());
+                }
+                let s = &self.buf[self.pos..self.pos + len as usize];
+                self.pos += len as usize;
+                Value::Len(s)
+            }
+            WT_I32 => {
+                if self.buf.len() - self.pos < 4 {
+                    return Err("truncated I32 field".into());
+                }
+                self.pos += 4;
+                Value::Fixed
+            }
+            _ => return Err(format!("unsupported wire type {}", wt)),
+        };
+        Ok((num as u32, wt, val))
+    }
+
+    fn done(&self) -> bool {
+        self.pos >= self.buf.len()
+    }
+}
+
+fn want_varint(v: Value, name: &str) -> DecodeResult<u64> {
+    match v {
+        Value::Varint(x) => Ok(x),
+        _ => Err(format!("field {} has wrong wire type", name)),
+    }
+}
+
+fn want_u32(v: Value, name: &str) -> DecodeResult<u32> {
+    let x = want_varint(v, name)?;
+    if x > u32::MAX as u64 {
+        return Err(format!("uint32 field {} exceeds 2^32-1", name));
+    }
+    Ok(x as u32)
+}
+
+fn want_len<'a>(v: Value<'a>, name: &str) -> DecodeResult<&'a [u8]> {
+    match v {
+        Value::Len(s) => Ok(s),
+        _ => Err(format!("field {} has wrong wire type", name)),
+    }
+}
+
+fn want_string(v: Value, name: &str) -> DecodeResult<String> {
+    let b = want_len(v, name)?;
+    String::from_utf8(b.to_vec()).map_err(|_| format!("string field {} is not valid UTF-8", name))
+}
+
+// ---------------------------------------------------------------------------
+// Decoders
+// ---------------------------------------------------------------------------
+
+pub fn decode_range(buf: &[u8]) -> DecodeResult<Range> {
+    let mut r = Reader::new(buf);
+    let mut out = Range::default();
+    while !r.done() {
+        let (num, _wt, v) = r.field()?;
+        match num {
+            1 => out.source = want_u32(v, "Range.source")?,
+            3 => out.offset = want_varint(v, "Range.offset")?,
+            4 => out.length = want_varint(v, "Range.length")?,
+            5 => out.data = Some(want_len(v, "Range.data")?.to_vec()),
+            _ => {} // unknown (including reserved 2): skipped
+        }
+    }
+    Ok(out)
+}
+
+pub fn decode_concat(buf: &[u8]) -> DecodeResult<Concat> {
+    let mut r = Reader::new(buf);
+    let mut out = Concat::default();
+    while !r.done() {
+        let (num, _wt, v) = r.field()?;
+        if num == 1 {
+            out.parts.push(decode_range(want_len(v, "Concat.parts")?)?);
+        }
+    }
+    Ok(out)
+}
+
+pub fn decode_source(buf: &[u8]) -> DecodeResult<Source> {
+    let mut r = Reader::new(buf);
+    let mut out = Source::default();
+    while !r.done() {
+        let (num, _wt, v) = r.field()?;
+        match num {
+            1 => out.kind = Some(SourceKind::Url(want_string(v, "Source.url")?)),
+            2 => out.kind = Some(SourceKind::Key(want_string(v, "Source.key")?)),
+            3 => out.kind = Some(SourceKind::Data(want_len(v, "Source.data")?.to_vec())),
+            4 => out.size = Some(want_varint(v, "Source.size")?),
+            5 => out.etag = Some(want_string(v, "Source.etag")?),
+            6 => out.modified_not_after = Some(want_varint(v, "Source.modified_not_after")? as i64),
             _ => {}
         }
     }
-    Ok(idx)
+    Ok(out)
 }
 
-pub fn encode_index(idx: &CdIndex) -> Vec<u8> {
+pub fn decode_source_table(buf: &[u8]) -> DecodeResult<SourceTable> {
+    let mut r = Reader::new(buf);
+    let mut out = SourceTable::default();
+    while !r.done() {
+        let (num, _wt, v) = r.field()?;
+        if num == 1 {
+            out.sources.push(decode_source(want_len(v, "SourceTable.sources")?)?);
+        }
+    }
+    Ok(out)
+}
+
+fn decode_page(buf: &[u8]) -> DecodeResult<Page> {
+    let mut r = Reader::new(buf);
+    let mut out = Page::default();
+    while !r.done() {
+        let (num, _wt, v) = r.field()?;
+        match num {
+            1 => out.first_key = want_string(v, "Page.first_key")?,
+            2 => out.offset = want_varint(v, "Page.offset")?,
+            3 => out.length = want_varint(v, "Page.length")?,
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+fn decode_pinned(buf: &[u8]) -> DecodeResult<Pinned> {
+    let mut r = Reader::new(buf);
+    let mut out = Pinned::default();
+    while !r.done() {
+        let (num, _wt, v) = r.field()?;
+        match num {
+            1 => out.key = want_string(v, "Pinned.key")?,
+            2 => out.data_offset = want_varint(v, "Pinned.data_offset")?,
+            3 => out.size = want_varint(v, "Pinned.size")?,
+            4 => out.csize = want_varint(v, "Pinned.csize")?,
+            5 => out.method = want_u32(v, "Pinned.method")?,
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+pub fn decode_cd_index(buf: &[u8]) -> DecodeResult<CdIndex> {
+    let mut r = Reader::new(buf);
+    let mut out = CdIndex::default();
+    while !r.done() {
+        let (num, _wt, v) = r.field()?;
+        match num {
+            1 => out.pages.push(decode_page(want_len(v, "CdIndex.pages")?)?),
+            2 => out.pinned.push(decode_pinned(want_len(v, "CdIndex.pinned")?)?),
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Encoders (canonical: field order, minimal varints, defaults omitted)
+// ---------------------------------------------------------------------------
+
+fn put_varint(out: &mut Vec<u8>, mut v: u64) {
+    loop {
+        let b = (v & 0x7f) as u8;
+        v >>= 7;
+        if v == 0 {
+            out.push(b);
+            return;
+        }
+        out.push(b | 0x80);
+    }
+}
+
+fn put_tag(out: &mut Vec<u8>, num: u32, wt: u8) {
+    put_varint(out, ((num as u64) << 3) | wt as u64);
+}
+
+fn put_uint(out: &mut Vec<u8>, num: u32, v: u64, always: bool) {
+    if v != 0 || always {
+        put_tag(out, num, WT_VARINT);
+        put_varint(out, v);
+    }
+}
+
+fn put_bytes(out: &mut Vec<u8>, num: u32, b: &[u8], always: bool) {
+    if !b.is_empty() || always {
+        put_tag(out, num, WT_LEN);
+        put_varint(out, b.len() as u64);
+        out.extend_from_slice(b);
+    }
+}
+
+pub fn encode_range(r: &Range) -> Vec<u8> {
     let mut out = Vec::new();
-    for p in &idx.pages {
+    put_uint(&mut out, 1, r.source as u64, false);
+    put_uint(&mut out, 3, r.offset, false);
+    put_uint(&mut out, 4, r.length, false);
+    if let Some(d) = &r.data {
+        put_bytes(&mut out, 5, d, true);
+    }
+    out
+}
+
+pub fn encode_concat(c: &Concat) -> Vec<u8> {
+    let mut out = Vec::new();
+    for p in &c.parts {
+        // A repeated message element is always emitted, even if empty.
+        put_bytes(&mut out, 1, &encode_range(p), true);
+    }
+    out
+}
+
+pub fn encode_source(s: &Source) -> Vec<u8> {
+    let mut out = Vec::new();
+    match &s.kind {
+        Some(SourceKind::Url(u)) => put_bytes(&mut out, 1, u.as_bytes(), true),
+        Some(SourceKind::Key(k)) => put_bytes(&mut out, 2, k.as_bytes(), true),
+        Some(SourceKind::Data(d)) => put_bytes(&mut out, 3, d, true),
+        None => {}
+    }
+    if let Some(v) = s.size {
+        put_uint(&mut out, 4, v, true);
+    }
+    if let Some(e) = &s.etag {
+        put_bytes(&mut out, 5, e.as_bytes(), true);
+    }
+    if let Some(m) = s.modified_not_after {
+        put_uint(&mut out, 6, m as u64, true);
+    }
+    out
+}
+
+pub fn encode_source_table(t: &SourceTable) -> Vec<u8> {
+    let mut out = Vec::new();
+    for s in &t.sources {
+        put_bytes(&mut out, 1, &encode_source(s), true);
+    }
+    out
+}
+
+pub fn encode_cd_index(ix: &CdIndex) -> Vec<u8> {
+    let mut out = Vec::new();
+    for p in &ix.pages {
         let mut m = Vec::new();
         put_bytes(&mut m, 1, p.first_key.as_bytes(), false);
         put_uint(&mut m, 2, p.offset, false);
         put_uint(&mut m, 3, p.length, false);
         put_bytes(&mut out, 1, &m, true);
     }
-    for p in &idx.pinned {
+    for p in &ix.pinned {
         let mut m = Vec::new();
         put_bytes(&mut m, 1, p.key.as_bytes(), false);
         put_uint(&mut m, 2, p.data_offset, false);
@@ -389,100 +414,103 @@ mod tests {
     use super::*;
 
     #[test]
-    fn range_roundtrip() {
-        let cases = vec![
-            Range::default(),
-            Range { source: 3, offset: 1 << 40, length: 7, data: None },
-            Range { data: Some(vec![]), ..Default::default() },
-            Range { data: Some(vec![1, 2, 3]), ..Default::default() },
-        ];
-        for r in cases {
-            let enc = r.encode();
-            assert_eq!(Range::decode(&enc, 4).unwrap(), r);
-        }
-        // canonical encodings
-        assert_eq!(Range::default().encode(), Vec::<u8>::new());
-        assert_eq!(
-            Range { data: Some(vec![]), ..Default::default() }.encode(),
-            vec![0x2a, 0x00]
-        );
+    fn roundtrip_and_canonical() {
+        let r = Range { source: 2, offset: 300, length: 5, data: None };
+        let e = encode_range(&r);
+        assert_eq!(e, vec![0x08, 2, 0x18, 0xac, 0x02, 0x20, 5]);
+        assert_eq!(decode_range(&e).unwrap(), r);
+        let lit = Range { data: Some(vec![]), ..Default::default() };
+        assert_eq!(encode_range(&lit), vec![0x2a, 0]);
+        assert_eq!(decode_range(&[0x2a, 0]).unwrap(), lit);
+        let s = Source {
+            kind: Some(SourceKind::Data(vec![])),
+            ..Default::default()
+        };
+        assert_eq!(encode_source(&s), vec![0x1a, 0]);
+        let s2 = Source {
+            kind: Some(SourceKind::Url("a".into())),
+            size: Some(0),
+            etag: None,
+            modified_not_after: Some(-1),
+        };
+        let e2 = encode_source(&s2);
+        assert_eq!(decode_source(&e2).unwrap(), s2);
     }
 
     #[test]
-    fn decode_tolerances() {
-        // unknown field (VARINT, I64, LEN, I32), reserved field 2, non-minimal varint, last wins
-        let buf = [
-            0x10, 0x05, // field 2 varint (reserved)
-            0x31, 0, 0, 0, 0, 0, 0, 0, 0, // field 6 I64
-            0x3a, 0x01, 0xff, // field 7 LEN
-            0x45, 0, 0, 0, 0, // field 8 I32
-            0x18, 0x81, 0x80, 0x00, // offset = 1 (non-minimal)
-            0x18, 0x02, // offset = 2 (last wins)
-        ];
-        let r = Range::decode(&buf, 1).unwrap();
-        assert_eq!(r.offset, 2);
+    fn decoding_rules() {
+        // Non-minimal varint accepted.
+        assert_eq!(decode_range(&[0x08, 0x82, 0x00]).unwrap().source, 2);
+        // Unknown and reserved fields skipped, all accepted wire types.
+        assert!(decode_range(&[0x10, 1, 0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0x15, 0, 0, 0, 0, 0x32, 1, 9]).is_ok());
+        // Last occurrence wins.
+        assert_eq!(decode_range(&[0x08, 1, 0x08, 3]).unwrap().source, 3);
+        // Oneof last wins.
+        let s = decode_source(&[0x0a, 1, b'u', 0x12, 1, b'k']).unwrap();
+        assert_eq!(s.kind, Some(SourceKind::Key("k".into())));
     }
 
     #[test]
-    fn malformed_group() {
-        assert!(Range::decode(&[0x33, 0x34], 1).is_err());
+    fn decoding_rejects_group() {
+        assert!(decode_range(&[0x5b]).is_err()); // field 11 wt 3
+        assert!(decode_range(&[0x5c]).is_err()); // wt 4
+        assert!(decode_range(&[0x5e]).is_err()); // wt 6
+        assert!(decode_range(&[0x5f]).is_err()); // wt 7
     }
+
     #[test]
-    fn malformed_field_zero() {
-        assert!(Range::decode(&[0x00, 0x00], 1).is_err());
+    fn decoding_rejects_field_zero() {
+        assert!(decode_range(&[0x00, 0]).is_err());
     }
+
     #[test]
-    fn malformed_long_varint() {
-        let mut b = vec![0x18];
-        b.extend(std::iter::repeat(0x80).take(10));
+    fn decoding_rejects_huge_field_number() {
+        // field number 2^29 (tag = 2^32)
+        let mut b = Vec::new();
+        put_varint(&mut b, 1u64 << 32);
         b.push(0);
-        assert!(Range::decode(&b, 1).is_err());
+        assert!(decode_range(&b).is_err());
     }
+
     #[test]
-    fn malformed_varint_overflow() {
+    fn decoding_rejects_truncation() {
+        assert!(decode_range(&[0x08]).is_err());
+        assert!(decode_range(&[0x08, 0x80]).is_err());
+        assert!(decode_range(&[0x2a, 5, 1]).is_err());
+        assert!(decode_range(&[0x11, 0]).is_err());
+    }
+
+    #[test]
+    fn decoding_rejects_long_varint() {
         let mut b = vec![0x18];
-        b.extend(std::iter::repeat(0xff).take(9));
+        b.extend_from_slice(&[0x80; 10]);
+        b.push(0);
+        assert!(decode_range(&b).is_err());
+        let mut b = vec![0x18];
+        b.extend_from_slice(&[0xff; 9]);
         b.push(0x02);
-        assert!(Range::decode(&b, 1).is_err());
+        assert!(decode_range(&b).is_err());
+        let mut b = vec![0x18];
+        b.extend_from_slice(&[0xff; 9]);
+        b.push(0x01);
+        assert_eq!(decode_range(&b).unwrap().offset, u64::MAX);
     }
+
     #[test]
-    fn malformed_uint32_overflow() {
+    fn decoding_rejects_wrong_wire_type() {
+        assert!(decode_range(&[0x0a, 0]).is_err());
+        assert!(decode_range(&[0x28, 0]).is_err());
+    }
+
+    #[test]
+    fn decoding_rejects_uint32_overflow() {
         let mut b = vec![0x08];
-        put_varint(&mut b, 1 << 32);
-        assert!(Range::decode(&b, 1).is_err());
+        put_varint(&mut b, 1u64 << 32);
+        assert!(decode_range(&b).is_err());
     }
+
     #[test]
-    fn malformed_wrong_wire_type() {
-        assert!(Range::decode(&[0x1a, 0x00], 1).is_err());
-    }
-    #[test]
-    fn malformed_truncated_len() {
-        assert!(Range::decode(&[0x2a, 0x05, 0x00], 1).is_err());
-    }
-    #[test]
-    fn malformed_literal_with_source() {
-        assert!(Range::decode(&[0x18, 0x01, 0x2a, 0x00], 1).is_err());
-    }
-    #[test]
-    fn malformed_source_oob() {
-        assert!(Range::decode(&[0x08, 0x01], 1).is_err());
-    }
-    #[test]
-    fn malformed_offset_overflow() {
-        let r = Range { source: 0, offset: u64::MAX, length: 1, data: None };
-        assert!(Range::decode(&r.encode(), 1).is_err());
-    }
-    #[test]
-    fn malformed_bad_utf8_string() {
-        let buf = [0x0a, 0x03, 0x0a, 0x01, 0xff];
-        assert!(decode_source_table(&buf).is_err());
-    }
-    #[test]
-    fn etag_check() {
-        assert!(is_strong_etag("\"abc\""));
-        assert!(is_strong_etag("\"\""));
-        assert!(!is_strong_etag("W/\"abc\""));
-        assert!(!is_strong_etag("abc"));
-        assert!(!is_strong_etag("\"a b\""));
+    fn decoding_rejects_bad_utf8() {
+        assert!(decode_source(&[0x0a, 1, 0xff]).is_err());
     }
 }

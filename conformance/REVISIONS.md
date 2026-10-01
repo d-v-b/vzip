@@ -185,3 +185,133 @@ the tested surface.
   double-percent-encoding bug for `http(s)` URLs that only showed up against a
   real server (see FINDINGS.md, "Real data").
 
+
+## Revision 5: versioning and HTTP (requested)
+
+Format version 0, specification revision 5.
+
+**Versioning (§1.3).** vzip now has an integer **format version**, carried in
+the archive's magic as `vzip/<N>`. This document specifies version **0**, so
+the magic changes from `vzip/1` to `vzip/0` and the protobuf package from
+`vzip.v1` to `vzip.v0`.
+
+- **Revisions vs versions:** the document has revisions. A revision may
+  clarify, resolve an ambiguity, fix a contradiction or add tests, but must
+  not change the result of any operation that was already fully determined.
+  Anything else is a new format version.
+- **Why new fields mean a new version:** readers skip unknown protobuf
+  fields, so a field added within a version (a new pin, say) would be
+  silently ignored by older readers, and "fail closed" would become "fail
+  open".
+- **Readers** reject versions they don't implement, as an archive error.
+- **Writers** should write the lowest version that can express the archive.
+- **Version 0 is a draft:** until it is declared final, revisions may break
+  the rule above, and this log says when they do. **Revision 5 does**: the
+  magic changed.
+
+**HTTP (§6.2).** Reading over HTTP is now specified:
+
+- **Requests:** a GET with `Range` and `Accept-Encoding: identity`, and no
+  HEAD or whole-object requests. Pins ride on those requests. Nearby ranges
+  may be combined into one request.
+- **Responses:** 206 with a total size; 206 with `*` (the size is unknown, so
+  a `size` pin fails); 200 (the server ignored Range, so take the bytes from
+  the body); 412 (a pin failed); 416 (the object is too short); any other
+  status, or a non-identity `Content-Encoding` (resolution error).
+- **Redirects and timestamps:** redirects may be followed, up to 5. A pin time
+  that cannot be written as an HTTP-date is a resolution error.
+
+**Round-4 open issues resolved:**
+- the entry-error list now agrees between §8.1 and §8.4;
+- ZIP64 extra-block parsing is specified (APPNOTE order; too short or
+  duplicated → entry error);
+- a page's key range is defined, along with which pages `list` reads;
+- an empty `first_key` or pinned key makes the page index malformed;
+- body errors apply to the whole extent of a body, and to `raw` of reference
+  entries;
+- format entries' uncompressed sizes are not checked;
+- resource limits are kept out of conformance;
+- §9.1 gains offset/size overflow and keys over 65535 bytes;
+- readers ignore entry counts;
+- URL syntax is checked at resolution;
+- HARNESS: unknown members are ignored even if `null`, negative
+  `modified_not_after` is allowed, and `compress: false` is allowed on
+  references.
+
+**Conformance kit:**
+- **HTTP profile, optional, reported separately.**
+  [`http_server.py`](http_server.py) is a local range server with strong
+  ETags, Last-Modified, conditional requests, a request log and three quirk
+  modes (`/norange/`, `/nototal/`, `/gzip/`). The `http_basic` and
+  `http_paged` cases cover:
+  - plain, percent-encoded and non-ASCII names, and a 404;
+  - each pin passing and failing;
+  - the quirks;
+  - a clipped range and a 416.
+- **Request accounting** checks, from the server's log:
+  - at most one GET per resolved range, and none for `classify`;
+  - no HEAD;
+  - `Range` and `Accept-Encoding: identity` on every request;
+  - `If-Match` and `If-Unmodified-Since` on pinned reads.
+- **The HTTP cases immediately caught two bugs in the reference.** Its
+  unpinned HTTP reads went through obstore, which rejects
+  `Content-Range: …/*` and sends no `Accept-Encoding`. The reference now uses
+  a small §6.2 reader for every `http(s)` read.
+- `proto/vzip.proto` is now generated from the spec's Appendix A.
+
+## Round 5 (spec r5 → r6)
+
+**Result:** all three fresh implementations passed every graded check,
+including the new HTTP profile:
+- 5129/5129 read queries;
+- 11/11 write cases;
+- 32/32 rejections;
+- 20000/20000 cross-reads;
+- 1876/1876 HTTP checks, including request accounting.
+
+The divergence report was empty.
+
+**All three agents independently found the same design flaw in §6.2: pins
+failed open.** The only failure signal for `etag` and `modified_not_after`
+was a 412 response. A server or proxy that ignores conditional headers
+answers 200 or 206, and the pin was never checked. The Python agent
+demonstrated this against Python's stock `http.server`.
+
+| § (r5) | problem | r6 fix | evidence |
+|---|---|---|---|
+| 6.2 | Pins fail open when a server ignores `If-Match`/`If-Unmodified-Since` | Readers check every successful response's `ETag` and `Last-Modified` against the pins; a missing or unparseable header is a resolution error | All 3 notes (Py #1, Rust #2, TS #3). Against r6, the r5 implementations fail exactly `h/nocond_bad_etag`, `h/nocond_bad_mtime` and `h/noetag_pinned`, and nothing else. |
+| 6.2 | Redirects were "MAY follow": readers could disagree | MUST follow 301/302/303/307/308, up to 5; `Location` resolved per RFC 3986; `http(s)` only; headers re-sent; pins apply to the final response | TS #1, Py #2, Rust #7 |
+| 3.4 | The note that the step-1 probe can't match a fake record "relies on disk numbers, which readers ignore" | The note now says it holds for valid (single-disk) archives, and that an invalid one is rejected, as intended | Py (built such a file) |
+
+**Kit:** the HTTP server gained three quirk modes: `/nocond/` (ignores
+conditional headers), `/noetag/` (no `ETag` or `Last-Modified`) and
+`/redirect/N/`. There are seven new HTTP cases.
+
+**A bug in the kit itself:** in the first run, `/noetag/` crashed the server
+whenever a request carried `If-Match`, so `h/noetag_pinned` passed vacuously
+for every reader. It was fixed before the results above.
+
+Revision 6 has not been through a fresh round of agents.
+
+**Open issues** from round 5, deferred:
+- **HTTP response edge cases:**
+  - a 206 without `Content-Range`, or with a multipart body;
+  - a body whose length doesn't match its `Content-Range`;
+  - chunked transfer encoding (all three implementations already treat the
+    first two as resolution errors).
+- **`list` on paged archives:** state the prefix-successor computation
+  explicitly. Also, `classify` of an absent key whose page is broken: missing
+  or entry error? (Rust chose entry error.)
+- **ZIP64:** all-ones size fields in invalid archives.
+- **"Lies within the file":** whether regions must also come before the end
+  records.
+- **`raw` of the format entries:** read through the comment or the CD record?
+  All three use the comment.
+- **§9.1:** whether writers must reject `key`/`data` source ranges past the
+  end of a known value.
+- **§5.1:** say explicitly that empty repeated message elements are emitted,
+  and give the encoding of a negative `int64`.
+- **§9.1:** the stated reason for putting the index last really only applies
+  to pinned entries.
+- **HARNESS:** whether `list` requires `prefix`; `range` on operations other
+  than `get`; duplicate JSON members.

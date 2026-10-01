@@ -1,235 +1,341 @@
+"""Writer tests: round trips through our reader, unzip -t and zipfile; writer rejections; CLI."""
+
+import itertools
 import json
 import os
 import random
 import struct
 import subprocess
+import tempfile
 import unittest
 import zipfile
 
-from helpers import cli, query, tmpdir, write_desc
+from helpers import ROOT
+from vzip_impl import proto
+from vzip_impl.reader import Archive, Request
+from vzip_impl.writer import WEntry, WriteInputError, build_archive, parse_description
 
-KEY_POOL = ["a", "a/b", "a/b/c", "b", "x/", "a/../b", "﻿bom", "\U0001F600", "～",
-            "zarr.json", "x/zarr.json", "x/c/0", "x/c/1", "x/c/1/2", "é", "z" * 300,
-            "__vz__/hdr", "__vz__/other", "~", "\x7f", "a b"]
-
-
-def random_desc(rng, url_files):
-    page_size = rng.choice([None, 1, 50, 300, 100000])
-    keys = rng.sample(KEY_POOL, rng.randint(0, len(KEY_POOL)))
-    entries = []
-    bytes_keys = []
-    values = {}
-    for k in keys:
-        if rng.random() < 0.5 or not keys:
-            v = bytes(rng.randrange(256) for _ in range(rng.choice([0, 1, 10, 200, 3000])))
-            if rng.random() < 0.5:
-                v = b"abc" * rng.randint(0, 500)
-            e = {"key": k, "bytes": v.hex(), "compress": rng.random() < 0.5}
-            if page_size is not None and rng.random() < 0.3:
-                e["pinned"] = True
-            entries.append(e)
-            bytes_keys.append(k)
-            values[k] = v
-        else:
-            entries.append({"key": k, "ranges": None})
-    sources = []
-    src_vals = []
-    for name, content in url_files.items():
-        s = {"url": name.replace(" ", "%20")}
-        if rng.random() < 0.5:
-            s["size"] = len(content)
-        sources.append(s)
-        src_vals.append(content)
-    for k in bytes_keys:
-        if rng.random() < 0.5:
-            sources.append({"key": k})
-            src_vals.append(values[k])
-    d = bytes(rng.randrange(256) for _ in range(rng.randint(0, 40)))
-    sources.append({"data": d.hex()})
-    src_vals.append(d)
-    for e in entries:
-        if e.get("ranges", 1) is None:
-            rs = []
-            val = b""
-            for _ in range(rng.choice([0, 1, 1, 2, 5])):
-                if rng.random() < 0.3:
-                    lit = bytes(rng.randrange(256) for _ in range(rng.randint(0, 8)))
-                    rs.append({"data": lit.hex()})
-                    val += lit
-                else:
-                    si = rng.randrange(len(sources))
-                    n = len(src_vals[si])
-                    off = rng.randint(0, n)
-                    ln = rng.randint(0, n - off)
-                    r = {}
-                    if si:
-                        r["source"] = si
-                    if off:
-                        r["offset"] = off
-                    if ln:
-                        r["length"] = ln
-                    rs.append(r)
-                    val += src_vals[si][off:off + ln]
-            e["ranges"] = rs
-            values[e["key"]] = val
-    desc = {"page_size": page_size, "mirror": rng.random() < 0.7, "sources": sources, "entries": entries}
-    return desc, values
+CLI = os.path.join(ROOT, "vzip")
 
 
-def check_archive(tc, path, desc, values):
-    kinds = {e["key"]: ("bytes" if "bytes" in e else "reference") for e in desc["entries"]}
-    public = sorted((k for k in values if not k.startswith("__vz__/")), key=lambda s: s.encode())
-    queries = []
-    expect = []
-    for k, v in values.items():
-        hidden = k.startswith("__vz__/")
-        queries.append({"op": "classify", "key": k})
-        expect.append({"ok": True, "kind": "missing" if hidden else kinds[k]})
-        n = len(v)
-        for req, sl in [(None, v), ({"start": 0, "end": n}, v), ({"start": 1, "end": 3}, v[1:3]),
-                        ({"start": n + 5, "end": n + 9}, b""), ({"offset": 2}, v[2:]),
-                        ({"offset": n + 1}, b""), ({"suffix": 3}, v[-3:] if n >= 3 else v),
-                        ({"suffix": 0}, b""), ({"suffix": n + 10}, v),
-                        ({"start": n // 3, "end": (2 * n) // 3 + 1}, v[n // 3:(2 * n) // 3 + 1])]:
-            q = {"op": "get", "key": k}
-            if req is not None:
-                q["range"] = req
-            queries.append(q)
-            expect.append({"ok": True, "value": None if hidden else sl.hex()})
-        queries.append({"op": "get_raw", "key": k})
-        if kinds[k] == "bytes":
-            expect.append({"ok": True, "value": v.hex()})
-        else:
-            expect.append(None)  # checked below
-    queries.append({"op": "classify", "key": "__vz__/sources"})
-    expect.append({"ok": True, "kind": "missing"})
-    queries.append({"op": "get", "key": "not-there"})
-    expect.append({"ok": True, "value": None})
-    prefixes = {"", "x/", "a", "a/b", "__vz__/", "\U0001F600", "～", "zz", "\xff"}
-    for k in values:
-        prefixes.add(k[:2])
-    for p in sorted(prefixes):
-        queries.append({"op": "list", "prefix": p})
-        pb_ = p.encode()
-        expect.append({"ok": True, "keys": [k for k in public if k.encode().startswith(pb_)]})
-    res = query(path, queries)
-    tc.assertTrue(res["open"]["ok"], res["open"])
-    for q, e, r in zip(queries, expect, res["results"]):
-        if e is None:
-            tc.assertTrue(r["ok"], (q, r))
-            continue
-        tc.assertEqual(r, e, q)
-    # raw of format entries is visible
-    r = query(path, [{"op": "get_raw", "key": "__vz__/sources"},
-                     {"op": "get_raw", "key": "__vz__/index"}])["results"]
-    tc.assertTrue(r[0]["ok"] and r[0]["value"] is not None)
-    tc.assertEqual(r[1]["value"] is None, desc["page_size"] is None)
-
-    # unzip -t accepts it
-    p = subprocess.run(["unzip", "-t", path], capture_output=True)
-    tc.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-    # zipfile interoperability: names and bodies
-    with zipfile.ZipFile(path) as zf:
-        names = set(zf.namelist())
-        tc.assertIn("__vz__/sources", names)
-        for k, v in values.items():
-            if kinds[k] == "bytes":
-                tc.assertEqual(zf.read(k), v)
-            else:
-                body = zf.read(k)
-                tc.assertTrue(body == b"" if not desc["mirror"] else len(body) >= 0)
+def unzip_ok(path):
+    r = subprocess.run(["unzip", "-t", path], capture_output=True, text=True, errors="replace")
+    return r.returncode == 0, r.stdout + r.stderr
 
 
-class RoundTrip(unittest.TestCase):
-    def test_random_round_trips(self):
-        rng = random.Random(1234)
-        with tmpdir() as d:
-            files = {"a.bin": bytes(range(256)) * 4, "sub/b b.bin": b"hello world" * 10}
-            os.makedirs(os.path.join(d, "sub"))
-            for n, c in files.items():
-                with open(os.path.join(d, n), "wb") as fh:
-                    fh.write(c)
-            for i in range(60):
-                with self.subTest(i=i):
-                    desc, values = random_desc(rng, files)
-                    path = os.path.join(d, f"r{i}.vzip")
-                    write_desc(desc, path)
-                    check_archive(self, path, desc, values)
+class TestRoundTrip(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = self.tmp.name
+        self.ext = os.path.join(self.d, "ext dir", "é.bin")
+        os.makedirs(os.path.dirname(self.ext))
+        self.ext_data = bytes(range(256)) * 4
+        with open(self.ext, "wb") as f:
+            f.write(self.ext_data)
 
-    def test_cli_round_trip_from_other_cwd(self):
-        with tmpdir() as d:
-            with open(os.path.join(d, "data.bin"), "wb") as fh:
-                fh.write(b"0123456789")
-            desc = {"sources": [{"url": "data.bin", "size": 10}],
-                    "entries": [{"key": "k", "ranges": [{"offset": 2, "length": 3}]},
-                                {"key": "z", "bytes": "00", "pinned": True}],
-                    "page_size": 1}
-            with open(os.path.join(d, "d.json"), "w") as fh:
-                json.dump(desc, fh)
-            with open(os.path.join(d, "q.json"), "w") as fh:
-                json.dump([{"op": "get", "key": "k"}, {"op": "list", "prefix": ""}], fh)
-            p = cli("write", "d.json", "out dir.vzip", cwd=d)
-            self.assertEqual(p.returncode, 0, p.stderr)
-            # read with a relative path from the archive's directory
-            p = cli("read", "out dir.vzip", "q.json", cwd=d)
-            self.assertEqual(p.returncode, 0, p.stderr)
-            out = json.loads(p.stdout)
-            self.assertEqual(out["results"], [{"ok": True, "value": b"234".hex()},
-                                              {"ok": True, "keys": ["k", "z"]}])
-            # and with a path containing '..' from a subdirectory
-            os.makedirs(os.path.join(d, "s"))
-            p = cli("read", "../out dir.vzip", "../q.json", cwd=os.path.join(d, "s"))
-            self.assertEqual(json.loads(p.stdout)["results"][0], {"ok": True, "value": b"234".hex()})
+    def tearDown(self):
+        self.tmp.cleanup()
 
-    def test_canonical_layout(self):
-        """Paged archive: sorted body records, then format records, pages partition."""
-        with tmpdir() as d:
-            path = os.path.join(d, "a.vzip")
-            keys = ["b", "\U0001F600", "～", "a", "__vz__/x", "c"]
-            data = write_desc({"page_size": 1, "entries": [{"key": k, "bytes": "00"} for k in keys]}, path)
-            with zipfile.ZipFile(path) as zf:
-                names = [i.filename for i in zf.infolist()]
-            body = sorted(keys, key=lambda s: s.encode())
-            self.assertEqual(names[:len(body)], body)
-            self.assertEqual(set(names[len(body):]), {"__vz__/sources", "__vz__/index"})
-            self.assertEqual(len(data) - struct.unpack_from("<H", data, len(data) - 60 + 20)[0], len(data) - 38)
-            self.assertEqual(data[-38:-32], b"vzip/1")
+    def build(self, page_size, mirror, compress):
+        rnd = random.Random(42)
+        hdr = b"HDR!" * 3
+        sources = [
+            proto.Source("url", "ext%20dir/%C3%A9.bin", size=len(self.ext_data)),
+            proto.Source("key", "__vz__/hdr"),
+            proto.Source("data", b"shared-data"),
+            proto.Source("key", "plain/a"),
+        ]
+        entries = [WEntry("__vz__/hdr", data=hdr, compress=compress, pinned=page_size is not None)]
+        expect = {}
+        for i in range(40):
+            k = f"plain/{chr(97 + i % 26)}{i // 26 or ''}"
+            if i == 0:
+                k = "plain/a"
+            data = bytes(rnd.randrange(256) for _ in range(rnd.randrange(0, 300)))
+            entries.append(WEntry(k, data=data, compress=compress and i % 2 == 0,
+                                  pinned=page_size is not None and i % 7 == 3))
+            expect[k] = data
+        a_data = expect["plain/a"]
+        refs = {
+            "ref/one": [proto.Range(0, 5, 10)],
+            "ref/empty": [],
+            "ref/lit": [proto.Range(data=b"literal")],
+            "ref/emptylit": [proto.Range(data=b"")],
+            "ref/mix": [proto.Range(1, 2, 4), proto.Range(data=b"--"), proto.Range(2, 0, 6),
+                        proto.Range(0, 1000, 24), proto.Range(3, 0, min(3, len(a_data)))],
+            "ref/zero": [proto.Range(0, 0, 0)],
+            "😀": [proto.Range(data=b"emoji")],
+            "～": [proto.Range(data=b"tilde")],
+            "﻿bom": [proto.Range(data=b"bom")],
+            "a/../b": [proto.Range(data=b"dots")],
+            "x/": [proto.Range(data=b"slash")],
+        }
+        expect["ref/one"] = self.ext_data[5:15]
+        expect["ref/empty"] = b""
+        expect["ref/lit"] = b"literal"
+        expect["ref/emptylit"] = b""
+        expect["ref/mix"] = hdr[2:6] + b"--" + b"shared" + self.ext_data[1000:1024] + a_data[:3]
+        expect["ref/zero"] = b""
+        expect["😀"] = b"emoji"
+        expect["～"] = b"tilde"
+        expect["﻿bom"] = b"bom"
+        expect["a/../b"] = b"dots"
+        expect["x/"] = b"slash"
+        for k, r in refs.items():
+            entries.append(WEntry(k, ranges=r))
+        path = os.path.join(self.d, f"rt-{page_size}-{mirror}-{compress}.vzip")
+        with open(path, "wb") as f:
+            f.write(build_archive(entries, sources, page_size, mirror))
+        return path, expect, set(refs)
 
-    def test_empty_archive(self):
-        with tmpdir() as d:
-            for ps in (None, 5):
-                path = os.path.join(d, f"e{ps}.vzip")
-                write_desc({"page_size": ps}, path)
-                r = query(path, [{"op": "list", "prefix": ""}, {"op": "get", "key": "a"}])
-                self.assertEqual(r["results"], [{"ok": True, "keys": []}, {"ok": True, "value": None}])
-                self.assertEqual(subprocess.run(["unzip", "-t", path], capture_output=True).returncode, 0)
+    def test_round_trip(self):
+        for page_size, mirror, compress in itertools.product([None, 1, 100, 1000, 10 ** 9],
+                                                             [True, False], [True, False]):
+            with self.subTest(page_size=page_size, mirror=mirror, compress=compress):
+                path, expect, refs = self.build(page_size, mirror, compress)
+                ok, out = unzip_ok(path)
+                self.assertTrue(ok, out)
+                with zipfile.ZipFile(path) as zf:
+                    names = set(zf.namelist())
+                    self.assertIn("__vz__/sources", names)
+                    self.assertEqual("__vz__/index" in names, page_size is not None)
+                    for k in expect:
+                        body = zf.read(k)
+                        if k not in refs:
+                            self.assertEqual(body, expect[k])
+                        elif not mirror:
+                            self.assertEqual(body, b"")
+                with open(path, "rb") as f:
+                    tail = f.read()[-60:]
+                self.assertEqual(len(tail) - tail.rfind(b"vzip/0"), 38 if page_size else 22)
+                with Archive(path) as ar:
+                    keys = sorted(expect, key=lambda k: k.encode())
+                    self.assertEqual(ar.list(""), keys)
+                    self.assertEqual(ar.list("plain/"), [k for k in keys if k.startswith("plain/")])
+                    self.assertEqual(ar.list("ref/m"), ["ref/mix"])
+                    self.assertEqual(ar.list("zz"), [])
+                    # UTF-8 order: 😀 (F0..) after ～ (EF..)
+                    self.assertLess(keys.index("～"), keys.index("😀"))
+                    for k, v in expect.items():
+                        self.assertEqual(ar.classify(k), "reference" if k in refs else "bytes")
+                        self.assertEqual(ar.get(k), v, k)
+                        n = len(v)
+                        for req, want in [
+                            (Request("range", 1, 5), v[1:5]),
+                            (Request("range", 3, 3), b""),
+                            (Request("range", n + 5, n + 9), b""),
+                            (Request("offset", 2), v[2:]),
+                            (Request("offset", n + 10), b""),
+                            (Request("suffix", 3), v[max(n - 3, 0):]),
+                            (Request("suffix", n + 10), v),
+                            (Request("suffix", 0), b""),
+                        ]:
+                            self.assertEqual(ar.get(k, req), want, (k, req))
+                        raw = ar.raw(k)
+                        if k in refs:
+                            self.assertTrue(raw == b"" if not mirror else len(raw) >= 0)
+                        else:
+                            self.assertEqual(raw, v)
+                    self.assertEqual(ar.classify("__vz__/hdr"), "missing")
+                    self.assertIsNone(ar.get("__vz__/hdr"))
+                    self.assertEqual(ar.raw("__vz__/hdr"), b"HDR!" * 3)
+                    self.assertIsNotNone(ar.raw("__vz__/sources"))
+                    self.assertEqual(ar.raw("__vz__/index") is not None, page_size is not None)
+                    self.assertEqual(ar.classify("nope"), "missing")
+                    self.assertIsNone(ar.get("nope"))
+                    self.assertIsNone(ar.get("\u0000"))
+                    self.assertIsNone(ar.raw("nope"))
 
-    def test_zip64_many_entries(self):
-        with tmpdir() as d:
-            path = os.path.join(d, "big.vzip")
-            n = 70000
-            entries = [{"key": f"k{i:06d}", "bytes": "%02x" % (i % 256)} for i in range(n)]
-            entries.append({"key": "r", "ranges": [{"data": "ab"}, {"data": "cd"}]})
-            for ps in (None, 4096):
-                with self.subTest(page_size=ps):
-                    if os.path.exists(path):
-                        os.unlink(path)
-                    data = write_desc({"page_size": ps, "entries": entries}, path)
-                    clen = 22 if ps is None else 38
-                    eocd = len(data) - 22 - clen
-                    self.assertEqual(struct.unpack_from("<HH", data, eocd + 8), (0xFFFF, 0xFFFF))
-                    self.assertEqual(struct.unpack_from("<I", data, eocd - 20)[0], 0x07064B50)
-                    r = query(path, [{"op": "get", "key": "k069999"}, {"op": "get", "key": "r"},
-                                     {"op": "classify", "key": "k000000"},
-                                     {"op": "list", "prefix": "k06999"}])
-                    self.assertEqual(r["results"][0], {"ok": True, "value": "%02x" % (69999 % 256)})
-                    self.assertEqual(r["results"][1], {"ok": True, "value": "abcd"})
-                    self.assertEqual(r["results"][2], {"ok": True, "kind": "bytes"})
-                    self.assertEqual(r["results"][3]["keys"], [f"k0699{i}{j}" for i in "9" for j in "0123456789"])
-                    p = subprocess.run(["unzip", "-tq", path], capture_output=True)
-                    self.assertEqual(p.returncode, 0, p.stdout[-500:])
-                    with zipfile.ZipFile(path) as zf:
-                        self.assertEqual(len(zf.namelist()), n + 2 + (ps is not None))
+    def test_many_entries_zip64_eocd(self):
+        n = 0xFFFF
+        entries = [WEntry(f"k{i:06d}", data=b"") for i in range(n)]
+        path = os.path.join(self.d, "many.vzip")
+        data = build_archive(entries, [], 4096)
+        with open(path, "wb") as f:
+            f.write(data)
+        # zip64 end record + locator precede the EOCD
+        eocd = len(data) - 60
+        self.assertEqual(data[eocd - 20:eocd - 16], b"PK\x06\x07")
+        self.assertEqual(struct.unpack_from("<HH", data, eocd + 8), (0xFFFF, 0xFFFF))
+        ok, out = unzip_ok(path)
+        self.assertTrue(ok, out[-500:])
+        with Archive(path) as ar:
+            self.assertEqual(len(ar.list("")), n)
+            self.assertEqual(ar.get("k065534"), b"")
+            self.assertEqual(ar.classify("k000000"), "bytes")
+        # just below the threshold: no zip64
+        data = build_archive(entries[:0xFFFD], [], None)
+        self.assertNotIn(b"PK\x06\x07", data[-100:])
+
+
+class TestWriterRejects(unittest.TestCase):
+    def rej(self, entries, sources=(), page_size=None):
+        with self.assertRaises(WriteInputError):
+            build_archive(list(entries), list(sources), page_size)
+
+    def test_empty_key(self):
+        self.rej([WEntry("", data=b"")])
+
+    def test_invalid_utf8_key(self):
+        self.rej([WEntry("\ud800", data=b"")])
+
+    def test_duplicate_key(self):
+        self.rej([WEntry("a", data=b""), WEntry("a", data=b"")])
+
+    def test_format_key_sources(self):
+        self.rej([WEntry("__vz__/sources", data=b"")])
+
+    def test_format_key_index(self):
+        self.rej([WEntry("__vz__/index", data=b"")])
+
+    def test_source_out_of_range(self):
+        self.rej([WEntry("a", ranges=[proto.Range(0, 0, 1)])])
+
+    def test_source_out_of_range_zero_length(self):
+        self.rej([WEntry("a", ranges=[proto.Range(1, 0, 0)])], [proto.Source("data", b"x")])
+
+    def test_empty_url(self):
+        self.rej([], [proto.Source("url", "")])
+
+    def test_bad_url(self):
+        self.rej([], [proto.Source("url", "a b")])
+
+    def test_key_source_absent(self):
+        self.rej([], [proto.Source("key", "nope")])
+
+    def test_key_source_reference(self):
+        self.rej([WEntry("r", ranges=[])], [proto.Source("key", "r")])
+
+    def test_key_source_format(self):
+        self.rej([], [proto.Source("key", "__vz__/sources")])
+
+    def test_pin_on_key(self):
+        self.rej([WEntry("a", data=b"")], [proto.Source("key", "a", size=1)])
+
+    def test_pin_on_data(self):
+        self.rej([], [proto.Source("data", b"", modified_not_after=1)])
+
+    def test_weak_etag(self):
+        self.rej([], [proto.Source("url", "x", etag='W/"a"')])
+
+    def test_unquoted_etag(self):
+        self.rej([], [proto.Source("url", "x", etag="abc")])
+
+    def test_payload_too_large(self):
+        self.rej([WEntry("a", ranges=[proto.Range(data=b"x" * 65520)])])
+
+    def test_offset_plus_length_overflow(self):
+        self.rej([WEntry("a", ranges=[proto.Range(0, 1 << 63, 1 << 63)])], [proto.Source("data", b"")])
+
+    def test_total_size_overflow(self):
+        r = proto.Range(0, 0, 1 << 63)
+        self.rej([WEntry("a", ranges=[r, r])], [proto.Source("data", b"")])
+
+    def test_key_too_long(self):
+        self.rej([WEntry("k" * 65536, data=b"")])
+
+    def test_pinned_reference(self):
+        self.rej([WEntry("a", ranges=[], pinned=True)], page_size=10)
+
+    def test_pinned_without_index(self):
+        self.rej([WEntry("a", data=b"", pinned=True)])
+
+    def test_compressed_reference(self):
+        self.rej([WEntry("a", ranges=[], compress=True)])
+
+    def test_payload_limit_boundary_ok(self):
+        # 65519 bytes is allowed: 2-byte tag+len prefix for field 5 with 65516 data -> 1+3+65515
+        r = proto.Range(data=b"x" * (65519 - 4))
+        self.assertEqual(len(proto.encode_range(r)), 65519)
+        build_archive([WEntry("a", ranges=[r])], [], None)
+
+
+class TestDescription(unittest.TestCase):
+    def test_valid(self):
+        e, s, ps, m = parse_description({"x": None, "entries": [{"key": "a", "bytes": "00ff", "compress": True},
+                                                                 {"key": "b", "ranges": [{}], "compress": False}],
+                                         "sources": [{"url": "u", "size": 1, "etag": '"e"',
+                                                      "modified_not_after": -3}]})
+        self.assertEqual((ps, m), (None, True))
+        self.assertEqual(e[1].ranges, [proto.Range()])
+        self.assertEqual(s[0].modified_not_after, -3)
+
+    def bad(self, d):
+        with self.assertRaises(WriteInputError):
+            e, s, ps, m = parse_description(d)
+            build_archive(e, s, ps, m)
+
+    def test_float(self):
+        self.bad({"page_size": 1.0})
+
+    def test_page_size_zero(self):
+        self.bad({"page_size": 0})
+
+    def test_null_mirror(self):
+        self.bad({"mirror": None})
+
+    def test_uppercase_hex(self):
+        self.bad({"entries": [{"key": "a", "bytes": "FF"}]})
+
+    def test_odd_hex(self):
+        self.bad({"entries": [{"key": "a", "bytes": "f"}]})
+
+    def test_both_bytes_and_ranges(self):
+        self.bad({"entries": [{"key": "a", "bytes": "", "ranges": []}]})
+
+    def test_mixed_range(self):
+        self.bad({"sources": [{"data": ""}], "entries": [{"key": "a", "ranges": [{"data": "", "source": 0}]}]})
+
+    def test_empty_range_no_sources(self):
+        self.bad({"entries": [{"key": "a", "ranges": [{}]}]})
+
+    def test_two_source_kinds(self):
+        self.bad({"sources": [{"url": "a", "data": ""}]})
+
+    def test_bool_as_int(self):
+        self.bad({"sources": [{"url": "a", "size": True}]})
+
+    def test_compress_on_reference(self):
+        self.bad({"entries": [{"key": "a", "ranges": [], "compress": True}]})
+
+    def test_pinned_without_page_size(self):
+        self.bad({"entries": [{"key": "a", "bytes": "", "pinned": True}]})
+
+
+class TestCLI(unittest.TestCase):
+    def test_cli_write_read(self):
+        with tempfile.TemporaryDirectory() as d:
+            desc = {"page_size": 50, "sources": [{"data": "41424344"}],
+                    "entries": [{"key": "z.json", "bytes": "7b7d", "pinned": True},
+                                {"key": "c/0", "ranges": [{"source": 0, "offset": 1, "length": 2}, {"data": "00"}]}]}
+            dp, out, qp = (os.path.join(d, x) for x in ("d.json", "o.vzip", "q.json"))
+            json.dump(desc, open(dp, "w"))
+            r = subprocess.run([CLI, "write", dp, out], capture_output=True, cwd="/")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            json.dump([{"op": "get", "key": "c/0"}, {"op": "list", "prefix": ""},
+                       {"op": "get", "key": "c/0", "range": {"start": 2, "end": 1}},
+                       {"op": "classify", "key": "z.json"}], open(qp, "w"))
+            r = subprocess.run([CLI, "read", out, qp], capture_output=True, cwd="/")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            res = json.loads(r.stdout)
+            self.assertEqual(res["results"], [
+                {"ok": True, "value": "424300"}, {"ok": True, "keys": ["c/0", "z.json"]},
+                {"ok": False, "class": "request", "error": res["results"][2]["error"]},
+                {"ok": True, "kind": "bytes"}])
+            # invalid description: non-zero exit and no file
+            bad = os.path.join(d, "bad.vzip")
+            json.dump({"entries": [{"key": ""}]}, open(dp, "w"))
+            r = subprocess.run([CLI, "write", dp, bad], capture_output=True)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertFalse(os.path.exists(bad))
+            # open failure is reported as JSON with exit 0
+            r = subprocess.run([CLI, "read", dp, qp], capture_output=True)
+            self.assertEqual(r.returncode, 0)
+            self.assertEqual(json.loads(r.stdout)["open"]["class"], "archive")
+            # invalid queries: non-zero
+            json.dump([{"op": "get", "key": "a", "range": {"offset": 1, "suffix": 2}}], open(qp, "w"))
+            r = subprocess.run([CLI, "read", out, qp], capture_output=True)
+            self.assertNotEqual(r.returncode, 0)
 
 
 if __name__ == "__main__":

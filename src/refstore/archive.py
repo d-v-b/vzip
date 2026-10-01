@@ -12,7 +12,7 @@ Layout written by `VZipWriter`:
                                 Reference entries carry extra field 0x7a76 with a
                                 serialized Range, or 0x7a77 with a serialized Concat
     [zip64 EOCD + locator]      only when needed
-    [EOCD]                      archive comment = b"vzip/1" + u64 offset + u64 size
+    [EOCD]                      archive comment = b"vzip/0" + u64 offset + u64 size
                                 of the (deflated) SourceTable body [+ the same for
                                 the CdIndex]
 
@@ -46,7 +46,8 @@ MAX_PAYLOAD = 65519
 RANGE_EXTRA_ID = 0x7A76  # "vz": payload is a Range
 CONCAT_EXTRA_ID = 0x7A77  # payload is a Concat
 ZIP64_EXTRA_ID = 0x0001
-MAGIC_COMMENT = b"vzip/1"
+FORMAT_VERSION = 0
+MAGIC_COMMENT = b"vzip/%d" % FORMAT_VERSION
 SOURCES_KEY = "__vz__/sources"
 INDEX_KEY = "__vz__/index"
 RESERVED_PREFIX = "__vz__/"
@@ -367,8 +368,11 @@ def parse_tail(tail: bytes, file_size: int) -> Directory:
                          "with a 22- or 38-byte comment)")
     sig, _, _, _, n, cd_size, cd_off, _ = _EOCD.unpack_from(tail, i)
     comment = tail[i + _EOCD.size :]
+    if not comment.startswith(b"vzip/"):
+        raise ValueError(f"not a vzip archive (comment starts {comment[:6]!r})")
     if not comment.startswith(MAGIC_COMMENT):
-        raise ValueError(f"not a vzip version 1 archive (comment starts {comment[:6]!r})")
+        raise ValueError(f"unsupported vzip format version {comment[5:6]!r}; this reader "
+                         f"implements version {FORMAT_VERSION}")
     n_disk = struct.unpack_from("<H", tail, i + 8)[0]
     # spec §3.2: zip64 records are used iff an EOCD count/size/offset is all ones
     if _U16 in (n, n_disk) or cd_size == _U32 or cd_off == _U32:
@@ -434,24 +438,27 @@ def parse_central_directory(cd: bytes, *, trust_offsets: bool) -> dict[str, Entr
             continue
         if name in entries:
             raise ValueError(f"duplicate central directory record for {name!r}")
-        payload, error, ref_blocks = None, None, 0
+        payload, error, ref_blocks, z64 = None, None, 0, []
         try:
             for hid, data in _iter_extra(extra):
                 if hid in (RANGE_EXTRA_ID, CONCAT_EXTRA_ID):
                     ref_blocks += 1
                     payload = (hid, data)
                 elif hid == ZIP64_EXTRA_ID:
-                    vals = list(struct.unpack_from(f"<{len(data) // 8}Q", data))
-                    if size == _U32:
-                        size = vals.pop(0)
-                    if csize == _U32:
-                        csize = vals.pop(0)
-                    if off == _U32:
-                        off = vals.pop(0)
+                    z64.append(data)
         except (ValueError, IndexError, struct.error) as e:
             error = f"unparseable extra field: {e}"
-        if error is None and off == _U32:
-            error = "local header offset is 0xFFFFFFFF but no ZIP64 block gives it"
+        if error is None and len(z64) > 1:
+            error = "more than one ZIP64 extra block"
+        elif error is None and _U32 in (size, csize, off):
+            # spec §3.2: the block holds, in order, the 64-bit values of the all-ones fields
+            need = [f for f, v in (("size", size), ("csize", csize), ("off", off)) if v == _U32]
+            data = z64[0] if z64 else b""
+            if len(data) < 8 * len(need):
+                error = "ZIP64 extra block missing or too short"
+            else:
+                vals = dict(zip(need, struct.unpack_from(f"<{len(need)}Q", data)))
+                size, csize, off = vals.get("size", size), vals.get("csize", csize), vals.get("off", off)
         if error is None:
             if ref_blocks > 1:
                 error = "more than one reference extra field block"

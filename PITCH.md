@@ -66,7 +66,8 @@ A vzip reader sees the virtual dataset.
   the first.
 - **Nobody owns it.** ZIP is documented by PKWARE's APPNOTE, and protobuf's
   wire format by a public spec. The vzip rules on top are [one
-  document](SPEC.md).
+  document](SPEC.md). Every archive records its format version (`vzip/0`
+  today), so a reader knows whether it can read an archive before it tries.
 
 ## What it costs, measured
 
@@ -93,7 +94,7 @@ Zarr shard index. Zarr's own sharding codec then does the per-chunk lookup.
 
 To check the "afternoon" claim, agents implemented vzip from
 [SPEC.md](SPEC.md) alone, in Rust, TypeScript and Python, with no access to
-any existing code. This was done in three rounds, with fresh agents each time.
+any existing code. This was done in five rounds, with fresh agents each time.
 After each round, their notes and every disagreement between them went back
 into the spec ([conformance/REVISIONS.md](conformance/REVISIONS.md)).
 
@@ -102,11 +103,12 @@ into the spec ([conformance/REVISIONS.md](conformance/REVISIONS.md)).
 - **Round 1:** every implementation passed the conformance suite and read the
   others' archives. But on 11 queries they gave different answers that the
   spec allowed.
-- **Rounds 2, 3 and 4:** fresh agents again passed everything, and on every
+- **Rounds 2–5:** fresh agents again passed everything, and on every
   tested query all of them, plus the reference, gave the same answer. That
   includes error classes.
 
-The round-4 implementations are in [impls/](impls/).
+Round 5 added HTTP, which all three implementations support. Those
+implementations are in [impls/](impls/).
 
 ## What vzip is not
 
