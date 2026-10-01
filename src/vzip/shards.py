@@ -28,8 +28,8 @@ from virtualizarr.writers.icechunk import update_attributes
 from zarr.codecs import BytesCodec, ShardingCodec
 from zarr.storage import MemoryStore
 
-from refstore.archive import VZipWriter
-from refstore.pb import Range
+from vzip.archive import VZipWriter
+from vzip.pb import Range
 
 _MISSING = np.uint64(2**64 - 1)
 

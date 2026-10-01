@@ -21,9 +21,9 @@ import zarr
 from virtualizarr.manifests import ChunkManifest, ManifestArray
 from virtualizarr.manifests.utils import create_v3_array_metadata
 
-from refstore.convert import write_vzip
-from refstore.shards import write_vzip_sharded
-from refstore.store import VZipStore
+from vzip.convert import write_vzip
+from vzip.shards import write_vzip_sharded
+from vzip.store import VZipStore
 
 warnings.filterwarnings("ignore")
 ROOT = Path(__file__).parent / "_bench"

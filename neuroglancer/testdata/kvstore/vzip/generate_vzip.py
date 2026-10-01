@@ -15,7 +15,7 @@
 """Generates the vzip test archives.
 
 Uses the reference vzip writer from the repository containing this fork
-(`src/refstore`). From the repository root:
+(`src/vzip`). From the repository root:
 
     uv run python neuroglancer/testdata/kvstore/vzip/generate_vzip.py
 """
@@ -26,8 +26,8 @@ import io
 import struct
 from pathlib import Path
 
-from refstore.archive import VZipWriter
-from refstore.pb import Concat, Range, Source
+from vzip.archive import VZipWriter
+from vzip.pb import Concat, Range, Source
 
 HERE = Path(__file__).parent
 FILES = HERE.parent / "files"  # the files the generic kvstore tests expect

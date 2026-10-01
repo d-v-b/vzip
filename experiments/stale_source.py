@@ -21,8 +21,8 @@ import xarray as xr
 sys.path.insert(0, str(Path(__file__).parents[1] / "tests"))
 from conftest import virtualize  # noqa: E402
 
-from refstore.convert import write_vzip  # noqa: E402
-from refstore.store import VZipStore  # noqa: E402
+from vzip.convert import write_vzip  # noqa: E402
+from vzip.store import VZipStore  # noqa: E402
 
 warnings.filterwarnings("ignore")
 

@@ -2,7 +2,7 @@
 
 Each supported fixture in web/test/fixtures/ is virtualized by
 web/conformance/tiff.ts (the browser code, run under Node). The archive is
-then read by the reference reader (refstore) and zarr-python, and every
+then read by the reference reader (src/vzip) and zarr-python, and every
 pyramid level must equal what tifffile reads from the TIFF directly. The
 unsupported fixtures must be refused.
 
@@ -26,8 +26,8 @@ import zarr
 from zarr.abc.codec import BytesBytesCodec
 from zarr.registry import register_codec
 
-import refstore.codecs  # noqa: F401  (registers imagecodecs_jpeg2k)
-from refstore.store import VZipStore
+import vzip.codecs  # noqa: F401  (registers imagecodecs_jpeg2k)
+from vzip.store import VZipStore
 
 
 @dataclass(frozen=True)

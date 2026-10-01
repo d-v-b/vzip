@@ -81,5 +81,5 @@ node web/demo/e2e.mjs <tiff url> <out dir>                   # demo + Neuroglanc
 - `run_write.py` checks every unpaged write case with `conformance/validate.py`
   and the reference reader, plus a zip64 archive and every invalid description.
 - `verify_tiff.py` virtualizes each fixture with the browser code. It then
-  reads every level through `refstore` and zarr-python and compares it with
+  reads every level through the reference implementation (`src/vzip`) and zarr-python and compares it with
   tifffile.

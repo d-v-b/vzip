@@ -1,4 +1,4 @@
-"""vzip messages built with the official protobuf runtime (independent of refstore.pb).
+"""vzip messages built with the official protobuf runtime (independent of vzip.pb).
 
 Used by the conformance kit to compute canonical encodings and to decode
 payloads found in archives under test.

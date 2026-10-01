@@ -3,8 +3,8 @@ import itertools
 import xarray as xr
 import zarr
 
-from refstore.convert import write_vzip
-from refstore.store import VZipStore
+from vzip.convert import write_vzip
+from vzip.store import VZipStore
 
 from conftest import virtualize
 
@@ -27,7 +27,7 @@ def test_roundtrip_single_and_combined(netcdf_files, tmp_path):
 def test_naive_view_is_a_plain_zip(netcdf_files, tmp_path):
     import zipfile
 
-    from refstore.pb import Range
+    from vzip.pb import Range
 
     paths, _ = netcdf_files
     out = tmp_path / "one.vzip"

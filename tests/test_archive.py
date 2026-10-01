@@ -7,9 +7,9 @@ from zarr.abc.store import OffsetByteRequest, RangeByteRequest, SuffixByteReques
 from zarr.core.buffer import default_buffer_prototype
 from zarr.core.sync import sync
 
-from refstore.archive import VZipWriter
-from refstore.pb import Range
-from refstore.store import VZipStore
+from vzip.archive import VZipWriter
+from vzip.pb import Range
+from vzip.store import VZipStore
 
 
 def _get(store, key, br=None):

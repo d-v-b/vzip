@@ -9,9 +9,9 @@ import zarr
 sys.path.insert(0, str(Path(__file__).parents[1] / "tests"))
 from conftest import make_netcdf, virtualize  # noqa: E402
 
-from refstore.convert import write_vzip
-from refstore.pb import Range
-from refstore.store import VZipStore
+from vzip.convert import write_vzip
+from vzip.pb import Range
+from vzip.store import VZipStore
 
 d = Path(tempfile.mkdtemp())
 make_netcdf(d / "a.nc", 0)

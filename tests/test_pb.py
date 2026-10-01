@@ -2,7 +2,7 @@
 import pytest
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
-from refstore.pb import Concat, Range, Source, decode_source_table, encode_source_table
+from vzip.pb import Concat, Range, Source, decode_source_table, encode_source_table
 
 
 def _official():

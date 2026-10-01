@@ -41,7 +41,7 @@ The schema is a few small protobuf messages ([proto/vzip.proto](proto/vzip.proto
 Every kind of source costs the same per reference: a small integer. The writer
 gives the most-used URL index 0, which costs zero bytes. The common case is a
 bare `Range` of **6–9 bytes** on the wire, e.g. `18 cf 52 20 85 09`. The
-codec is ~150 lines of hand-written Python ([pb.py](src/refstore/pb.py)), and a
+codec is ~150 lines of hand-written Python ([pb.py](src/vzip/pb.py)), and a
 test checks it byte-for-byte against the official protobuf runtime.
 
 ## Realization as a ZIP file
@@ -149,7 +149,7 @@ Python overhead; don't read much into them.
      read, regardless of N.
    - It is still a 100% standard zip, and every key is still a visible entry.
    - Listing everything still reads the whole CD.
-3. **Virtual shards are the best result** ([shards.py](src/refstore/shards.py)).
+3. **Virtual shards are the best result** ([shards.py](src/vzip/shards.py)).
    - When every chunk in a block of the chunk grid comes from one file, store
      *one* reference per block: `[file bytes 0..end] ++ [zarr shard index]`.
    - The array metadata says `sharding_indexed`. zarr-python's own sharding
@@ -257,11 +257,11 @@ Where vzip is clearly worse:
 
 ```
 proto/vzip.proto          wire schema
-src/refstore/pb.py        protobuf codec (no protoc)
-src/refstore/archive.py   zip writer + CD/EOCD parsing, paged CD index
-src/refstore/store.py     zarr Store: overlay resolver (obstore IO, request stats)
-src/refstore/convert.py   virtualizarr Dataset -> vzip (per-chunk refs)
-src/refstore/shards.py    virtualizarr Dataset -> vzip (virtual shards)
+src/vzip/pb.py            protobuf codec (no protoc)
+src/vzip/archive.py       zip writer + CD/EOCD parsing, paged CD index
+src/vzip/store.py         zarr Store: overlay resolver (obstore IO, request stats)
+src/vzip/convert.py       virtualizarr Dataset -> vzip (per-chunk refs)
+src/vzip/shards.py        virtualizarr Dataset -> vzip (virtual shards)
 experiments/naive_view.py what naive tools see
 experiments/bench.py      local size/latency comparison
 experiments/http_bench.py request-level comparison over HTTP
@@ -296,7 +296,7 @@ pyramidal OME-TIFF in place on EBI's FTP/HTTPS server.
   The OME-XML is stored as a real (deflated) bytes entry, `OME/METADATA.ome.xml`,
   next to the references.
 - **Codec:** Zarr v3 has no standard JPEG 2000 codec, so
-  [`refstore/codecs.py`](src/refstore/codecs.py) registers a small
+  [`vzip/codecs.py`](src/vzip/codecs.py) registers a small
   `imagecodecs_jpeg2k` array-to-bytes codec. Each TIFF tile is a standalone
   codestream.
 

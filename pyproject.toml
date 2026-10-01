@@ -1,7 +1,7 @@
 [project]
-name = "refstore"
+name = "vzip"
 version = "0.1.0"
-description = "Exploring stored representations for virtual zarr (byte-range reference overlays)"
+description = "vzip: a ZIP container for byte-range references (reference implementation and experiments)"
 authors = [
     { name = "Davis Vann Bennett", email = "davis.v.bennett@gmail.com" }
 ]

@@ -3,10 +3,10 @@ import itertools
 import pytest
 import xarray as xr
 
-from refstore.shards import write_vzip_sharded
+from vzip.shards import write_vzip_sharded
 from zarr.core.sync import sync
 
-from refstore.store import VZipStore
+from vzip.store import VZipStore
 
 from conftest import virtualize
 

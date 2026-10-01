@@ -28,9 +28,9 @@ import tifffile
 import zarr
 from zarr.storage import MemoryStore
 
-from refstore.archive import VZipWriter
-from refstore.codecs import Jpeg2kCodec
-from refstore.pb import Range, Source
+from vzip.archive import VZipWriter
+from vzip.codecs import Jpeg2kCodec
+from vzip.pb import Range, Source
 
 JPEG2K = {33003, 33004, 33005, 34712}
 
