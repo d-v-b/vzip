@@ -568,6 +568,24 @@ Against r8, the round-7 implementations fail exactly the rows marked **No**
 or partly above (`h/dupetag`, TS `h/upperbytes`, and two query-file
 rejections), and nothing else.
 
+## Revision 8.1: credit for prior work (editorial)
+
+Format version 0, specification revision 8.1. **Status: provisional.**
+Editorial only: no rule changes, so the revision 8 conformance suite applies
+unchanged.
+
+The new informative §1.4 credits the work vzip builds on:
+- **kerchunk:** its reference specification defines vzip's data model. §1.4
+  maps each kerchunk construct (inline data, `[url, offset, length]`,
+  `base64:` values, `templates`) to its vzip counterpart.
+- **VirtualiZarr:** its chunk manifests are what vzip references record, and
+  the call for a Zarr-native on-disk manifest format (zarr-specs#287)
+  motivated this work.
+- **Icechunk:** its virtual chunk checks are the origin of source pins
+  (§6.1).
+
+PITCH.md gains a matching section, "Where the ideas come from".
+
 ## Open feedback: browser readers (from the Neuroglancer driver)
 
 The Neuroglancer driver

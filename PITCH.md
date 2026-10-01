@@ -3,11 +3,14 @@
 ## The problem
 
 Petabytes of scientific data sit in HDF5, netCDF, GRIB and TIFF files on
-object storage. Zarr readers can read those files in place, without copying
-them, if someone writes down where each chunk lives: *this chunk is bytes
-4,096–135,000 of `s3://bucket/file.nc`*. This is "virtual Zarr", and
-[VirtualiZarr](https://github.com/zarr-developers/VirtualiZarr) makes it easy
-to produce.
+object storage. [kerchunk](https://github.com/fsspec/kerchunk) showed that
+Zarr readers can read those files in place, without copying them, if someone
+writes down where each chunk lives: *this chunk is bytes 4,096–135,000 of
+`s3://bucket/file.nc`*. This is "virtual Zarr".
+[VirtualiZarr](https://github.com/zarr-developers/VirtualiZarr) grew out of
+kerchunk and makes virtual datasets easy to build and combine with xarray.
+vzip exists because of both projects; see
+[Where the ideas come from](#where-the-ideas-come-from).
 
 The hard part is storing those references. A virtual dataset is a Zarr store
 in which some keys hold real bytes (metadata, small coordinate arrays) and
@@ -60,6 +63,61 @@ A program that has never heard of vzip still sees a valid archive:
 - reference keys show up as small files holding their encoded reference.
 
 A vzip reader sees the virtual dataset.
+
+## Where the ideas come from
+
+vzip is a container for ideas that kerchunk and VirtualiZarr worked out.
+Very little in its data model is new.
+
+- **[kerchunk](https://github.com/fsspec/kerchunk)** (Martin Durant and
+  contributors, part of the fsspec project) introduced virtual Zarr. It scans
+  HDF5, netCDF, GRIB, TIFF and FITS files for the locations of their chunks,
+  and fsspec's `ReferenceFileSystem` serves those references so that Zarr
+  reads the files as if they were Zarr. vzip stores the mapping that kerchunk's
+  [reference specification](https://fsspec.github.io/kerchunk/spec.html)
+  defines:
+  - **The data model:** a key's value is either inline data or
+    `[url, offset, length]`. These are vzip's bytes entries and `Range`
+    references.
+  - **Inline binary data:** values prefixed `base64:` carry binary data
+    inline. These are vzip's literal ranges and `data` sources.
+  - **Shared URLs:** `templates` let many references share one URL. In vzip,
+    references name an entry of the source table by number.
+  - **Binary storage:** the version 1 specification already anticipated
+    "future possible binary storage" of references. vzip is one such encoding.
+
+  kerchunk's Parquet layout showed how compact references can be:
+  dictionary-encoded paths, columns of offsets and lengths, read lazily in
+  pieces. It is the bar vzip's size and request counts are measured against
+  [below](#what-it-costs-measured).
+- **[VirtualiZarr](https://github.com/zarr-developers/VirtualiZarr)**
+  (started by Tom Nicholas, now a zarr-developers project) recast virtual Zarr
+  in Zarr's own terms. It grew out of discussions on kerchunk
+  ([fsspec/kerchunk#377](https://github.com/fsspec/kerchunk/issues/377)).
+  - **Chunk manifests:** VirtualiZarr's chunk manifests (a path, offset and
+    length for every chunk of an array) are what vzip's references record.
+  - **The code:** vzip's Python converters
+    ([convert.py](src/vzip/convert.py), [shards.py](src/vzip/shards.py)) take
+    VirtualiZarr's `ManifestArray` datasets as input and reuse helpers from
+    its Icechunk writer. The benchmarks build their datasets with its
+    `ChunkManifest`.
+  - **The open problem:** its roadmap names a Zarr-native on-disk chunk
+    manifest format as future work
+    ([zarr-specs#287](https://github.com/zarr-developers/zarr-specs/issues/287),
+    Joe Hamman's manifest storage transformer proposal). vzip explores one
+    container for such manifests.
+  - **Virtual shards:** a virtual shard stores a source file's manifest as a
+    Zarr shard index, so the manifest idea works inside Zarr's own sharding
+    codec.
+- **[Icechunk](https://icechunk.io/)** (Earthmover) checks virtual chunks
+  against the ETag or modification time of the object they point into. vzip's
+  source pins are the same idea.
+
+What vzip adds is narrow: a single-file container (ZIP) and a binary encoding,
+defined by one document with a conformance suite, so that references can be
+read without fsspec, Python, or a particular storage engine. It is meant to
+sit alongside these tools, not replace them. VirtualiZarr could write vzip as
+one more output format, as it writes kerchunk references and Icechunk today.
 
 ## Why ZIP
 
@@ -144,8 +202,11 @@ round-7 implementations are in [impls/](impls/).
   earlier silently returns the new file's values; this was measured with
   netCDF files whose layout didn't change. Icechunk guards against this by
   pinning each reference to the object's ETag or last-modified time, and
-  checking with a conditional request. The next spec revision adds the same
-  idea, per source rather than per chunk.
+  checking with a conditional request. vzip took the same idea as source pins
+  ([SPEC.md §6.1](SPEC.md), since revision 3), per source rather than per
+  chunk. What remains open is that browsers often cannot check pins: servers
+  must expose the headers to cross-origin pages
+  ([open feedback](conformance/REVISIONS.md)).
 - **Updates.** Appending a day of data means rewriting the archive, or
   stacking archives where later ones shadow earlier ones (not yet designed).
 - **Ragged sources.** Virtual shards need source files that tile a regular
