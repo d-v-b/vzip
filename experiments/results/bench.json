@@ -1,0 +1,84 @@
+[
+ {
+  "n_refs": 10000,
+  "format": "vzip",
+  "bytes": 1215240,
+  "bytes_per_ref": 121.524,
+  "objects": 1,
+  "write_s": 0.04576183296740055,
+  "open_and_read_one_chunk_s": 0.02080295793712139,
+  "requests": 3,
+  "index_bytes_read": 708095
+ },
+ {
+  "n_refs": 10000,
+  "format": "vzip (no mirror)",
+  "bytes": 1107029,
+  "bytes_per_ref": 110.7029,
+  "objects": 1,
+  "write_s": 0.03644374944269657,
+  "open_and_read_one_chunk_s": 0.020823165774345398,
+  "requests": 3,
+  "index_bytes_read": 708095
+ },
+ {
+  "n_refs": 10000,
+  "format": "vzip (paged CD)",
+  "bytes": 1215542,
+  "bytes_per_ref": 121.5542,
+  "objects": 1,
+  "write_s": 0.03517179191112518,
+  "open_and_read_one_chunk_s": 0.00305095873773098,
+  "requests": 4,
+  "index_bytes_read": 132145
+ },
+ {
+  "n_refs": 10000,
+  "format": "vzip shards, inline idx",
+  "bytes": 322689,
+  "bytes_per_ref": 32.2689,
+  "objects": 1,
+  "write_s": 0.0024619167670607567,
+  "open_and_read_one_chunk_s": 0.002224874682724476,
+  "requests": 3,
+  "index_bytes_read": 162117
+ },
+ {
+  "n_refs": 10000,
+  "format": "vzip shards, lazy idx",
+  "bytes": 81691,
+  "bytes_per_ref": 8.1691,
+  "objects": 1,
+  "write_s": 0.053769041784107685,
+  "open_and_read_one_chunk_s": 0.0014605000615119934,
+  "requests": 2,
+  "index_bytes_read": 65536
+ },
+ {
+  "n_refs": 10000,
+  "format": "kerchunk json",
+  "bytes": 1344037,
+  "bytes_per_ref": 134.4037,
+  "objects": 1,
+  "write_s": 0.026213583536446095,
+  "open_and_read_one_chunk_s": 0.014166916720569134
+ },
+ {
+  "n_refs": 10000,
+  "format": "kerchunk parquet",
+  "bytes": 66049,
+  "bytes_per_ref": 6.6049,
+  "objects": 2,
+  "write_s": 0.06626745779067278,
+  "open_and_read_one_chunk_s": 0.004457583650946617
+ },
+ {
+  "n_refs": 10000,
+  "format": "icechunk",
+  "bytes": 217130,
+  "bytes_per_ref": 21.713,
+  "objects": 7,
+  "write_s": 0.025320791639387608,
+  "open_and_read_one_chunk_s": 0.002384750172495842
+ }
+]

@@ -1,0 +1,56 @@
+[
+ {
+  "n_refs": 1000000,
+  "format": "vzip (chunk refs)",
+  "size_bytes": 127565513,
+  "requests": 3,
+  "index_requests": 2,
+  "index_bytes": 73784589,
+  "seconds": 3.164989834651351
+ },
+ {
+  "n_refs": 1000000,
+  "format": "vzip (chunk refs, paged)",
+  "size_bytes": 127577583,
+  "requests": 4,
+  "index_requests": 3,
+  "index_bytes": 146541,
+  "seconds": 0.6956902500241995
+ },
+ {
+  "n_refs": 1000000,
+  "format": "vzip (virtual shards)",
+  "size_bytes": 8039142,
+  "requests": 4,
+  "index_requests": 3,
+  "index_bytes": 158248,
+  "seconds": 0.672472458332777
+ },
+ {
+  "n_refs": 1000000,
+  "format": "kerchunk json",
+  "size_bytes": 109372807,
+  "requests": 3,
+  "index_requests": 2,
+  "index_bytes": 109372807,
+  "seconds": 1.08961783349514
+ },
+ {
+  "n_refs": 1000000,
+  "format": "kerchunk parquet",
+  "size_bytes": 6438563,
+  "requests": 4,
+  "index_requests": 3,
+  "index_bytes": 644026,
+  "seconds": 0.482825624756515
+ },
+ {
+  "n_refs": 1000000,
+  "format": "icechunk",
+  "size_bytes": 22015981,
+  "requests": 11,
+  "index_requests": 10,
+  "index_bytes": 16684642,
+  "seconds": 0.9561882093548775
+ }
+]

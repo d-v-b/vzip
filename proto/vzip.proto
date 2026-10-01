@@ -1,0 +1,67 @@
+// Wire schema for references stored in a "vzip" archive.
+//
+// A vzip archive is an ordinary ZIP file. Every entry is either
+//   * a concrete entry: the entry body is the value, or
+//   * a reference entry: the entry's central-directory record carries one of
+//       extra field 0x7a76 ("vz"): payload is a serialized `Range` (the default), or
+//       extra field 0x7a77:        payload is a serialized `Concat`.
+//     The entry body holds the same payload, so tools that know nothing about
+//     references still see a well-formed file.
+//
+// A Range is bytes [offset, offset+length) of one entry of the archive's
+// source table, or literal `data`.
+
+syntax = "proto3";
+
+package vzip.v1;
+
+message Range {
+  // Index into the SourceTable. Index 0 costs zero bytes on the wire.
+  uint32 source = 1;
+  uint64 offset = 3;
+  uint64 length = 4;
+  // Literal bytes for this range only. When set, the other fields are ignored.
+  bytes data = 5;
+}
+
+// A value assembled from several ranges, e.g. a decoding header (often one
+// `data` Source shared by many chunks) followed by the chunk's bytes.
+message Concat {
+  repeated Range parts = 1;
+}
+
+// Something a Range can take bytes from.
+message Source {
+  oneof kind {
+    string url = 1;   // external object, absolute or relative to the archive
+    string key = 2;   // another entry of this archive (may be deflated)
+    bytes data = 3;   // literal bytes stored in the table, e.g. a shared header
+  }
+}
+
+// Stored as the reserved entry "__vz__/sources" (deflated) and located by
+// the archive comment. Zarr v3 reserves names starting with "__", so it can't
+// collide with a zarr key.
+message SourceTable {
+  repeated Source sources = 1;
+}
+
+// Optional sparse index over a sorted central directory, stored as the
+// reserved entry "__vz__/index" and located by the archive comment. Lets a
+// reader find one key by fetching one CD page instead of the whole CD.
+message CdIndex {
+  message Page {
+    string first_key = 1;
+    uint64 offset = 2;  // relative to the start of the central directory
+    uint64 length = 3;
+  }
+  message Pinned {   // entries a reader can use without loading any page
+    string key = 1;
+    uint64 data_offset = 2;
+    uint64 size = 3;
+    uint64 csize = 4;
+    uint32 method = 5;
+  }
+  repeated Page pages = 1;
+  repeated Pinned pinned = 2;
+}
