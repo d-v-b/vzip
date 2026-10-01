@@ -1,5 +1,8 @@
 // Serves the demo (dist/) at / and the built Neuroglancer fork at
 // /neuroglancer/, on one origin so the service worker controls both.
+// The fork (https://github.com/d-v-b/neuroglancer, branch vzip) is read from
+// $NEUROGLANCER, by default a clone next to this repository (../neuroglancer),
+// after `npm run build` there.
 // Usage: node web/serve.mjs [port]
 
 import fs from "node:fs";
@@ -8,7 +11,7 @@ import path from "node:path";
 
 const here = path.dirname(new URL(import.meta.url).pathname);
 const roots = [
-  ["/neuroglancer/", path.join(here, "../neuroglancer/dist/client")],
+  ["/neuroglancer/", path.join(process.env.NEUROGLANCER ?? path.join(here, "../../neuroglancer"), "dist/client")],
   ["/", path.join(here, "dist")],
 ];
 const TYPES = {

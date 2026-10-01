@@ -2,19 +2,18 @@
 // its service worker, Neuroglancer (same origin) opens the resulting Zarr URL
 // as plain zarr3 over HTTP, and the archive is downloaded.
 //
-// Usage (after `node web/build.mjs` and building neuroglancer/):
+// Usage (after `node web/build.mjs` and building the Neuroglancer fork; see
+// serve.mjs):
 //   node web/demo/e2e.mjs <tiff url> <out dir> [wait ms]
 // With BASE=<url> (e.g. the GitHub Pages site), tests that deployment instead
 // of serving the local build.
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import path from "node:path";
+import { chromium } from "playwright";
 
 const here = path.dirname(new URL(import.meta.url).pathname);
-const require = createRequire(path.join(here, "../../neuroglancer/package.json"));
-const { chromium } = require("playwright");
 
 const [tiffUrl, outDir, waitMs = "20000"] = process.argv.slice(2);
 fs.mkdirSync(outDir, { recursive: true });

@@ -27,11 +27,13 @@ const zarr = tiffZarrUrl(prefix, "https://example.org/slide.ome.tiff");
 // e.g. in Neuroglancer: `${zarr}|zarr3:`
 ```
 
-Build and run the demo, which also serves the Neuroglancer fork at
-`/neuroglancer/`:
+Build and run the demo, which also serves the Neuroglancer fork
+(https://github.com/d-v-b/neuroglancer, branch `vzip`) at `/neuroglancer/`.
+The fork is read from `$NEUROGLANCER`, by default a clone next to this
+repository, built with `npm run build`:
 
 ```bash
-node web/build.mjs
+(cd web && npm install && node build.mjs)
 node web/serve.mjs 8080
 ```
 
@@ -60,8 +62,8 @@ predictors, and multi-file OME-TIFF.
 - **Same origin only.** A service worker only controls pages from its own
   origin, so the viewer must be served from the same origin as the worker.
 - **Codecs are the viewer's job.** The chunks are the TIFF's tiles as they
-  are. Neuroglancer's fork in this repo decodes `imagecodecs_jpeg2k`; other
-  viewers need their own decoder for it.
+  are. The Neuroglancer fork decodes `imagecodecs_jpeg2k`; other viewers
+  need their own decoder for it.
 - **No pins.** Archives are written without pins: cross-origin servers rarely
   expose `ETag`, `Last-Modified` or `Content-Range` to scripts. For the same
   reason, a 206 response with no visible `Content-Range` is accepted when its

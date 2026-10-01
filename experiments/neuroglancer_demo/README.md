@@ -1,10 +1,13 @@
 # Neuroglancer demos
 
-Both demos use the vzip-enabled Neuroglancer fork in `neuroglancer/`. Build it
+Both demos use the vzip-enabled Neuroglancer fork,
+https://github.com/d-v-b/neuroglancer (branch `vzip`). The scripts look for
+it in `$NEUROGLANCER`, by default a clone next to this repository. Build it
 first:
 
 ```bash
-cd neuroglancer && npm install && npm run build
+git clone --branch vzip https://github.com/d-v-b/neuroglancer.git ../neuroglancer
+(cd ../neuroglancer && npm install && npm run build)
 ```
 
 `screenshot.mjs` serves the built viewer together with a data directory, opens
@@ -19,8 +22,7 @@ into `mandelbrot.nc`.
 
 ```bash
 uv run python experiments/neuroglancer_demo/make_hdf5_vzip.py experiments/out/ng_demo
-cd neuroglancer
-node ../experiments/neuroglancer_demo/screenshot.mjs ../experiments/out/ng_demo ../experiments/neuroglancer_demo/states/mandelbrot.json ../experiments/out/ng_demo/neuroglancer_vzip.png
+node experiments/neuroglancer_demo/screenshot.mjs experiments/out/ng_demo experiments/neuroglancer_demo/states/mandelbrot.json experiments/out/ng_demo/neuroglancer_vzip.png
 ```
 
 `states/mandelbrot_scheme.json` opens the same data with the bare
@@ -38,9 +40,8 @@ them with the `imagecodecs_jpeg2k` codec.
 uv run python experiments/tiff_to_vzip.py --no-pins \
   'https://ftp.ebi.ac.uk/pub/databases/IDR/idr0096-tratwal-marrowquant/20210609-ftp-ome-tiffs/4000_d11_m5_LT_2%20(20x_01).ome.tiff' \
   experiments/out/ng_idr/idr0096_4000_d11_m5_LT_2_unpinned.vzip
-cd neuroglancer
-node ../experiments/neuroglancer_demo/screenshot.mjs ../experiments/out/ng_idr ../experiments/neuroglancer_demo/states/idr_ome_zarr.json ../experiments/out/ng_idr/neuroglancer_idr_overview.png 25000
-node ../experiments/neuroglancer_demo/screenshot.mjs ../experiments/out/ng_idr ../experiments/neuroglancer_demo/states/idr_ome_zarr_detail.json ../experiments/out/ng_idr/neuroglancer_idr_detail.png 25000
+node experiments/neuroglancer_demo/screenshot.mjs experiments/out/ng_idr experiments/neuroglancer_demo/states/idr_ome_zarr.json experiments/out/ng_idr/neuroglancer_idr_overview.png 25000
+node experiments/neuroglancer_demo/screenshot.mjs experiments/out/ng_idr experiments/neuroglancer_demo/states/idr_ome_zarr_detail.json experiments/out/ng_idr/neuroglancer_idr_detail.png 25000
 ```
 
 Notes:

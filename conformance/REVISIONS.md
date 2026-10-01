@@ -570,7 +570,9 @@ rejections), and nothing else.
 
 ## Open feedback: browser readers (from the Neuroglancer driver)
 
-The Neuroglancer driver (`neuroglancer/src/kvstore/vzip/`) is the first
+The Neuroglancer driver
+([`src/kvstore/vzip/`](https://github.com/d-v-b/neuroglancer/tree/vzip/src/kvstore/vzip)
+in the fork d-v-b/neuroglancer) is the first
 reader to run inside a web browser. Its demo reads the IDR OME-TIFF from
 `ftp.ebi.ac.uk`, and that turned up §6.2 rules a browser cannot follow:
 

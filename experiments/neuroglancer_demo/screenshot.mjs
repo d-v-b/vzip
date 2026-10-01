@@ -1,8 +1,11 @@
 // Open a Neuroglancer state in the vzip-enabled fork and take a screenshot,
 // logging the data requests the viewer makes.
 //
-// Usage (from the neuroglancer/ directory, after `npm run build`):
-//   node ../experiments/neuroglancer_demo/screenshot.mjs <data dir> <state.json> <out.png> [wait ms]
+// Usage (after `npm run build` in the Neuroglancer fork):
+//   node experiments/neuroglancer_demo/screenshot.mjs <data dir> <state.json> <out.png> [wait ms]
+//
+// The fork (https://github.com/d-v-b/neuroglancer, branch vzip) is read from
+// $NEUROGLANCER, by default a clone next to this repository (../neuroglancer).
 //
 // The built client is served together with <data dir> (at /data/), and
 // "{base}" in the state file is replaced by the server's origin. Examples are
@@ -12,14 +15,16 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
-// Packages come from neuroglancer's node_modules (the working directory).
-const require = createRequire(path.resolve("package.json"));
+const here = path.dirname(new URL(import.meta.url).pathname);
+const neuroglancer = process.env.NEUROGLANCER ?? path.join(here, "../../../neuroglancer");
+// Packages come from the fork's node_modules.
+const require = createRequire(path.join(neuroglancer, "package.json"));
 const { createServer } = require("http-server");
 const { chromium } = require("playwright");
 
 const [dataDir, stateFile, outPng, waitMs = "5000"] = process.argv.slice(2);
 const stage = fs.mkdtempSync("/tmp/ng-vzip-");
-fs.cpSync("dist/client", stage, { recursive: true });
+fs.cpSync(path.join(neuroglancer, "dist/client"), stage, { recursive: true });
 fs.cpSync(dataDir, path.join(stage, "data"), { recursive: true });
 
 const server = createServer({ root: stage, cache: -1, cors: true }).server;

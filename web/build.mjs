@@ -1,14 +1,11 @@
 // Builds dist/: the service worker (vzip-sw.js, a classic script so it works
 // in every browser with service workers) and the demo page.
-// Uses the esbuild installed for the Neuroglancer fork.
 
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import path from "node:path";
+import * as esbuild from "esbuild";
 
 const here = path.dirname(new URL(import.meta.url).pathname);
-const require = createRequire(path.join(here, "../neuroglancer/package.json"));
-const esbuild = require("esbuild");
 
 const dist = path.join(here, "dist");
 fs.rmSync(dist, { recursive: true, force: true });
