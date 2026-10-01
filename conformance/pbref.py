@@ -12,7 +12,7 @@ _F = descriptor_pb2.FieldDescriptorProto
 
 
 def _build():
-    fdp = descriptor_pb2.FileDescriptorProto(name="vzip.proto", package="vzip.v1", syntax="proto3")
+    fdp = descriptor_pb2.FileDescriptorProto(name="vzip.proto", package="vzip.v0", syntax="proto3")
 
     rng = fdp.message_type.add(name="Range")
     for n, i, t in [("source", 1, _F.TYPE_UINT32), ("offset", 3, _F.TYPE_UINT64),
@@ -23,7 +23,7 @@ def _build():
                   oneof_index=0, proto3_optional=True)
 
     cat = fdp.message_type.add(name="Concat")
-    cat.field.add(name="parts", number=1, type=_F.TYPE_MESSAGE, type_name=".vzip.v1.Range",
+    cat.field.add(name="parts", number=1, type=_F.TYPE_MESSAGE, type_name=".vzip.v0.Range",
                   label=_F.LABEL_REPEATED)
 
     src = fdp.message_type.add(name="Source")
@@ -31,9 +31,14 @@ def _build():
     for n, i, t in [("url", 1, _F.TYPE_STRING), ("key", 2, _F.TYPE_STRING),
                     ("data", 3, _F.TYPE_BYTES)]:
         src.field.add(name=n, number=i, type=t, label=_F.LABEL_OPTIONAL, oneof_index=0)
+    for j, (n, i, t) in enumerate([("size", 4, _F.TYPE_UINT64), ("etag", 5, _F.TYPE_STRING),
+                                   ("modified_not_after", 6, _F.TYPE_INT64)]):
+        src.oneof_decl.add(name=f"_{n}")
+        src.field.add(name=n, number=i, type=t, label=_F.LABEL_OPTIONAL, oneof_index=1 + j,
+                      proto3_optional=True)
 
     tbl = fdp.message_type.add(name="SourceTable")
-    tbl.field.add(name="sources", number=1, type=_F.TYPE_MESSAGE, type_name=".vzip.v1.Source",
+    tbl.field.add(name="sources", number=1, type=_F.TYPE_MESSAGE, type_name=".vzip.v0.Source",
                   label=_F.LABEL_REPEATED)
 
     idx = fdp.message_type.add(name="CdIndex")
@@ -47,13 +52,13 @@ def _build():
                     ("method", 5, _F.TYPE_UINT32)]:
         pin.field.add(name=n, number=i, type=t, label=_F.LABEL_OPTIONAL)
     idx.field.add(name="pages", number=1, type=_F.TYPE_MESSAGE,
-                  type_name=".vzip.v1.CdIndex.Page", label=_F.LABEL_REPEATED)
+                  type_name=".vzip.v0.CdIndex.Page", label=_F.LABEL_REPEATED)
     idx.field.add(name="pinned", number=2, type=_F.TYPE_MESSAGE,
-                  type_name=".vzip.v1.CdIndex.Pinned", label=_F.LABEL_REPEATED)
+                  type_name=".vzip.v0.CdIndex.Pinned", label=_F.LABEL_REPEATED)
 
     pool = descriptor_pool.DescriptorPool()
     pool.Add(fdp)
-    get = lambda n: message_factory.GetMessageClass(pool.FindMessageTypeByName(f"vzip.v1.{n}"))
+    get = lambda n: message_factory.GetMessageClass(pool.FindMessageTypeByName(f"vzip.v0.{n}"))
     return get("Range"), get("Concat"), get("Source"), get("SourceTable"), get("CdIndex")
 
 
@@ -84,6 +89,6 @@ def source_table(sources: list[dict]) -> bytes:
     t = SourceTable()
     for s in sources:
         m = t.sources.add()
-        (k, v), = s.items()
-        setattr(m, k, bytes.fromhex(v) if k == "data" else v)
+        for k, v in s.items():
+            setattr(m, k, bytes.fromhex(v) if k == "data" else v)
     return t.SerializeToString(deterministic=True)

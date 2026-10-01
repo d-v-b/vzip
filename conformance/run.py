@@ -33,8 +33,8 @@ TIMEOUT = 900
 
 def _matches(result: dict, accept: list[dict]) -> bool:
     for a in accept:
-        if a == {"ok": False}:
-            if result.get("ok") is False:
+        if a.get("ok") is False:
+            if result.get("ok") is False and ("class" not in a or result.get("class") == a["class"]):
                 return True
         elif {k: result.get(k) for k in a} == a and result.get("ok") is True:
             return True
@@ -67,6 +67,8 @@ def grade(out: dict, queries: list[dict], accepts: list[list[dict]], open_must: 
         return [{"query": "<run>", "got": out["crash"], "accept": "no crash"}]
     opened = bool(out.get("open", {}).get("ok"))
     if open_must == "fail":
+        if not opened and out.get("open", {}).get("class") != "archive":
+            return [{"query": "<open>", "got": out.get("open"), "accept": "class archive"}]
         return [] if not opened else [
             {"query": "<open>", "got": out.get("open"), "accept": "open fails (archive error)"}]
     if not opened:
@@ -81,6 +83,45 @@ def grade(out: dict, queries: list[dict], accepts: list[list[dict]], open_must: 
     ]
 
 
+# (query, max GET requests to data objects, pinned?) — spec §6.2
+ACCOUNTING = [
+    ({"op": "get", "key": "h/plain"}, 1, False),
+    ({"op": "get", "key": "h/plain", "range": {"start": 2, "end": 5}}, 1, False),
+    ({"op": "get", "key": "h/pinned"}, 1, True),
+    ({"op": "get", "key": "h/two_ranges"}, 2, False),
+    ({"op": "get", "key": "h/two_ranges", "range": {"start": 0, "end": 1}}, 1, False),
+    ({"op": "classify", "key": "h/plain"}, 0, False),
+]
+
+
+def http_accounting(cli, arc: Path, http, out: Path) -> list[dict]:
+    """Check the requests a reader sends to resolve http sources (spec §6.2)."""
+    fails = []
+    for q, max_gets, pinned in ACCOUNTING:
+        http.log.clear()
+        res = run_read(cli, arc, [q], out / "vectors")
+        reqs = [e for e in http.log if "/data/" in e["path"]]
+        gets = [e for e in reqs if e["method"] == "GET"]
+        problems = []
+        if "crash" in res or not res.get("open", {}).get("ok") or not res["results"][0].get("ok"):
+            problems.append(f"read failed: {res}")
+        if len(reqs) != len(gets):
+            problems.append(f"non-GET requests: {[e['method'] for e in reqs]}")
+        if len(gets) > max_gets or (max_gets and not gets):
+            problems.append(f"{len(gets)} GET requests, expected 1..{max_gets}")
+        for e in gets:
+            h = e["headers"]
+            if not h.get("range", "").startswith("bytes="):
+                problems.append("GET without a Range header")
+            if h.get("accept-encoding", "").strip().lower() != "identity":
+                problems.append(f"Accept-Encoding is {h.get('accept-encoding')!r}, not identity")
+            if pinned and not ("if-match" in h and "if-unmodified-since" in h):
+                problems.append("pinned source read without If-Match / If-Unmodified-Since")
+        if problems:
+            fails.append({"query": q, "got": problems, "accept": "spec §6.2 request rules"})
+    return fails
+
+
 def _shape(r):
     """A result without its free-form error message."""
     if not isinstance(r, dict):
@@ -88,7 +129,7 @@ def _shape(r):
     return {k: v for k, v in r.items() if k != "error"}
 
 
-def build_vectors(root: Path, ref_cli: list[str]) -> dict[str, dict]:
+def build_vectors(root: Path, ref_cli: list[str], http=None) -> dict[str, dict]:
     """name -> {archive, queries, accepts, open}"""
     vdir = root / "vectors"
     if vdir.exists():
@@ -96,7 +137,7 @@ def build_vectors(root: Path, ref_cli: list[str]) -> dict[str, dict]:
     vdir.mkdir(parents=True)
     cases.write_data_files(vdir)
     vectors = {}
-    for name, desc in cases.descriptions(vdir).items():
+    for name, desc in cases.descriptions(vdir, http_base=http and http.base).items():
         dpath = vdir / f"{name}.json"
         dpath.write_text(json.dumps(desc))
         arc = vdir / f"{name}.vzip"
@@ -104,7 +145,7 @@ def build_vectors(root: Path, ref_cli: list[str]) -> dict[str, dict]:
         if p.returncode:
             raise RuntimeError(f"reference writer failed on {name}: {p.stderr}")
         qs = cases.queries_for(name, desc)
-        m = Model(desc, arc)
+        m = Model(desc, arc, http=http and (http.base, root))
         vectors[name] = {"archive": arc, "queries": qs, "accepts": [m.expect(q) for q in qs],
                          "open": "ok"}
     for name, c in cases.crafted(vdir).items():
@@ -132,7 +173,10 @@ def main() -> int:
     ref_cli = shlex.split(args.ref)
     readers = {"ref": ref_cli, **impls}
 
-    vectors = build_vectors(out, ref_cli)
+    from http_server import Server
+
+    http = Server(out)  # serves out/ (vectors/data/...) for the http profile
+    vectors = build_vectors(out, ref_cli, http)
     report: dict = {"read": {}, "write": {}, "reject": {}, "cross": {}, "divergence": []}
     raw_results: dict[tuple[str, str], dict] = {}
 
@@ -163,6 +207,40 @@ def main() -> int:
             if len(set(json.dumps(x, sort_keys=True) for x in got.values())) > 1:
                 report["divergence"].append({"vector": vname, "query": q, "by_impl": got})
 
+    # 1c. malformed queries files must make the CLI exit non-zero (HARNESS)
+    any_vec = next(iter(vectors.values()))["archive"]
+    bad_queries = {
+        "unknown_op": [{"op": "frobnicate", "key": "x"}],
+        "missing_key": [{"op": "get"}],
+        "range_with_two_forms": [{"op": "get", "key": "x", "range": {"offset": 1, "suffix": 2}}],
+        "not_an_array": {"op": "get", "key": "x"},
+        "range_on_get_raw": [{"op": "get_raw", "key": "x", "range": {"offset": 1}}],
+        "list_without_prefix": [{"op": "list"}],
+        "range_null": [{"op": "get", "key": "x", "range": None}],
+        "partial_range": [{"op": "get", "key": "x", "range": {"start": 1}}],
+        "negative_range": [{"op": "get", "key": "x", "range": {"offset": -1}}],
+        "duplicate_members": '[{"op": "get", "key": "x", "key": "y"}]',
+        "non_string_key": [{"op": "get", "key": 7}],
+        "lone_surrogate_key": '[{"op": "get", "key": "a\\ud800"}]',
+        "number_2_pow_53": [{"op": "get", "key": "x", "range": {"offset": 2**53}}],
+    }
+    for impl, cli in impls.items():
+        for name, q in bad_queries.items():
+            qp = out / "vectors" / f"bad_{name}.json"
+            qp.write_text(q if isinstance(q, str) else json.dumps(q))
+            p = subprocess.run(cli + ["read", str(any_vec), str(qp)], capture_output=True,
+                               text=True, timeout=TIMEOUT)
+            report["reject"][f"{impl}:queries/{name}"] = {
+                "ok": p.returncode != 0, "exit": p.returncode, "file_left": False,
+                "stderr": p.stderr.strip()[-200:]}
+
+    # 1d. http profile: request accounting (spec §6.2), one query per CLI run
+    if "http_basic" in vectors:
+        arc = vectors["http_basic"]["archive"]
+        for impl, cli in impls.items():
+            report["read"][f"{impl}:http/request_accounting"] = {
+                "queries": len(ACCOUNTING), "failures": http_accounting(cli, arc, http, out)}
+
     # 2. write + validate + cross-read
     for impl, cli in impls.items():
         wdir = out / "written" / impl
@@ -170,7 +248,7 @@ def main() -> int:
             shutil.rmtree(wdir)
         wdir.mkdir(parents=True)
         cases.write_data_files(wdir)
-        for name, desc in cases.descriptions(wdir).items():
+        for name, desc in cases.descriptions(wdir, http_base=http.base).items():
             if name in args.skip:
                 continue
             dpath = wdir / f"{name}.json"
@@ -191,7 +269,7 @@ def main() -> int:
             print(f"write  {impl:6s} {name:40s} {'ok' if not problems else f'{len(problems)} problems'}",
                   flush=True)
             qs = cases.queries_for(name, desc)
-            m = Model(desc, arc)
+            m = Model(desc, arc, http=(http.base, out))
             accepts = [m.expect(q) for q in qs]
             for reader, rcli in readers.items():
                 res = run_read(rcli, arc, qs, wdir)
@@ -220,20 +298,27 @@ def main() -> int:
 
 def _summary(report: dict, impls: dict, out: Path) -> None:
     lines = ["# Conformance summary", ""]
-    lines.append("| impl | read queries passed | write cases valid | rejects | cross-read queries passed |")
-    lines.append("|---|---|---|---|---|")
+    lines.append("| impl | read queries passed | write cases valid | rejects | cross-read queries passed "
+                 "| http profile (optional) |")
+    lines.append("|---|---|---|---|---|---|")
+    is_http = lambda k: "http" in k.split(":", 1)[1]  # noqa: E731
     for impl in impls:
-        rd = [v for k, v in report["read"].items() if k.startswith(impl + ":")]
+        hr = [v for k, v in list(report["read"].items()) + list(report["cross"].items())
+              if (k.startswith(impl + ":") or k.startswith(impl + "->")) and is_http(k)]
+        hq = sum(v["queries"] for v in hr)
+        hf = sum(len(v["failures"]) for v in hr)
+        rd = [v for k, v in report["read"].items() if k.startswith(impl + ":") and not is_http(k)]
         rq = sum(v["queries"] for v in rd)
         rf = sum(len(v["failures"]) for v in rd)
-        wr = [v for k, v in report["write"].items() if k.startswith(impl + ":")]
+        wr = [v for k, v in report["write"].items() if k.startswith(impl + ":")]  # incl. http
         wok = sum(1 for v in wr if not v["problems"])
         rj = [v for k, v in report["reject"].items() if k.startswith(impl + ":")]
         rjok = sum(1 for v in rj if v["ok"])
-        cr = [v for k, v in report["cross"].items() if k.startswith(impl + "->")]
+        cr = [v for k, v in report["cross"].items() if k.startswith(impl + "->") and not is_http(k)]
         cq = sum(v["queries"] for v in cr)
         cf = sum(len(v["failures"]) for v in cr)
-        lines.append(f"| {impl} | {rq - rf}/{rq} | {wok}/{len(wr)} | {rjok}/{len(rj)} | {cq - cf}/{cq} |")
+        lines.append(f"| {impl} | {rq - rf}/{rq} | {wok}/{len(wr)} | {rjok}/{len(rj)} | {cq - cf}/{cq} "
+                     f"| {hq - hf}/{hq} |")
     lines.append("")
     lines.append("## Failures (first 3 per case)")
     for section in ("read", "cross"):

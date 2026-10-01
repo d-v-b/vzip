@@ -273,3 +273,47 @@ uv run python experiments/naive_view.py
 RUST_LOG=error uv run python experiments/bench.py 10000 100000 1000000
 RUST_LOG=error uv run python experiments/http_bench.py 10000 1000000
 ```
+
+## Real data: an IDR OME-TIFF over HTTPS
+
+[`experiments/tiff_to_vzip.py`](experiments/tiff_to_vzip.py) virtualizes a
+pyramidal OME-TIFF in place on EBI's FTP/HTTPS server.
+
+**Source:** `idr0096-tratwal-marrowquant/20210609-ftp-ome-tiffs/4000_d11_m5_LT_2 (20x_01).ome.tiff`
+- 487 MB, big-endian BigTIFF;
+- 9 pyramid levels, full resolution 3 × 39916 × 32625 `uint8`;
+- 1024² tiles, channels stored as separate planes, JPEG 2000 (TIFF
+  compression 33003).
+
+**What was built:**
+- **Speed and size:** reading only the TIFF's directories over range requests
+  took 1.1 s, and the resulting archive is **622 KB**.
+- **References:** 5,037 references, one plain `Range` per tile. The TIFF's
+  tiles map one-to-one onto Zarr chunks, so `Concat` isn't needed.
+- **Pins:** the one `url` source is pinned to the server's `ETag`,
+  `Content-Length` and `Last-Modified` (§6.1).
+- **Metadata:** an OME-NGFF 0.5 multiscales group with one array per level.
+  The OME-XML is stored as a real (deflated) bytes entry, `OME/METADATA.ome.xml`,
+  next to the references.
+- **Codec:** Zarr v3 has no standard JPEG 2000 codec, so
+  [`refstore/codecs.py`](src/refstore/codecs.py) registers a small
+  `imagecodecs_jpeg2k` array-to-bytes codec. Each TIFF tile is a standalone
+  codestream.
+
+**Results** ([`experiments/verify_tiff_vzip.py`](experiments/verify_tiff_vzip.py)):
+- Opening takes **2 range requests** for the archive, which then has all nine
+  levels' metadata.
+- Windows at levels 0, 3 and 8, and the densest tile (540 KB), are
+  **byte-identical** to tifffile reading the original TIFF.
+- Each read fetches only the tiles it overlaps, one range request per tile.
+  Every request carries `If-Match` and `If-Unmodified-Since`, so the pins cost
+  no extra requests.
+- Against the real server, a wrong ETag (HTTP 412), a wrong size, or a
+  too-early `modified_not_after` (HTTP 412) each give a resolution error. The
+  correct pins read normally.
+
+**A bug found in the reference reader.** It passed the still-percent-encoded
+URL path (`%20`) to obstore, which encodes paths itself, so requests went to
+`%2520` and returned 404. The conformance suite didn't catch this because it
+uses only `file:` URLs. It needs HTTP cases: a local range server, as in the
+benchmark and icechunk experiments, with percent-encoded names and pins.

@@ -7,15 +7,20 @@ acceptable results; {"ok": False} accepts any error.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from pathlib import Path
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 import pbref
 
 RESERVED = "__vz__/"
 ERROR = {"ok": False}
+
+
+def err(cls: str) -> dict:
+    return {"ok": False, "class": cls}
 
 
 class ModelError(Exception):
@@ -27,10 +32,14 @@ def _utf8_key(k: str) -> bytes:
 
 
 class Model:
-    def __init__(self, desc: dict, archive_path: Path, index_body: bytes | None = None):
+    def __init__(self, desc: dict, archive_path: Path, index_body: bytes | None = None,
+                 http: tuple[str, Path] | None = None):
+        self.http = http  # (server base URL, directory it serves)
         self.desc = desc
-        # spec §6: absolute and lexically normalised; symlinks are not resolved
-        self.base = Path(os.path.abspath(archive_path)).as_uri()
+        # spec §6: absolute, lexically normalised, symlinks not resolved, and
+        # every byte other than unreserved / sub-delims / ":" "@" "/" percent-encoded
+        abs_path = os.path.normpath(os.path.join(os.getcwd(), str(archive_path)))
+        self.base = "file://" + quote(abs_path.encode(), safe="/:@!$&'()*+,;=")
         self.entries = {e["key"]: e for e in desc["entries"]}
         self.sources = desc.get("sources", [])
         self.mirror = desc.get("mirror", True)
@@ -41,7 +50,9 @@ class Model:
         """Whole source value, or raise ModelError (missing file, bad key source...)."""
         if idx >= len(self.sources):
             raise ModelError("source out of bounds")
-        (kind, v), = self.sources[idx].items()
+        src = self.sources[idx]
+        kind = next(k for k in ("url", "key", "data") if k in src)
+        v = src[kind]
         if kind == "data":
             return bytes.fromhex(v)
         if kind == "key":
@@ -53,14 +64,68 @@ class Model:
             raise ModelError("not a URI reference")
         url = v if _SCHEME.match(v) else urljoin(self.base, v)
         p = urlparse(url)
+        if p.scheme == "http" and "@" in p.netloc:
+            raise ModelError("userinfo in an http URL")
+        if p.scheme == "http" and ":" in p.netloc and int(p.netloc.rsplit(":", 1)[1] or 80) > 65535:
+            raise ModelError("port out of range")
+        if p.scheme == "http" and self.http and url.startswith(self.http[0]):
+            return self._http_bytes(url, src)
         if p.scheme != "file":
             raise ModelError("unsupported scheme")
-        if p.netloc not in ("", "localhost") or p.query or not p.path.startswith("/"):
+        has_query = "?" in v.split("#")[0]
+        if (p.netloc.lower() not in ("", "localhost") or has_query
+                or not p.path.startswith("/") or re.search(r"%2[fF]|%00", p.path)):
             raise ModelError("bad file: URL")
+        if any(seg in (".", "..") for seg in unquote(p.path).split("/")):
+            raise ModelError("encoded dot segment")
         path = Path(unquote(p.path))
         if not path.is_file():
             raise ModelError("missing file")
+        st = path.stat()
+        if "etag" in src:
+            raise ModelError("etag pin on file:")
+        if "size" in src and st.st_size != src["size"]:
+            raise ModelError("size pin")
+        if "modified_not_after" in src and math.floor(st.st_mtime) > src["modified_not_after"]:
+            raise ModelError("modified pin")
         return path.read_bytes()
+
+    def _http_bytes(self, url: str, src: dict) -> bytes:
+        """What a §6.2 reader gets from conformance/http_server.py for this source."""
+        from http_server import QUIRKS, etag_for
+
+        rel = unquote(url[len(self.http[0]):].split("?")[0])
+        quirk, _, rest = rel.partition("/")
+        if quirk not in QUIRKS:
+            quirk, rest = None, rel
+        if quirk == "redirect":  # readers follow up to 5 redirects (spec §6.2)
+            n, _, rest = rest.partition("/")
+            if int(n) + 1 > 5:  # /redirect/N/ is N+1 redirects (the /redirect/0/ hop too)
+                raise ModelError("too many redirects")
+            quirk = None
+        path = self.http[1] / rest
+        if not path.is_file():
+            raise ModelError("404")
+        data = path.read_bytes()
+        if quirk == "gzip":
+            raise ModelError("content-encoding")
+        if quirk == "redirectuser":
+            raise ModelError("redirect target has userinfo")
+        if quirk == "short200":
+            data = data[:8]  # a 200 with a short body: past its end → resolution error
+        if quirk in ("multipart", "badlen", "nolocation", "enclist", "dupetag", "dupenc"):
+            raise ModelError(f"{quirk}: resolution error (spec §6.2)")
+        if quirk == "oldate" and "modified_not_after" in src:
+            raise ModelError("Last-Modified is not an IMF-fixdate")
+        if quirk == "noetag" and ("etag" in src or "modified_not_after" in src):
+            raise ModelError("pin uncheckable: no ETag / Last-Modified")
+        if "etag" in src and src["etag"] != etag_for(data):
+            raise ModelError("412")
+        if "modified_not_after" in src and int(path.stat().st_mtime) > src["modified_not_after"]:
+            raise ModelError("412")
+        if "size" in src and (quirk == "nototal" or src["size"] != len(data)):
+            raise ModelError("size pin")
+        return data
 
     def _parts(self, ranges: list[dict]):
         """[(size, bytes or None, hard_error, source_len)] per range."""
@@ -87,7 +152,7 @@ class Model:
 
     def get(self, key: str, rng: dict | None) -> list[dict]:
         if rng and "start" in rng and rng["start"] > rng["end"]:
-            return [ERROR]
+            return [err("request")]
         k = self.kind(key)
         if k == "missing":
             return [{"ok": True, "value": None}]
@@ -102,11 +167,11 @@ class Model:
         # spec §8.3: only ranges overlapping the window are resolved; a resolved
         # read fails iff the source is unusable or shorter than the bytes needed
         value, pos = b"", 0
-        for n, data, err in parts:
+        for n, data, problem in parts:
             lo, hi = max(a, pos), min(b, pos + n)
             if lo < hi:
-                if err not in (None, "oob") or hi - pos > len(data):
-                    return [ERROR]
+                if problem not in (None, "oob") or hi - pos > len(data):
+                    return [err("resolution")]
                 value += data[lo - pos : hi - pos]
             pos += n
         return [{"ok": True, "value": value.hex()}]
@@ -142,7 +207,10 @@ class Model:
         raise ValueError(op)
 
 
-_URI_REF = re.compile(r"^(?:[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=]|%[0-9A-Fa-f]{2})*$")
+_URI_REF = re.compile(
+    r"^(?![^:/?#]*:)(?:[A-Za-z0-9\-._~:/?#@!$&'()*+,;=]|%[0-9A-Fa-f]{2})*$"  # relative refs
+    r"|^[A-Za-z][A-Za-z0-9+.\-]*:(?:[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=]|%[0-9A-Fa-f]{2})*$"
+)
 _SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
 
 

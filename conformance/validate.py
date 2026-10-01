@@ -158,7 +158,7 @@ def validate(path: Path, desc: dict) -> list[str]:
     # ---- comment and source table
     c = z["comment"]
     paged = desc.get("page_size") is not None
-    if not c.startswith(b"vzip/1") or len(c) not in (22, 38):
+    if not c.startswith(b"vzip/0") or len(c) not in (22, 38):
         problems.append(f"bad archive comment {c!r}")
         return problems
     if (len(c) == 38) != paged:

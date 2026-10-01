@@ -12,7 +12,7 @@ Layout written by `VZipWriter`:
                                 Reference entries carry extra field 0x7a76 with a
                                 serialized Range, or 0x7a77 with a serialized Concat
     [zip64 EOCD + locator]      only when needed
-    [EOCD]                      archive comment = b"vzip/1" + u64 offset + u64 size
+    [EOCD]                      archive comment = b"vzip/0" + u64 offset + u64 size
                                 of the (deflated) SourceTable body [+ the same for
                                 the CdIndex]
 
@@ -42,10 +42,12 @@ from refstore.pb import (
     encode_source_table,
 )
 
+MAX_PAYLOAD = 65519
 RANGE_EXTRA_ID = 0x7A76  # "vz": payload is a Range
 CONCAT_EXTRA_ID = 0x7A77  # payload is a Concat
 ZIP64_EXTRA_ID = 0x0001
-MAGIC_COMMENT = b"vzip/1"
+FORMAT_VERSION = 0
+MAGIC_COMMENT = b"vzip/%d" % FORMAT_VERSION
 SOURCES_KEY = "__vz__/sources"
 INDEX_KEY = "__vz__/index"
 RESERVED_PREFIX = "__vz__/"
@@ -96,6 +98,8 @@ class Entry:
             return None
         if self._ref is None:
             hid, raw = self.payload
+            if len(raw) > MAX_PAYLOAD:  # spec §4.3: a payload error, even if it fits
+                raise ValueError(f"reference payload of {len(raw)} bytes exceeds {MAX_PAYLOAD}")
             self._ref = (Range if hid == RANGE_EXTRA_ID else Concat).decode(raw)
         return self._ref
 
@@ -115,6 +119,7 @@ class VZipWriter:
         self._cd: list[tuple[str, int, int, int, int, int, bytes]] = []
         self._names: set[str] = set()
         self._ref_names: set[str] = set()
+        self._range_checks: list = []  # (key, Range) for spec §9.1 bounds checks
         self._sources: dict[Source, int] = {}
         self._late: list[tuple[str, bytes, bool]] = []
 
@@ -155,6 +160,8 @@ class VZipWriter:
         if compress:
             c = zlib.compressobj(9, zlib.DEFLATED, -15)
             method, stored = 8, c.compress(body) + c.flush()
+            if len(stored) >= _U32:
+                raise ValueError("compressed size of 0xFFFFFFFF bytes or more (spec §3.1)")
         off = self._pos
         self._write(
             _LFH.pack(_SIG_LFH, 20, _FLAG_UTF8, method, 0, _DOS_DATE, crc, len(stored), len(body),
@@ -163,6 +170,18 @@ class VZipWriter:
         self._write(bname)
         self._write(stored)
         self._cd.append((name, off, len(body), len(stored), method, crc, extra))
+
+    def _entry_raw(self, name: str, body: bytes, stored: bytes) -> None:
+        """Test hook: a DEFLATE entry whose stored bytes are given verbatim."""
+        bname = name.encode()
+        off = self._pos
+        crc = zlib.crc32(body)
+        self._names.add(name)
+        self._write(_LFH.pack(_SIG_LFH, 20, _FLAG_UTF8, 8, 0, _DOS_DATE, crc, len(stored),
+                              len(body), len(bname), 0))
+        self._write(bname)
+        self._write(stored)
+        self._cd.append((name, off, len(body), len(stored), 8, crc, b""))
 
     def add_bytes(self, key: str, data: bytes, *, compress: bool = False, late: bool = False) -> None:
         """Add a concrete entry. Compressed entries can only be read whole.
@@ -179,12 +198,19 @@ class VZipWriter:
         else:
             self._entry(key, bytes(data), compress=compress)
 
-    def add_hidden(self, name: str, data: bytes, *, compress: bool = True) -> str:
+    def add_hidden(
+        self, name: str, data: bytes, *, compress: bool = True, late: bool = False
+    ) -> str:
         """Add an entry outside the zarr key space; returns its key (see `internal`)."""
         key = RESERVED_PREFIX + name
         if key in (SOURCES_KEY, INDEX_KEY):
             raise ValueError(f"{key!r} is written by the writer itself")
-        self._entry(key, bytes(data), compress=compress)
+        if late:
+            if key in self._names or any(k == key for k, *_ in self._late):
+                raise ValueError(f"duplicate key {key!r}")
+            self._late.append((key, bytes(data), compress))
+        else:
+            self._entry(key, bytes(data), compress=compress)
         return key
 
     def add_ref(self, key: str, url: str, offset: int, length: int) -> None:
@@ -201,13 +227,13 @@ class VZipWriter:
         for r in ranges:
             if r.data is None and r.source >= len(self._sources):
                 raise ValueError(f"range of {key!r} uses unregistered source {r.source}")
+        self._range_checks.extend((key, r) for r in ranges if r.data is None)
         if len(ranges) == 1:
             hid, payload = RANGE_EXTRA_ID, ranges[0].encode()
         else:
             hid, payload = CONCAT_EXTRA_ID, Concat(tuple(ranges)).encode()
-        # the whole extra field is <= 65535 bytes, including a ZIP64 block if needed
-        limit = _U16 - 4 - (12 if self._pos >= _U32 else 0)
-        if len(payload) > limit:
+        # spec §4.3: fixed limit, leaving room for a ZIP64 block wherever the entry lands
+        if len(payload) > MAX_PAYLOAD:
             raise ValueError("reference payload too large for a zip extra field (spec §4.3)")
         extra = struct.pack("<HH", hid, len(payload)) + payload
         self._entry(key, payload if self._mirror else b"", extra)
@@ -215,14 +241,27 @@ class VZipWriter:
 
     def _check_sources(self, sources: list[Source]) -> None:
         """Writer requirements on the source table (spec §9.1)."""
+        if any(x.key == "" for x in sources):
+            raise ValueError("empty key source")
+        sizes = {name: size for name, _, size, *_ in self._cd}
+        sizes.update((k, len(d)) for k, d, _ in self._late)
+        for key, r in self._range_checks:
+            src = sources[r.source]
+            n = len(src.data) if src.data is not None else sizes.get(src.key)
+            if n is not None and src.url is None and r.offset + r.length > n:
+                raise ValueError(f"{key!r}: range [{r.offset}, {r.offset + r.length}) is past the "
+                                 f"end of source {r.source} ({n} bytes)")
         missing = sorted(x.key for x in sources if x.key is not None and x.key not in self._names)
         if missing:
             raise ValueError(f"internal references to missing entries: {missing}")
         fmt = sorted(x.key for x in sources if x.key in (SOURCES_KEY, INDEX_KEY))
         if fmt:
             raise ValueError(f"key sources naming format entries: {fmt}")
-        if any(x.url == "" for x in sources):
-            raise ValueError("empty url source")
+        from refstore.uri import is_uri_reference
+
+        bad = [x.url for x in sources if x.url is not None and not is_uri_reference(x.url)]
+        if any(x.url == "" for x in sources) or bad:
+            raise ValueError(f"empty or invalid url sources: {bad}")
         to_refs = sorted(x.key for x in sources if x.key is not None and x.key in self._ref_names)
         if to_refs:
             raise ValueError(f"internal references to reference entries: {to_refs}")
@@ -249,7 +288,11 @@ class VZipWriter:
         sources = sorted(self._sources, key=self._sources.__getitem__)
         # test hooks (conformance/cases.py builds deliberately broken archives)
         table = getattr(self, "_source_table_override", None) or encode_source_table(sources)
-        self._entry(SOURCES_KEY, table, compress=True)
+        if getattr(self, "_sources_trailing_junk", False):
+            c = zlib.compressobj(9, zlib.DEFLATED, -15)
+            self._entry_raw(SOURCES_KEY, table, c.compress(table) + c.flush() + b"junk")
+        else:
+            self._entry(SOURCES_KEY, table, compress=True)
         comment = MAGIC_COMMENT + struct.pack("<QQ", *self._data_offset(-1))
         pinned = []
         for key, data, compress in self._late:
@@ -263,6 +306,9 @@ class VZipWriter:
         trailer = {SOURCES_KEY, INDEX_KEY}
         body = sorted(r for r in self._cd if r[0] not in trailer)
         records = [self._cd_record(*r) for r in body]
+        if getattr(self, "_trailer_first", False) and not self._page_size:
+            body = [r for r in self._cd if r[0] in trailer] + body
+            records = [self._cd_record(*r) for r in body]
         if self._page_size:
             pages = []
             first, start, pos = 0, 0, 0
@@ -275,7 +321,8 @@ class VZipWriter:
                 pages.append(Page(body[first][0], start, pos - start))
             self._entry(INDEX_KEY, encode_cd_index(pages, pinned), compress=True)
             comment += struct.pack("<QQ", *self._data_offset(-1))
-        records += [self._cd_record(*r) for r in self._cd if r[0] in trailer]
+        if not (getattr(self, "_trailer_first", False) and not self._page_size):
+            records += [self._cd_record(*r) for r in self._cd if r[0] in trailer]
 
         cd_start = self._pos
         for rec in records:
@@ -335,19 +382,24 @@ def parse_tail(tail: bytes, file_size: int) -> Directory:
                          "with a 22- or 38-byte comment)")
     sig, _, _, _, n, cd_size, cd_off, _ = _EOCD.unpack_from(tail, i)
     comment = tail[i + _EOCD.size :]
+    if not comment.startswith(b"vzip/"):
+        raise ValueError(f"not a vzip archive (comment starts {comment[:6]!r})")
     if not comment.startswith(MAGIC_COMMENT):
-        raise ValueError(f"not a vzip version 1 archive (comment starts {comment[:6]!r})")
-    loc = i - _LOC64.size
-    if loc >= 0 and tail[loc : loc + 4] == struct.pack("<I", _SIG_LOC64):
+        raise ValueError(f"unsupported vzip format version {comment[5:6]!r}; this reader "
+                         f"implements version {FORMAT_VERSION}")
+    n_disk = struct.unpack_from("<H", tail, i + 8)[0]
+    # spec §3.2: zip64 records are used iff an EOCD count/size/offset is all ones
+    if _U16 in (n, n_disk) or cd_size == _U32 or cd_off == _U32:
+        loc = i - _LOC64.size
+        if loc < 0 or tail[loc : loc + 4] != struct.pack("<I", _SIG_LOC64):
+            raise ValueError("end of central directory needs zip64 records, which are missing")
         _, _, eocd64_off, _ = _LOC64.unpack_from(tail, loc)
         j = eocd64_off - (file_size - len(tail))
-        if j < 0:
-            raise ValueError("zip64 EOCD outside the tail buffer")
-        (sig, _, _, _, _, _, n, _, cd_size, cd_off) = _EOCD64.unpack_from(tail, j)
-        if sig != _SIG_EOCD64:
+        if j < 0 or eocd64_off + _EOCD64.size > file_size:
+            raise ValueError("zip64 EOCD outside the file or the tail buffer")
+        (sig, rec_size, _, _, _, _, _, n, cd_size, cd_off) = _EOCD64.unpack_from(tail, j)
+        if sig != _SIG_EOCD64 or rec_size != 44:
             raise ValueError("bad zip64 EOCD")
-    elif n == _U16 or cd_size == _U32 or cd_off == _U32:
-        raise ValueError("end of central directory needs zip64 records, which are missing")
     soff, ssize = struct.unpack_from("<QQ", comment, len(MAGIC_COMMENT))
     ioff, isize = (None, 0)
     if clen == 38:
@@ -387,28 +439,39 @@ def parse_central_directory(cd: bytes, *, trust_offsets: bool) -> dict[str, Entr
         if sig != _SIG_CDH:
             raise ValueError(f"bad central directory record at {pos}")
         pos += _CDH.size
-        name = bytes(mv[pos : pos + nlen]).decode("utf-8", "replace")
+        if pos + nlen + xlen + clen > len(cd):
+            raise ValueError("central directory record runs past the directory")
+        try:
+            name = bytes(mv[pos : pos + nlen]).decode("utf-8")
+        except UnicodeDecodeError:
+            name = ""
         pos += nlen
         extra = bytes(mv[pos : pos + xlen])
         pos += xlen + clen
+        if not name:  # spec §3.3: such records name no key
+            continue
         if name in entries:
             raise ValueError(f"duplicate central directory record for {name!r}")
-        payload, error, ref_blocks = None, None, 0
+        payload, error, ref_blocks, z64 = None, None, 0, []
         try:
             for hid, data in _iter_extra(extra):
                 if hid in (RANGE_EXTRA_ID, CONCAT_EXTRA_ID):
                     ref_blocks += 1
                     payload = (hid, data)
                 elif hid == ZIP64_EXTRA_ID:
-                    vals = list(struct.unpack_from(f"<{len(data) // 8}Q", data))
-                    if size == _U32:
-                        size = vals.pop(0)
-                    if csize == _U32:
-                        csize = vals.pop(0)
-                    if off == _U32:
-                        off = vals.pop(0)
+                    z64.append(data)
         except (ValueError, IndexError, struct.error) as e:
             error = f"unparseable extra field: {e}"
+        # spec §3.2: sizes never use ZIP64; only the offset may, in one 8-byte block
+        if error is None and len(z64) > 1:
+            error = "more than one ZIP64 extra block"
+        elif error is None and _U32 in (size, csize):
+            error = "a size field is 0xFFFFFFFF"
+        elif error is None and off == _U32:
+            if not z64 or len(z64[0]) < 8:
+                error = "ZIP64 extra block missing or too short"
+            else:
+                (off,) = struct.unpack_from("<Q", z64[0])
         if error is None:
             if ref_blocks > 1:
                 error = "more than one reference extra field block"
@@ -421,6 +484,17 @@ def parse_central_directory(cd: bytes, *, trust_offsets: bool) -> dict[str, Entr
         data_offset = off + _LFH.size + nlen if trust_offsets else None
         entries[name] = Entry(name, off, size, csize, method, payload, data_offset, error)
     return entries
+
+
+def inflate_clean(raw: bytes) -> bytes:
+    """Inflate one complete raw DEFLATE stream that fills `raw` exactly (spec §8.1)."""
+    d = zlib.decompressobj(-15)
+    out = d.decompress(raw)
+    if not d.eof:
+        raise ValueError("DEFLATE stream is incomplete")
+    if d.unused_data:
+        raise ValueError(f"{len(d.unused_data)} bytes follow the DEFLATE stream")
+    return out
 
 
 def parse_local_header(buf: bytes) -> int:

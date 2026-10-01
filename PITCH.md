@@ -34,6 +34,14 @@ store that, and each one costs something:
 There is no small, boring format for this: one you could read from a
 specification in an afternoon, in any language, with tools you already have.
 
+## Status
+
+Format version 0 (`vzip/0`) is **provisional**, as of
+[spec revision 8](SPEC.md). The format is believed complete and
+implementers may rely on it, but it can still change in response to
+feedback. Any incompatible change will be announced in the
+[changelog](conformance/REVISIONS.md). Feedback is welcome.
+
 ## The idea
 
 vzip stores a virtual dataset as **one ordinary ZIP file**:
@@ -66,7 +74,8 @@ A vzip reader sees the virtual dataset.
   the first.
 - **Nobody owns it.** ZIP is documented by PKWARE's APPNOTE, and protobuf's
   wire format by a public spec. The vzip rules on top are [one
-  document](SPEC.md).
+  document](SPEC.md). Every archive records its format version (`vzip/0`
+  today), so a reader knows whether it can read an archive before it tries.
 
 ## What it costs, measured
 
@@ -91,12 +100,23 @@ Zarr shard index. Zarr's own sharding codec then does the per-chunk lookup.
 
 ## Simple enough to implement from the spec
 
-To check the "afternoon" claim, three agents each implemented vzip from
-[SPEC.md](SPEC.md) alone, in Rust, TypeScript and Python. They had no access
-to any existing code. Each produced a reader and a writer of about 1,500–2,100
-lines. On the first attempt, all three passed the whole conformance suite and
-read each other's archives. The places where they still disagreed went back
+To check the "afternoon" claim, agents implemented vzip from
+[SPEC.md](SPEC.md) alone, in Rust, TypeScript and Python, with no access to
+any existing code. This was done in seven rounds, with fresh agents each time.
+After each round, their notes and every disagreement between them went back
 into the spec ([conformance/REVISIONS.md](conformance/REVISIONS.md)).
+
+- **Size:** each implementation, reader plus writer, is about 1,500–2,100
+  lines.
+- **Round 1:** every implementation passed the conformance suite and read the
+  others' archives. But on 11 queries they gave different answers that the
+  spec allowed.
+- **Rounds 2–7:** fresh agents again passed everything, and on every
+  tested query all of them, plus the reference, gave the same answer. That
+  includes error classes.
+
+Rounds 5–7 added HTTP, which all three implementations support. The
+round-7 implementations are in [impls/](impls/).
 
 ## What vzip is not
 
