@@ -24,6 +24,11 @@ usual:
 | `/badlen/`   | sends one byte less than its `Content-Range` says |
 | `/nolocation/` | answers 302 without a `Location` header |
 | `/enclist/`  | adds `Content-Encoding: identity, identity` |
+| `/upperbytes/` | writes the `Content-Range` unit as `Bytes` (valid: the unit is case-insensitive) |
+| `/dupetag/`  | sends two `ETag` fields |
+| `/dupenc/`   | sends two `Content-Encoding: identity` fields |
+| `/short200/` | ignores `Range` and sends only the first 8 bytes, with status 200 |
+| `/redirectuser/` | answers 302 to the same path with `user@` in the authority |
 """
 
 from __future__ import annotations
@@ -37,7 +42,8 @@ from pathlib import Path
 from urllib.parse import unquote
 
 QUIRKS = ("norange", "nototal", "gzip", "nocond", "noetag", "redirect", "oldate", "multipart",
-          "badlen", "nolocation", "enclist")
+          "badlen", "nolocation", "enclist", "upperbytes", "dupetag", "dupenc", "short200",
+          "redirectuser")
 
 
 def etag_for(data: bytes) -> str:
@@ -62,6 +68,9 @@ class Server:
                 self.send_response(code)
                 for k, v in (headers or {}).items():
                     self.send_header(k, v)
+                for k, v in getattr(self, "_extra", []):
+                    self.send_header(k, v)
+                self._extra = []
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 if self.command != "HEAD":
@@ -76,6 +85,9 @@ class Server:
                 rel = parts[1] if quirk and len(parts) > 1 else "/".join(parts)
                 if quirk == "nolocation":
                     return self._reply(302, b"")
+                if quirk == "redirectuser":
+                    host = self.headers.get("Host")
+                    return self._reply(302, b"", {"Location": f"http://user@{host}/{rel}"})
                 if quirk == "redirect":
                     n, _, rest = rel.partition("/")
                     target = f"/redirect/{int(n) - 1}/{rest}" if int(n) > 0 else f"/{rest}"
@@ -97,6 +109,13 @@ class Server:
                                                           time.gmtime(mtime))
                 if quirk == "enclist":
                     meta["Content-Encoding"] = "identity, identity"
+                extra = []  # repeated header fields
+                if quirk == "dupetag":
+                    extra.append(("ETag", meta["ETag"]))
+                if quirk == "dupenc":
+                    meta["Content-Encoding"] = "identity"
+                    extra.append(("Content-Encoding", "identity"))
+                self._extra = extra
                 h = {k.lower(): v for k, v in self.headers.items()}
                 if quirk == "nocond":
                     h.pop("if-match", None)
@@ -108,6 +127,8 @@ class Server:
                     if mtime > t:
                         return self._reply(412, b"", meta)
                 rng = h.get("range")
+                if quirk == "short200":
+                    return self._reply(200, data[:8], meta)
                 if not rng or quirk == "norange":
                     return self._reply(200, data, meta)
                 a, _, b = rng.removeprefix("bytes=").partition("-")
@@ -122,8 +143,9 @@ class Server:
                     return self._reply(206, part, {
                         **meta, "Content-Type": "multipart/byteranges; boundary=SEP"})
                 body = data[start:end][:-1] if quirk == "badlen" else data[start:end]
+                unit = "Bytes" if quirk == "upperbytes" else "bytes"
                 return self._reply(206, body,
-                                   {**meta, "Content-Range": f"bytes {start}-{end - 1}/{total}"})
+                                   {**meta, "Content-Range": f"{unit} {start}-{end - 1}/{total}"})
 
             do_GET = _serve
             do_HEAD = _serve

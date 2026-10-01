@@ -1,7 +1,7 @@
 # Independent implementations
 
 Each directory holds a reader, writer and harness CLI that an agent built from
-[SPEC.md](../SPEC.md) (format version 0, **revision 7**) and
+[SPEC.md](../SPEC.md) (format version 0, **revision 7**; the current spec is revision 8) and
 [HARNESS.md](../conformance/HARNESS.md) alone. The agents had no access to the
 reference implementation, the test vectors or each other's code. Each agent's
 `SPEC_NOTES.md` lists the ambiguities it reported; notes from every round are
@@ -22,3 +22,10 @@ HTTP profile:
 - 3136/3136 HTTP checks.
 
 There is no divergence between them.
+
+**Against revision 8** they fail only four rules that revision 8 added
+because of their round-7 notes:
+- a repeated `ETag` field is an error even on an unpinned read (all three);
+- the `Content-Range` unit is case-insensitive (TypeScript);
+- query files with lone-surrogate keys, or with numbers of 2^53 or more, are
+  invalid (TypeScript and Python).

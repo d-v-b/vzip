@@ -129,9 +129,7 @@ def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int 
     import urllib.error
     import urllib.request
 
-    pu = urlparse(url)
-    if "@" in pu.netloc or not pu.hostname:
-        raise ResolutionError(f"{url}: userinfo or empty host in an http(s) URL")
+    _check_http_url(url)
     headers = {"Range": f"bytes={start}-{end - 1}", "Accept-Encoding": "identity"}
     if src.etag is not None:
         headers["If-Match"] = src.etag
@@ -152,13 +150,20 @@ def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int 
                 raise ResolutionError(f"redirect with an invalid Location: {hdrs.get('Location')!r}")
             if urlparse(newurl).scheme.lower() not in ("http", "https"):
                 raise ResolutionError(f"redirect to a non-http URL: {newurl}")
+            if len(hdrs.get_all("Location") or []) > 1:
+                raise ResolutionError("redirect with more than one Location field")
+            _check_http_url(newurl)
             return super().redirect_request(req, fp, code, msg, hdrs, newurl)
 
     req = urllib.request.Request(url, headers=headers, method="GET")
     try:
         with urllib.request.build_opener(Redirects).open(req, timeout=60) as r:
             status, body = r.status, r.read()
-            enc = (r.headers.get("Content-Encoding") or "identity").lower()
+            for name in ("Content-Range", "ETag", "Last-Modified"):
+                if len(r.headers.get_all(name) or []) > 1:
+                    raise ResolutionError(f"{url}: more than one {name} field")
+            encs = r.headers.get_all("Content-Encoding") or []
+            enc = ", ".join(e.strip() for e in encs).lower() if encs else "identity"
             crange = r.headers.get("Content-Range")
             etag, last_modified = r.headers.get("ETag"), r.headers.get("Last-Modified")
     except urllib.error.HTTPError as e:
@@ -183,9 +188,9 @@ def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int 
         if len(body) < end:
             raise ResolutionError(f"{url} is shorter than {end} bytes")
         return body[start:end], len(body)
-    if status != 206 or not crange or not crange.startswith("bytes "):
+    if status != 206 or not crange:
         raise ResolutionError(f"{url}: unexpected response {status} {crange!r}")
-    m = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+|\*)", crange.strip())
+    m = re.fullmatch(r"(?i:bytes) (\d+)-(\d+)/(\d+|\*)", crange.strip())
     if not m:
         raise ResolutionError(f"{url}: invalid Content-Range {crange!r}")
     a, z, total = int(m[1]), int(m[2]), m[3]
@@ -193,6 +198,16 @@ def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int 
         raise ResolutionError(f"{url}: server returned {crange!r} ({len(body)} bytes) for "
                               f"[{start}, {end})")
     return body, None if total == "*" else int(total)
+
+
+def _check_http_url(url: str) -> None:
+    """spec §6.2: no userinfo, a non-empty host, a port of at most 65535."""
+    pu = urlparse(url)
+    if "@" in pu.netloc or not pu.hostname:
+        raise ResolutionError(f"{url}: userinfo or empty host in an http(s) URL")
+    port = pu.netloc.rpartition(":")[2] if ":" in pu.netloc.rsplit("]", 1)[-1] else ""
+    if port and (not port.isdigit() or int(port) > 65535):
+        raise ResolutionError(f"{url}: invalid port {port!r}")
 
 
 _DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -204,13 +219,16 @@ def imf_fixdate(v: str | None) -> int | None:
     m = re.fullmatch(r"(\w{3}), (\d{2}) (\w{3}) (\d{4}) (\d{2}):(\d{2}):(\d{2}) GMT", v or "")
     if not m or m[1] not in _DAYS or m[3] not in _MONTHS:
         return None
+    leap = int(m[7]) == 60  # a leap second counts as the following second (§6.2)
     try:
         t = datetime.datetime(int(m[4]), _MONTHS.index(m[3]) + 1, int(m[2]), int(m[5]),
-                              int(m[6]), int(m[7]), tzinfo=datetime.timezone.utc)
+                              int(m[6]), 59 if leap else int(m[7]), tzinfo=datetime.timezone.utc)
     except ValueError:
         return None
     if _DAYS[t.weekday()] != m[1]:
         return None
+    if leap:
+        t += datetime.timedelta(seconds=1)
     return int((t - datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)).total_seconds())
 
 

@@ -58,23 +58,34 @@ def _no_duplicates(pairs):
     return dict(pairs)
 
 
+def _well_formed(text: str) -> bool:
+    try:
+        text.encode("utf-8")
+        return True
+    except UnicodeEncodeError:  # a lone surrogate from a JSON "\udXXX" escape
+        return False
+
+
 def _check_query(q) -> None:
     """HARNESS: a malformed query makes the whole queries file invalid."""
     if not isinstance(q, dict) or q.get("op") not in ("classify", "get", "get_raw", "list"):
         raise ValueError(f"malformed query {q!r}")
     if q["op"] == "list":
-        if not isinstance(q.get("prefix"), str):
+        if not isinstance(q.get("prefix"), str) or not _well_formed(q["prefix"]):
             raise ValueError(f"malformed query {q!r}")
         return
-    if not isinstance(q.get("key"), str):
+    if not isinstance(q.get("key"), str) or not _well_formed(q["key"]):
         raise ValueError(f"malformed query {q!r}")
     if "range" in q:
         r = q["range"]
         if q["op"] != "get":
             raise ValueError(f"range on a {q['op']} query: {q!r}")
-        if not isinstance(r, dict) or set(r) not in ({"start", "end"}, {"offset"}, {"suffix"}):
+        forms = set(r) & {"start", "end", "offset", "suffix"} if isinstance(r, dict) else None
+        if forms not in ({"start", "end"}, {"offset"}, {"suffix"}):
             raise ValueError(f"malformed range in {q!r}")
-        if any(not isinstance(v, int) or isinstance(v, bool) or v < 0 for v in r.values()):
+        r = {k: v for k, v in r.items() if k in ("start", "end", "offset", "suffix")}
+        if any(not isinstance(v, int) or isinstance(v, bool) or not 0 <= v < 2**53
+               for v in r.values()):
             raise ValueError(f"range values must be non-negative integers: {q!r}")
 
 

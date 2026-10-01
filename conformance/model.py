@@ -66,6 +66,8 @@ class Model:
         p = urlparse(url)
         if p.scheme == "http" and "@" in p.netloc:
             raise ModelError("userinfo in an http URL")
+        if p.scheme == "http" and ":" in p.netloc and int(p.netloc.rsplit(":", 1)[1] or 80) > 65535:
+            raise ModelError("port out of range")
         if p.scheme == "http" and self.http and url.startswith(self.http[0]):
             return self._http_bytes(url, src)
         if p.scheme != "file":
@@ -98,7 +100,7 @@ class Model:
             quirk, rest = None, rel
         if quirk == "redirect":  # readers follow up to 5 redirects (spec §6.2)
             n, _, rest = rest.partition("/")
-            if int(n) > 5:
+            if int(n) + 1 > 5:  # /redirect/N/ is N+1 redirects (the /redirect/0/ hop too)
                 raise ModelError("too many redirects")
             quirk = None
         path = self.http[1] / rest
@@ -107,7 +109,11 @@ class Model:
         data = path.read_bytes()
         if quirk == "gzip":
             raise ModelError("content-encoding")
-        if quirk in ("multipart", "badlen", "nolocation", "enclist"):
+        if quirk == "redirectuser":
+            raise ModelError("redirect target has userinfo")
+        if quirk == "short200":
+            data = data[:8]  # a 200 with a short body: past its end → resolution error
+        if quirk in ("multipart", "badlen", "nolocation", "enclist", "dupetag", "dupenc"):
             raise ModelError(f"{quirk}: resolution error (spec §6.2)")
         if quirk == "oldate" and "modified_not_after" in src:
             raise ModelError("Last-Modified is not an IMF-fixdate")

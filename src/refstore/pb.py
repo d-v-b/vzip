@@ -214,6 +214,8 @@ class Source:
         schema = {1: _LEN, 2: _LEN, 3: _LEN, 4: _VARINT, 5: _LEN, 6: _VARINT}
         for f, v in _known(buf, schema):
             if f in (1, 2, 3):
+                if f in (1, 2):
+                    _utf8(v)  # every occurrence must be valid, even if overridden (§5.1)
                 kind = (f, v)  # oneof: the last member on the wire wins
             elif f == 4:
                 pins["size"] = v

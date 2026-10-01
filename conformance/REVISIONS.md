@@ -496,3 +496,74 @@ concern malformed HTTP responses or invalid archives:
   - numbers of 2^53 or more;
   - lone-surrogate strings;
   - an error class for internal bugs.
+
+## Revision 8: version 0 becomes provisional
+
+Format version 0, specification revision 8. **Status: provisional.**
+
+§1.3 now defines three states for a format version:
+
+- **draft:** anything may change.
+- **provisional:** the format is believed complete, and implementers may
+  rely on it. Revisions may still change it in response to outside feedback,
+  but:
+  - every change is logged here with its reason;
+  - an incompatible change, meaning one that changes the result of an
+    operation on an archive that was valid before, must be announced as
+    incompatible, with the conformance suite updated;
+  - incompatible changes are avoided whenever a compatible one would do.
+- **final:** no incompatible change, ever. Changes of that kind become the
+  next format version.
+
+Version 0 becomes final once it has gone through outside review with no
+incompatible change needed. Feedback is welcome as issues or pull requests.
+
+**Revision 8 resolves the round-7 open issues:**
+
+| issue | r8 decision | already matched r7 implementations? |
+|---|---|---|
+| Zero-length range at an offset past the end of a `key`/`data` source | "past the end" means `offset + length > size`, so writers reject it | yes (Rust, TS) |
+| Invalid *earlier* occurrence of an overridden field | every occurrence must be valid. "Valid UTF-8" per RFC 3629. | yes: all three reject the corrected case |
+| ZIP64 block longer than 8 bytes | the offset is the first 8 bytes; the rest is ignored | yes |
+| Resource limit hit at open | archive error | yes |
+| Paged vs unpaged corruption asymmetry | stated as intentional | (editorial) |
+| A pin explicitly encoded as 0 | still a pin (presence); a note for protobuf-library users | (not tested) |
+| `Content-Range` unit case | case-insensitive, one space (RFC 9110 §14.4) | **TS no** (required lowercase) |
+| `bytes a-z/*` | same range and body-length checks as `/total` | yes |
+| A 200 shorter than the requested range | resolution error | yes |
+| Repeated `Content-Range`, `ETag`, `Last-Modified`, `Location` fields | resolution error | **No**: all three accepted a duplicate `ETag` on an unpinned read |
+| Repeated `Content-Encoding` fields; which responses are checked | combined into one list; only the final 200/206 is checked | yes |
+| Redirect counting | at most 5 redirects, so at most 6 requests; tested at exactly 5 (succeeds) and 6 (fails) | yes |
+| URL rules on redirect targets; `http:/x`; ports | apply to every URL requested; an absent or empty host is an error; port > 65535 is an error; an empty port means the default | yes |
+| Leap second; case of day and month names in IMF-fixdate | `:60` is accepted as the following second; names are case-sensitive | (not tested) |
+| Base URI for non-UTF-8 paths; `..` at the root; `file:` path bytes | raw bytes are percent-encoded; `..` at the root is dropped; decoded bytes are used as they are | (not tested) |
+| HARNESS: non-string or lone-surrogate `key`/`prefix`; numbers ≥ 2^53; unknown members in `range`; internal errors | malformed (exit non-zero); malformed; ignored; `class: "internal"`, always a failure | partly: **TS and Py** accepted lone surrogates and 2^53 |
+
+**Kit:**
+- **Five new HTTP server modes:** `/upperbytes/`, `/dupetag/`, `/dupenc/`,
+  `/short200/`, `/redirectuser/`.
+- **New HTTP cases:**
+  - the exact redirect boundary: 5 redirects succeed, 6 fail;
+  - a port above 65535.
+- **Three new crafted cases:** a ZIP64 block longer than 8 bytes, and an
+  invalid earlier occurrence in a payload and in the source table.
+- **New rejections:** a zero-length range past the end, and three new
+  malformed query files.
+
+**Two bugs found in the kit itself while adding these:**
+- **The redirect boundary.** The first version expected `/redirect/5/` to
+  succeed, but that path makes 6 redirects (the `/redirect/0/` hop redirects
+  too), and the reference correctly refused it. The cases now test 5 and 6
+  exactly.
+- **A crafted source table** had a wrong length byte. It failed for a
+  different reason (a truncated field) than intended. Fixed and re-checked.
+
+**Result:** the reference passes everything:
+- 5125/5125 read queries;
+- 11/11 write cases;
+- 45/45 rejections;
+- the whole HTTP profile.
+
+Against r8, the round-7 implementations fail exactly the rows marked **No**
+or partly above (`h/dupetag`, TS `h/upperbytes`, and two query-file
+rejections), and nothing else.

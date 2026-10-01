@@ -220,6 +220,9 @@ def main() -> int:
         "partial_range": [{"op": "get", "key": "x", "range": {"start": 1}}],
         "negative_range": [{"op": "get", "key": "x", "range": {"offset": -1}}],
         "duplicate_members": '[{"op": "get", "key": "x", "key": "y"}]',
+        "non_string_key": [{"op": "get", "key": 7}],
+        "lone_surrogate_key": '[{"op": "get", "key": "a\\ud800"}]',
+        "number_2_pow_53": [{"op": "get", "key": "x", "range": {"offset": 2**53}}],
     }
     for impl, cli in impls.items():
         for name, q in bad_queries.items():

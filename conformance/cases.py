@@ -166,7 +166,7 @@ def _http(server_base: str) -> dict:
              "modified_not_after": MTIME},                                       # 15
             {"url": server_base + "noetag/vectors/data/blob.bin", "etag": etag_for(BLOB)},  # 16
             {"url": server_base + "noetag/vectors/data/blob.bin"},               # 17
-            {"url": server_base + "redirect/2/vectors/data/blob.bin", "etag": etag_for(BLOB)},  # 18
+            {"url": server_base + "redirect/2/vectors/data/blob.bin", "etag": etag_for(BLOB)},  # 18: 3
             {"url": server_base + "redirect/6/vectors/data/blob.bin"},           # 19
             {"url": server_base + "oldate/vectors/data/blob.bin", "modified_not_after": MTIME},  # 20
             {"url": server_base + "oldate/vectors/data/blob.bin"},               # 21
@@ -175,6 +175,14 @@ def _http(server_base: str) -> dict:
             {"url": server_base + "nolocation/vectors/data/blob.bin"},           # 24
             {"url": server_base + "enclist/vectors/data/blob.bin"},              # 25
             {"url": server_base.replace("http://", "http://user@") + "vectors/data/blob.bin"},  # 26
+            {"url": server_base + "upperbytes/vectors/data/blob.bin"},           # 27
+            {"url": server_base + "dupetag/vectors/data/blob.bin"},              # 28
+            {"url": server_base + "dupenc/vectors/data/blob.bin"},               # 29
+            {"url": server_base + "short200/vectors/data/blob.bin"},             # 30
+            {"url": server_base + "redirectuser/vectors/data/blob.bin"},         # 31
+            {"url": server_base + "redirect/4/vectors/data/blob.bin"},           # 32: 5 redirects
+            {"url": "http://127.0.0.1:70000/vectors/data/blob.bin"},             # 33
+            {"url": server_base + "redirect/5/vectors/data/blob.bin"},           # 34: 6 redirects
         ],
         "entries": [
             {"key": "meta", "bytes": H(b"{}")},
@@ -208,6 +216,15 @@ def _http(server_base: str) -> dict:
             {"key": "h/nolocation", "ranges": [{"source": 24, "offset": 1, "length": 2}]},
             {"key": "h/enclist", "ranges": [{"source": 25, "offset": 1, "length": 2}]},
             {"key": "h/userinfo", "ranges": [{"source": 26, "offset": 1, "length": 2}]},
+            {"key": "h/upperbytes", "ranges": [{"source": 27, "offset": 1, "length": 2}]},
+            {"key": "h/dupetag", "ranges": [{"source": 28, "offset": 1, "length": 2}]},
+            {"key": "h/dupenc", "ranges": [{"source": 29, "offset": 1, "length": 2}]},
+            {"key": "h/short200_inside", "ranges": [{"source": 30, "offset": 1, "length": 2}]},
+            {"key": "h/short200_past", "ranges": [{"source": 30, "offset": 6, "length": 4}]},
+            {"key": "h/redirect_to_userinfo", "ranges": [{"source": 31, "offset": 1, "length": 2}]},
+            {"key": "h/redirect_exactly_5", "ranges": [{"source": 32, "offset": 40, "length": 3}]},
+            {"key": "h/redirect_exactly_6", "ranges": [{"source": 34, "offset": 40, "length": 3}]},
+            {"key": "h/port_too_big", "ranges": [{"source": 33, "offset": 1, "length": 2}]},
         ],
     }
 
@@ -316,6 +333,8 @@ def invalid_descriptions(root: Path) -> dict[str, dict]:
             {"key": "a", "bytes": "616263", "compress": True},
             {"key": "r", "ranges": [{"source": 0, "offset": 0, "length": 4}]}]},
         "empty_key_source": {**base, "sources": [{"key": ""}], "entries": []},
+        "zero_length_range_past_end": {**base, "sources": [{"data": "616263"}], "entries": [
+            {"key": "r", "ranges": [{"source": 0, "offset": 4, "length": 0}]}]},
     }
 
 
@@ -829,6 +848,47 @@ def crafted(root: Path) -> dict[str, dict]:
         w.add_bytes("fine", b"ok")
         w.close(); f.close()
     case("empty_key_source", open="fail")(empty_key_source)
+
+    # -- revision 8 ----------------------------------------------------------
+    def long_zip64_block(path):
+        # a ZIP64 block of 16 bytes on a record whose offset is all ones: the offset is
+        # the first 8 bytes, the rest is ignored (§3.2)
+        f, w = _writer(path)
+        w.add_bytes("z", b"hello")
+        w.close(); f.close()
+        b = bytearray(path.read_bytes())
+        i = next(_records(b, b"PK\x01\x02", 28, 46, b"z"))
+        real_off = struct.unpack_from("<I", b, i + 42)[0]
+        nlen, xlen = struct.unpack_from("<HH", b, i + 28)
+        assert xlen == 0
+        block = struct.pack("<HHQQ", 1, 16, real_off, 0xDEADBEEF)
+        b[i + 46 + nlen : i + 46 + nlen] = block
+        struct.pack_into("<H", b, i + 30, len(block))
+        struct.pack_into("<I", b, i + 42, 0xFFFFFFFF)
+        # the central directory grew: fix its size in the end record (offset is unchanged)
+        e = len(b) - 22 - 22
+        struct.pack_into("<I", b, e + 12, struct.unpack_from("<I", b, e + 12)[0] + len(block))
+        path.write_bytes(bytes(b))
+    long_zip64_block.expect = [(get("z"), [ok_value(b"hello")])]
+    case("zip64_block_longer_than_8_bytes")(long_zip64_block)
+
+    def earlier_invalid(path):
+        f, w = _writer(path)
+        # source given twice: first 2^32 (invalid uint32), then 0 (valid, wins)
+        _raw_ref(w, "x", 0x7A76, b"\x08" + _varint(2**32) + b"\x08\x00\x20\x02")
+        w.add_bytes("fine", b"ok")
+        w.close(); f.close()
+    earlier_invalid.expect = fine + payload_error("x")
+    case("invalid_earlier_occurrence_in_payload")(earlier_invalid)
+
+    def earlier_invalid_source(path):
+        f, w = _writer(path)
+        # one Source: url with invalid UTF-8, then a valid url that overrides it
+        inner = b"\x0a\x02\xff\xfe" + b"\x0a\x0ddata/blob.bin"
+        w._source_table_override = b"\x0a" + bytes([len(inner)]) + inner
+        w.add_bytes("fine", b"ok")
+        w.close(); f.close()
+    case("invalid_earlier_occurrence_in_source_table", open="fail")(earlier_invalid_source)
 
     # -- archive errors (§8.4): open fails ------------------------------------
     def pin_on_key(path):

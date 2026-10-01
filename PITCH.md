@@ -34,6 +34,14 @@ store that, and each one costs something:
 There is no small, boring format for this: one you could read from a
 specification in an afternoon, in any language, with tools you already have.
 
+## Status
+
+Format version 0 (`vzip/0`) is **provisional**, as of
+[spec revision 8](SPEC.md). The format is believed complete and
+implementers may rely on it, but it can still change in response to
+feedback. Any incompatible change will be announced in the
+[changelog](conformance/REVISIONS.md). Feedback is welcome.
+
 ## The idea
 
 vzip stores a virtual dataset as **one ordinary ZIP file**:
