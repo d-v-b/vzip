@@ -246,31 +246,27 @@ impl Archive {
         let sources_loc = (u64le(comment, 6), u64le(comment, 14));
         let index_loc = if comment.len() == 38 { Some((u64le(comment, 22), u64le(comment, 30))) } else { None };
 
-        // §3.2: ZIP64 end records.
-        let (n_disk, n_total) = (u16le(&eocd, 8), u16le(&eocd, 10));
-        let (mut cd_size, mut cd_offset) = (u32le(&eocd, 12) as u64, u32le(&eocd, 16) as u64);
-        if n_disk == 0xFFFF || n_total == 0xFFFF || cd_size == 0xFFFF_FFFF || cd_offset == 0xFFFF_FFFF {
-            if eocd_at < 20 {
-                return Err(archive("zip64 end of central directory locator missing"));
-            }
-            let loc = rd(eocd_at - 20, 20)?;
-            if u32le(&loc, 0) != 0x07064b50 {
-                return Err(archive("zip64 end of central directory locator missing"));
-            }
-            let z_off = u64le(&loc, 8);
-            if !Self::within(size, z_off, 56) {
-                return Err(archive("zip64 end of central directory record lies outside the file"));
-            }
-            let z = rd(z_off, 56)?;
-            if u32le(&z, 0) != 0x06064b50 {
-                return Err(archive("bad zip64 end of central directory signature"));
-            }
-            if u64le(&z, 4) != 44 {
-                return Err(archive("zip64 end of central directory record size is not 44"));
-            }
-            cd_size = u64le(&z, 40);
-            cd_offset = u64le(&z, 48);
+        // §3.2: the directory's size and offset always come from the zip64 record; the end
+        // record's own counts, size and offset are ignored.
+        if eocd_at < 20 {
+            return Err(archive("zip64 end of central directory locator missing"));
         }
+        let loc = rd(eocd_at - 20, 20)?;
+        if u32le(&loc, 0) != 0x07064b50 {
+            return Err(archive("zip64 end of central directory locator missing"));
+        }
+        let z_off = u64le(&loc, 8);
+        if !Self::within(size, z_off, 56) {
+            return Err(archive("zip64 end of central directory record lies outside the file"));
+        }
+        let z = rd(z_off, 56)?;
+        if u32le(&z, 0) != 0x06064b50 {
+            return Err(archive("bad zip64 end of central directory signature"));
+        }
+        if u64le(&z, 4) != 44 {
+            return Err(archive("zip64 end of central directory record size is not 44"));
+        }
+        let (cd_size, cd_offset) = (u64le(&z, 40), u64le(&z, 48));
         if !Self::within(size, cd_offset, cd_size) {
             return Err(archive("central directory lies outside the file"));
         }

@@ -1,7 +1,7 @@
 # Independent implementations
 
 Each directory holds a reader, writer and harness CLI that an agent built from
-[SPEC.md](../SPEC.md) (format version 0, **revision 7**; the current spec is revision 8) and
+[SPEC.md](../SPEC.md) (format version 0, **revision 7**; the current spec is revision 9) and
 [HARNESS.md](../conformance/HARNESS.md) alone. The agents had no access to the
 reference implementation, the test vectors or each other's code. Each agent's
 `SPEC_NOTES.md` lists the ambiguities it reported; notes from every round are
@@ -23,7 +23,15 @@ HTTP profile:
 
 There is no divergence between them.
 
-**Against revision 8** they fail only four rules that revision 8 added
+**Revision 9** made the ZIP64 end records unconditional (spec §3.2), an
+incompatible change. All three were then patched directly to match: a small
+change to how each writer and each reader handles the end records, plus
+their tests. That is the only part of this code that was not written from
+the spec alone by an agent with no access to the other code. With it, they
+pass every check revision 9 changed (5140/5140 read queries, 11/11 write
+cases, 19892/19892 cross-reads).
+
+**Against revisions 8 and 9** they fail only four rules that revision 8 added
 because of their round-7 notes:
 - a repeated `ETag` field is an error even on an unpinned read (all three);
 - the `Content-Range` unit is case-insensitive (TypeScript);

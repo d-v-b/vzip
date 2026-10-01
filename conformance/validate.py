@@ -43,23 +43,36 @@ def parse(buf: bytes, problems: list) -> dict:
         raise ValueError("no end of central directory record")
     (_, disk, cd_disk, n_disk, n, cd_size, cd_off, clen) = struct.unpack_from("<IHHHHIIH", buf, i)
     comment = buf[i + 22 : i + 22 + clen]
-    zip64 = False
-    if n == U16 or cd_size == U32 or cd_off == U32:
-        zip64 = True
-        loc = i - 20
-        sig, _, e64, _ = struct.unpack_from("<IIQI", buf, loc)
-        if sig != 0x07064B50:
-            raise ValueError("bad zip64 locator")
-        (sig, _, _, _, _, _, n, _, cd_size, cd_off) = struct.unpack_from("<IQHHIIQQQQ", buf, e64)
-        if sig != 0x06064B50:
-            raise ValueError("bad zip64 EOCD")
-        cd_end_expected = e64
-    else:
-        cd_end_expected = i
-        if buf.rfind(b"PK\x06\x07", 0, i) == i - 20:
-            zip64 = True
-    if cd_off + cd_size != cd_end_expected:
-        problems.append("central directory does not end where the end records begin")
+    # spec §3.2: zip64 record, locator and end record, in that order, in every archive
+    if (disk, cd_disk) != (0, 0):
+        problems.append("end record disk numbers are not 0")
+    if (n_disk, n, cd_size, cd_off) != (U16, U16, U32, U32):
+        problems.append(f"end record counts/size/offset are {(n_disk, n, cd_size, cd_off)}, "
+                        "not all ones")
+    loc = i - 20
+    if loc < 0:
+        raise ValueError("no room for a zip64 locator")
+    sig, loc_disk, e64, disks = struct.unpack_from("<IIQI", buf, loc)
+    if sig != 0x07064B50:
+        raise ValueError("no zip64 locator before the end record")
+    if (loc_disk, disks) != (0, 1):
+        problems.append(f"zip64 locator disk fields are {(loc_disk, disks)}, not (0, 1)")
+    if e64 != loc - 56:
+        problems.append("zip64 record does not immediately precede its locator")
+    (sig, rec_size, _, need, z_disk, z_cd_disk, n_disk, n, cd_size, cd_off) = struct.unpack_from(
+        "<IQHHIIQQQQ", buf, e64)
+    if sig != 0x06064B50:
+        raise ValueError("bad zip64 EOCD")
+    if rec_size != 44:
+        problems.append(f"zip64 record size field is {rec_size}, not 44")
+    if need != 45:
+        problems.append(f"zip64 record 'version needed' is {need}, not 45")
+    if (z_disk, z_cd_disk) != (0, 0):
+        problems.append("zip64 record disk numbers are not 0")
+    if n_disk != n:
+        problems.append("zip64 record entry counts differ")
+    if cd_off + cd_size != e64:
+        problems.append("central directory does not end where the zip64 record begins")
     recs, pos, any_zip64_extra = [], cd_off, False
     for _ in range(n):
         (sig, made, need, flags, method, _, _, crc, csize, size, nlen, xlen, cmlen, _, _, _, off) = (
@@ -92,7 +105,7 @@ def parse(buf: bytes, problems: list) -> dict:
     if pos != cd_off + cd_size:
         problems.append("central directory size does not match its records")
     return {"comment": comment, "recs": recs, "cd_off": cd_off, "cd_size": cd_size, "n": n,
-            "zip64": zip64, "any_zip64_extra": any_zip64_extra}
+            "any_zip64_extra": any_zip64_extra}
 
 
 def validate(path: Path, desc: dict) -> list[str]:
@@ -103,11 +116,6 @@ def validate(path: Path, desc: dict) -> list[str]:
     except Exception as e:  # noqa: BLE001
         return [f"unparseable: {e}"]
 
-    need64 = z["n"] >= U16 or z["cd_off"] >= U32 or z["cd_size"] >= U32 or any(
-        r["off"] >= U32 or r["size"] >= U32 for r in z["recs"])
-    if z["zip64"] != need64:
-        problems.append(f"zip64 end records {'present' if z['zip64'] else 'absent'} but "
-                        f"{'needed' if need64 else 'not needed'}")
     if z["any_zip64_extra"] and not any(r["off"] >= U32 or r["size"] >= U32 for r in z["recs"]):
         problems.append("zip64 extra field used where not needed")
 

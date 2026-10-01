@@ -265,12 +265,12 @@ def build(entries, sources, page_size=None, mirror=True):
     cd_size = len(cd_bytes)
     n = len(cd)
     comment = b"vzip/0" + struct.pack("<QQ", sources_off, sources_size) + comment_extra
-    if n >= 0xFFFF or cd_size >= 0xFFFFFFFF or cd_off >= 0xFFFFFFFF:
-        z64off = len(out)
-        out.extend(struct.pack("<IQHHIIQQQQ", Z64_EOCD_SIG, 44, 45, 45, 0, 0, n, n, cd_size, cd_off))
-        out.extend(struct.pack("<IIQI", Z64_LOC_SIG, 0, z64off, 1))
-    out.extend(struct.pack("<IHHHHIIH", EOCD_SIG, 0, 0,
-                           min(n, 0xFFFF), min(n, 0xFFFF),
-                           min(cd_size, 0xFFFFFFFF), min(cd_off, 0xFFFFFFFF), len(comment)))
+    # §3.2: the zip64 end records are written in every archive, and the end record's
+    # counts, size and offset are always all ones
+    z64off = len(out)
+    out.extend(struct.pack("<IQHHIIQQQQ", Z64_EOCD_SIG, 44, 45, 45, 0, 0, n, n, cd_size, cd_off))
+    out.extend(struct.pack("<IIQI", Z64_LOC_SIG, 0, z64off, 1))
+    out.extend(struct.pack("<IHHHHIIH", EOCD_SIG, 0, 0, 0xFFFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+                           len(comment)))
     out.extend(comment)
     return bytes(out)

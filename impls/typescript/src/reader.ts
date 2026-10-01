@@ -289,26 +289,18 @@ export class Archive {
     if (ver !== "0") throw archiveErr(`unsupported vzip format version ${JSON.stringify(ver)}`);
     this.paged = comment.length === 38;
 
-    const eocd = f.read(eocdOff, 22n);
-    let cdSize = BigInt(eocd.readUInt32LE(12));
-    let cdOffset = BigInt(eocd.readUInt32LE(16));
-    const useZip64 =
-      eocd.readUInt16LE(8) === 0xffff ||
-      eocd.readUInt16LE(10) === 0xffff ||
-      cdSize === 0xffffffffn ||
-      cdOffset === 0xffffffffn;
-    if (useZip64) {
-      if (eocdOff < 20n) throw archiveErr("zip64 locator missing");
-      const loc = f.read(eocdOff - 20n, 20n);
-      if (loc.readUInt32LE(0) !== SIG_LOC64) throw archiveErr("zip64 locator missing");
-      const recOff = loc.readBigUInt64LE(8);
-      if (!f.within(recOff, 56n)) throw archiveErr("zip64 end of central directory record outside the file");
-      const r = f.read(recOff, 56n);
-      if (r.readUInt32LE(0) !== SIG_EOCD64) throw archiveErr("bad zip64 end of central directory signature");
-      if (r.readBigUInt64LE(4) !== 44n) throw archiveErr("zip64 end of central directory record size is not 44");
-      cdSize = r.readBigUInt64LE(40);
-      cdOffset = r.readBigUInt64LE(48);
-    }
+    // §3.2: the directory's size and offset always come from the zip64 record; the end
+    // record's own counts, size and offset are ignored.
+    if (eocdOff < 20n) throw archiveErr("zip64 locator missing");
+    const loc = f.read(eocdOff - 20n, 20n);
+    if (loc.readUInt32LE(0) !== SIG_LOC64) throw archiveErr("zip64 locator missing");
+    const recOff = loc.readBigUInt64LE(8);
+    if (!f.within(recOff, 56n)) throw archiveErr("zip64 end of central directory record outside the file");
+    const r = f.read(recOff, 56n);
+    if (r.readUInt32LE(0) !== SIG_EOCD64) throw archiveErr("bad zip64 end of central directory signature");
+    if (r.readBigUInt64LE(4) !== 44n) throw archiveErr("zip64 end of central directory record size is not 44");
+    const cdSize = r.readBigUInt64LE(40);
+    const cdOffset = r.readBigUInt64LE(48);
     if (!f.within(cdOffset, cdSize)) throw archiveErr("central directory lies outside the file");
     this.cdOffset = cdOffset;
     this.cdSize = cdSize;
