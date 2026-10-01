@@ -31,7 +31,8 @@ node experiments/neuroglancer_demo/screenshot.mjs experiments/out/ng_demo experi
 ## OME-Zarr view of an IDR OME-TIFF (remote)
 
 `experiments/tiff_to_vzip.py` reads the IFDs of a 487 MB pyramidal OME-TIFF
-from IDR (idr0096, CC BY 4.0) over HTTP. It writes a 622 KB vzip holding an
+from IDR over HTTP: study idr0096 (Tratwal et al.,
+[doi:10.17867/10000170](https://doi.org/10.17867/10000170), CC BY 4.0). It writes a 622 KB vzip holding an
 OME-NGFF 0.5 multiscales group: 9 levels, 5,037 references to JPEG 2000 tiles.
 Neuroglancer then reads the tiles straight from `ftp.ebi.ac.uk` and decodes
 them with the `imagecodecs_jpeg2k` codec.
