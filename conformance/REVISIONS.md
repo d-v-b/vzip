@@ -432,5 +432,67 @@ changes like these would need version 1.
 - 1258/1258 HTTP checks.
 
 The round-6 implementations, run against r7, fail exactly the rows marked
-**No** above and nothing else. Revision 7 has not been through a fresh round
-of agents.
+**No** above and nothing else.
+
+## Round 7 (spec r7)
+
+**Result:** all three fresh implementations passed every graded check:
+- 5120/5120 read queries;
+- 11/11 write cases;
+- 41/41 rejections;
+- 19892/19892 cross-reads;
+- 3136/3136 HTTP checks.
+
+The divergence report was empty. Every rule r7 newly chose was implemented
+correctly from the text alone, including the ones the round-6
+implementations had failed. Those are: IMF-fixdate-only, userinfo URLs,
+`Content-Encoding` lists, ZIP64 size fields and duplicate blocks, oversized
+payloads, empty `key` sources, the writer range checks, and the strict
+harness query rules.
+
+**Process note:** while deleting a temporary directory it had created one
+level up, the TypeScript agent ran `ls` once on the parent scratchpad
+directory. It read none of the files listed. File names don't reveal the
+reference implementation or the test vectors, so the result stands.
+
+| round | spec | passing everything | divergent queries | what the notes were about |
+|---|---|---|---|---|
+| 7 | r7 + HTTP | 3/3 | 0 | HTTP header-parsing minutiae; a few editorial gaps |
+
+**Open issues** from round 7, deferred. None caused a divergence, and most
+concern malformed HTTP responses or invalid archives:
+
+- **§9.1:** does a zero-length range at an offset past the end of a `key` or
+  `data` source "extend past the end"? Rust and TS reject it
+  (`offset + length > len`).
+- **§5.1:** when a non-repeated or `oneof` field appears twice, does an
+  invalid *earlier* occurrence (uint32 overflow, bad UTF-8) make the message
+  malformed? Rust: yes.
+- **§6.2, header parsing:**
+  - Does the `Content-Encoding` rule cover redirect, 412 and 416 responses?
+  - Repeated `Content-Encoding`, `ETag`, `Last-Modified`, `Location` or
+    `Content-Range` lines.
+  - Case of the `bytes` unit, and whitespace.
+  - Do the range and body-length checks apply to `bytes a-z/*` too? Python:
+    yes.
+  - A 200 shorter than the requested range.
+  - A leap second (`:60`) in an IMF-fixdate.
+- **§6.2, redirects:** how to count them ("a sixth is an error"), and whether
+  the userinfo and empty-host rules apply to redirect targets.
+- **URLs:** `http:/x` (no authority); empty or out-of-range ports.
+- **§3.2:** a ZIP64 offset block longer than 8 bytes. All three use the
+  first 8 bytes.
+- **§8.1:** a resource limit hit while inflating a format entry at open. All
+  three report an archive error. Say so.
+- **§6:** base URI paths that aren't valid UTF-8, and `..` at the root.
+- **§6.1:** a pin explicitly encoded as 0 still counts as a pin. Note it for
+  protobuf-library implementations.
+- **§8.1:** the same central-directory corruption is an archive error when
+  unpaged but invisible when paged. This is by design; say so.
+- **HARNESS:**
+  - unknown members inside `range`;
+  - a form member set to `null`;
+  - non-string `key` or `prefix`;
+  - numbers of 2^53 or more;
+  - lone-surrogate strings;
+  - an error class for internal bugs.

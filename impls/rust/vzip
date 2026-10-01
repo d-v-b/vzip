@@ -1,2 +1,2 @@
 #!/bin/sh
-exec "$(dirname "$0")/target/release/vzip-cli" "$@"
+exec "$(dirname "$0")/target/release/vzip" "$@"

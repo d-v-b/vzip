@@ -1,141 +1,122 @@
-// RFC 3986 URI-reference validation, parsing, strict resolution (§5.2.2),
-// base URI construction from a local path and file: URI mapping (spec §6).
+// RFC 3986 URI-reference validation and strict resolution (§5.2.2),
+// plus the vzip file: URI rules (spec §6).
+
+import path from "node:path";
 
 export type Uri = {
-  scheme: string | null;
-  authority: string | null;
+  scheme?: string;
+  authority?: string;
   path: string;
-  query: string | null;
-  fragment: string | null;
+  query?: string;
+  fragment?: string;
 };
 
+const SPLIT = /^(?:([^:/?#]+):)?(?:\/\/([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/s;
+
 const UNRESERVED = "A-Za-z0-9\\-._~";
-const SUB_DELIMS = "!$&'()*+,;=";
+const SUBDELIMS = "!$&'()*+,;=";
 const PCT = "%[0-9A-Fa-f]{2}";
-const PCHAR = `(?:[${UNRESERVED}${SUB_DELIMS}:@]|${PCT})`;
-const reSegment = new RegExp(`^${PCHAR}*$`);
-const reSegmentNzNc = new RegExp(`^(?:[${UNRESERVED}${SUB_DELIMS}@]|${PCT})+$`);
-const reQueryFrag = new RegExp(`^(?:${PCHAR}|[/?])*$`);
-const reUserinfo = new RegExp(`^(?:[${UNRESERVED}${SUB_DELIMS}:]|${PCT})*$`);
-const reRegName = new RegExp(`^(?:[${UNRESERVED}${SUB_DELIMS}]|${PCT})*$`);
+const PCHAR = `(?:[${UNRESERVED}${SUBDELIMS}:@]|${PCT})`;
+const reScheme = /^[A-Za-z][A-Za-z0-9+\-.]*$/;
+const rePath = new RegExp(`^(?:${PCHAR}|/)*$`);
+const reQF = new RegExp(`^(?:${PCHAR}|[/?])*$`);
+const reUserinfo = new RegExp(`^(?:[${UNRESERVED}${SUBDELIMS}:]|${PCT})*$`);
+const reRegName = new RegExp(`^(?:[${UNRESERVED}${SUBDELIMS}]|${PCT})*$`);
 const rePort = /^[0-9]*$/;
-const reScheme = /^[A-Za-z][A-Za-z0-9+.\-]*$/;
-const reIpvFuture = new RegExp(`^[vV][0-9A-Fa-f]+\\.[${UNRESERVED}${SUB_DELIMS}:]+$`);
-const reDecOctet = /^(?:[0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$/;
+const reIPvFuture = new RegExp(`^v[0-9A-Fa-f]+\\.[${UNRESERVED}${SUBDELIMS}:]+$`);
+const reDecOctet = "(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])";
+const reIPv4 = new RegExp(`^${reDecOctet}\\.${reDecOctet}\\.${reDecOctet}\\.${reDecOctet}$`);
 const reH16 = /^[0-9A-Fa-f]{1,4}$/;
 
-function isIPv4(s: string): boolean {
-  const p = s.split(".");
-  return p.length === 4 && p.every((x) => reDecOctet.test(x));
-}
-
-export function isIPv6(s: string): boolean {
-  // Handle "::" compression and an optional trailing IPv4 (ls32).
-  const dbl = s.indexOf("::");
-  if (dbl !== s.lastIndexOf("::")) return false;
-  const parse = (part: string, allowV4Tail: boolean): number | null => {
-    // returns number of 16-bit groups, or null if invalid
-    if (part === "") return 0;
-    const groups = part.split(":");
-    let count = 0;
-    for (let i = 0; i < groups.length; i++) {
-      const g = groups[i];
-      if (i === groups.length - 1 && allowV4Tail && g.includes(".")) {
-        if (!isIPv4(g)) return null;
-        count += 2;
-      } else {
-        if (!reH16.test(g)) return null;
-        count += 1;
-      }
+function isIPv6(s: string): boolean {
+  // Split off an IPv4 tail if present.
+  let groups = 0;
+  let body = s;
+  const lastColon = s.lastIndexOf(":");
+  if (lastColon >= 0 && s.slice(lastColon + 1).includes(".")) {
+    if (!reIPv4.test(s.slice(lastColon + 1))) return false;
+    groups += 2;
+    body = s.slice(0, lastColon + 1);
+    // body now ends with ":"; if it ends with "::" keep that, else drop the trailing ":"
+    if (body.endsWith("::")) {
+      // fine
+    } else {
+      body = body.slice(0, -1);
+      if (body === "") return false;
     }
-    return count;
-  };
-  if (dbl === -1) {
-    const n = parse(s, true);
-    return n === 8;
   }
-  const head = s.slice(0, dbl);
-  const tail = s.slice(dbl + 2);
-  const a = parse(head, false);
-  const b = parse(tail, true);
-  if (a === null || b === null) return false;
-  return a + b <= 7;
-}
-
-function validHost(h: string): boolean {
-  if (h.startsWith("[")) {
-    if (!h.endsWith("]")) return false;
-    const inner = h.slice(1, -1);
-    return isIPv6(inner) || reIpvFuture.test(inner);
+  const dbl = body.indexOf("::");
+  if (dbl >= 0) {
+    if (body.indexOf("::", dbl + 1) >= 0) return false;
+    const left = body.slice(0, dbl);
+    const right = body.slice(dbl + 2);
+    const l = left === "" ? [] : left.split(":");
+    const r = right === "" ? [] : right.split(":");
+    if (![...l, ...r].every((g) => reH16.test(g))) return false;
+    return l.length + r.length + groups <= 7;
   }
-  return reRegName.test(h); // reg-name also covers IPv4address
+  const parts = body.split(":");
+  if (!parts.every((g) => reH16.test(g))) return false;
+  return parts.length + groups === 8;
 }
 
 function validAuthority(a: string): boolean {
-  let rest = a;
-  const at = rest.lastIndexOf("@");
-  if (at !== -1) {
-    // userinfo cannot contain '@', so the first '@' must be the only one
-    if (rest.indexOf("@") !== at) return false;
-    if (!reUserinfo.test(rest.slice(0, at))) return false;
-    rest = rest.slice(at + 1);
+  let hostport = a;
+  const at = a.indexOf("@");
+  if (at >= 0) {
+    if (!reUserinfo.test(a.slice(0, at))) return false;
+    hostport = a.slice(at + 1);
   }
-  // port: after the last ':' that is not inside an IP-literal
-  let host = rest;
-  let port: string | null = null;
-  if (rest.startsWith("[")) {
-    const close = rest.indexOf("]");
-    if (close === -1) return false;
-    host = rest.slice(0, close + 1);
-    const after = rest.slice(close + 1);
-    if (after !== "") {
-      if (!after.startsWith(":")) return false;
-      port = after.slice(1);
+  let host: string;
+  let port = "";
+  if (hostport.startsWith("[")) {
+    const close = hostport.indexOf("]");
+    if (close < 0) return false;
+    host = hostport.slice(0, close + 1);
+    const rest = hostport.slice(close + 1);
+    if (rest !== "") {
+      if (!rest.startsWith(":")) return false;
+      port = rest.slice(1);
     }
+    const inner = host.slice(1, -1);
+    if (!(isIPv6(inner) || reIPvFuture.test(inner))) return false;
   } else {
-    const c = rest.indexOf(":");
-    if (c !== -1) {
-      host = rest.slice(0, c);
-      port = rest.slice(c + 1);
-    }
+    const c = hostport.indexOf(":");
+    if (c >= 0) {
+      host = hostport.slice(0, c);
+      port = hostport.slice(c + 1);
+    } else host = hostport;
+    if (!reRegName.test(host)) return false;
   }
-  if (port !== null && !rePort.test(port)) return false;
-  return validHost(host);
+  return rePort.test(port);
 }
 
-const reSplit = /^(?:([^:/?#]+):)?(?:\/\/([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/s;
-
-/** Parses and validates a URI-reference (RFC 3986 §4.1). Returns null if invalid. */
+/** Parses a string that must match RFC 3986 `URI-reference`; null if not. */
 export function parseUriReference(s: string): Uri | null {
-  // ASCII only, no controls/space etc. (character classes below enforce it)
-  const m = reSplit.exec(s);
+  const m = SPLIT.exec(s);
   if (!m) return null;
-  const scheme = m[1] ?? null;
-  const authority = m[2] ?? null;
-  const p = m[3];
-  const query = m[4] ?? null;
-  const fragment = m[5] ?? null;
-  if (scheme !== null && !reScheme.test(scheme)) return null;
-  if (authority !== null && !validAuthority(authority)) return null;
-  if (query !== null && !reQueryFrag.test(query)) return null;
-  if (fragment !== null && !reQueryFrag.test(fragment)) return null;
-  const segs = p.split("/");
-  if (!segs.every((x) => reSegment.test(x))) return null;
-  if (authority !== null) {
-    // path-abempty
-    if (p !== "" && !p.startsWith("/")) return null;
-  } else if (p.startsWith("//")) {
-    return null; // would have been parsed as authority; unreachable
-  } else if (scheme === null && p !== "" && !p.startsWith("/")) {
-    // path-noscheme: first segment must not contain ':'
-    if (!reSegmentNzNc.test(segs[0])) return null;
+  const [, scheme, authority, p, query, fragment] = m;
+  if (scheme !== undefined && !reScheme.test(scheme)) return null;
+  if (authority !== undefined && !validAuthority(authority)) return null;
+  if (!rePath.test(p)) return null;
+  if (scheme === undefined && authority === undefined) {
+    // relative-ref: path-noscheme: first segment must not contain ':'
+    const first = p.split("/")[0];
+    if (first.includes(":")) return null;
   }
-  return { scheme, authority, path: p, query, fragment };
+  if (query !== undefined && !reQF.test(query)) return null;
+  if (fragment !== undefined && !reQF.test(fragment)) return null;
+  const u: Uri = { path: p };
+  if (scheme !== undefined) u.scheme = scheme;
+  if (authority !== undefined) u.authority = authority;
+  if (query !== undefined) u.query = query;
+  if (fragment !== undefined) u.fragment = fragment;
+  return u;
 }
 
 export function removeDotSegments(input: string): string {
   let inp = input;
-  const out: string[] = [];
+  let out = "";
   while (inp.length > 0) {
     if (inp.startsWith("../")) inp = inp.slice(3);
     else if (inp.startsWith("./")) inp = inp.slice(2);
@@ -143,45 +124,45 @@ export function removeDotSegments(input: string): string {
     else if (inp === "/.") inp = "/";
     else if (inp.startsWith("/../")) {
       inp = inp.slice(3);
-      out.pop();
+      out = out.slice(0, Math.max(0, out.lastIndexOf("/")));
     } else if (inp === "/..") {
       inp = "/";
-      out.pop();
+      out = out.slice(0, Math.max(0, out.lastIndexOf("/")));
     } else if (inp === "." || inp === "..") inp = "";
     else {
       const start = inp.startsWith("/") ? 1 : 0;
       let next = inp.indexOf("/", start);
-      if (next === -1) next = inp.length;
-      out.push(inp.slice(0, next));
+      if (next < 0) next = inp.length;
+      out += inp.slice(0, next);
       inp = inp.slice(next);
     }
   }
-  return out.join("");
+  return out;
 }
 
 function merge(base: Uri, refPath: string): string {
-  if (base.authority !== null && base.path === "") return "/" + refPath;
+  if (base.authority !== undefined && base.path === "") return "/" + refPath;
   const i = base.path.lastIndexOf("/");
-  return i === -1 ? refPath : base.path.slice(0, i + 1) + refPath;
+  return i < 0 ? refPath : base.path.slice(0, i + 1) + refPath;
 }
 
-/** Strict RFC 3986 §5.2.2 resolution. */
+/** RFC 3986 §5.2.2, strict. */
 export function resolve(base: Uri, r: Uri): Uri {
-  const t: Uri = { scheme: null, authority: null, path: "", query: null, fragment: null };
-  if (r.scheme !== null) {
+  const t: Uri = { path: "" };
+  if (r.scheme !== undefined) {
     t.scheme = r.scheme;
     t.authority = r.authority;
     t.path = removeDotSegments(r.path);
     t.query = r.query;
   } else {
-    if (r.authority !== null) {
+    if (r.authority !== undefined) {
       t.authority = r.authority;
       t.path = removeDotSegments(r.path);
       t.query = r.query;
     } else {
       if (r.path === "") {
         t.path = base.path;
-        t.query = r.query !== null ? r.query : base.query;
+        t.query = r.query !== undefined ? r.query : base.query;
       } else {
         if (r.path.startsWith("/")) t.path = removeDotSegments(r.path);
         else t.path = removeDotSegments(merge(base, r.path));
@@ -192,26 +173,29 @@ export function resolve(base: Uri, r: Uri): Uri {
     t.scheme = base.scheme;
   }
   t.fragment = r.fragment;
+  for (const k of ["authority", "query", "fragment"] as const) if (t[k] === undefined) delete t[k];
   return t;
 }
 
-export function uriToString(u: Uri): string {
+export function recompose(u: Uri): string {
   let s = "";
-  if (u.scheme !== null) s += u.scheme + ":";
-  if (u.authority !== null) s += "//" + u.authority;
+  if (u.scheme !== undefined) s += u.scheme + ":";
+  if (u.authority !== undefined) s += "//" + u.authority;
   s += u.path;
-  if (u.query !== null) s += "?" + u.query;
-  if (u.fragment !== null) s += "#" + u.fragment;
+  if (u.query !== undefined) s += "?" + u.query;
+  if (u.fragment !== undefined) s += "#" + u.fragment;
   return s;
 }
 
-const FILE_PATH_SAFE = new Set<number>();
-for (const c of "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&'()*+,;=:@/")
-  FILE_PATH_SAFE.add(c.charCodeAt(0));
+// ------------------------------------------------------------ file: URIs
 
-/** Normalises a local path lexically against getcwd (spec §6, base URI). */
-export function normaliseLocalPath(p: string): string {
-  const abs = p.startsWith("/") ? p : process.cwd() + "/" + p;
+const FILE_KEEP = new Set(
+  Array.from("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&'()*+,;=:@/"),
+);
+
+/** Spec §6: base URI of an archive opened from a local path. */
+export function fileBaseUri(p: string): string {
+  const abs = path.isAbsolute(p) ? p : process.cwd() + "/" + p;
   const out: string[] = [];
   for (const seg of abs.split("/")) {
     if (seg === "" || seg === ".") continue;
@@ -221,38 +205,41 @@ export function normaliseLocalPath(p: string): string {
     }
     out.push(seg);
   }
-  return "/" + out.join("/");
-}
-
-/** Base URI for an archive opened from a local path. */
-export function baseUriForPath(p: string): string {
-  const norm = normaliseLocalPath(p);
-  let s = "file://";
+  const norm = "/" + out.join("/");
+  let enc = "file://";
   for (const b of Buffer.from(norm, "utf8")) {
-    if (FILE_PATH_SAFE.has(b)) s += String.fromCharCode(b);
-    else s += "%" + b.toString(16).toUpperCase().padStart(2, "0");
+    const c = String.fromCharCode(b);
+    if (b < 0x80 && FILE_KEEP.has(c)) enc += c;
+    else enc += "%" + b.toString(16).toUpperCase().padStart(2, "0");
   }
-  return s;
+  return enc;
 }
 
-export class UriMapError extends Error {}
-
-/** Maps a resolved file: URI to local path bytes (spec §6). Throws UriMapError. */
-export function fileUriToPath(u: Uri): Buffer {
-  if (u.scheme === null || u.scheme.toLowerCase() !== "file") throw new UriMapError("not a file: URI");
-  if (u.authority !== null && u.authority !== "" && u.authority.toLowerCase() !== "localhost")
-    throw new UriMapError(`file: URI has a non-local authority '${u.authority}'`);
-  if (!u.path.startsWith("/")) throw new UriMapError("file: URI path is not absolute");
-  if (u.query !== null) throw new UriMapError("file: URI has a query component");
+/**
+ * Maps a resolved file: URI to a local path (as a Buffer of bytes).
+ * Returns an error message string on failure.
+ */
+export function fileUriToPath(u: Uri): Buffer | string {
+  if (u.authority !== undefined && u.authority !== "" && u.authority.toLowerCase() !== "localhost")
+    return `file: URI authority must be empty or localhost, got ${JSON.stringify(u.authority)}`;
+  if (!u.path.startsWith("/")) return "file: URI path is not absolute";
+  if (u.query !== undefined) return "file: URI must not have a query";
   const segs = u.path.split("/");
   const outSegs: Buffer[] = [];
   for (const seg of segs) {
-    const bytes = pctDecode(seg);
-    if (bytes.includes(0x2f)) throw new UriMapError("file: URI path contains an encoded '/'");
-    if (bytes.includes(0)) throw new UriMapError("file: URI path contains a NUL byte");
-    const str = bytes.toString("latin1");
-    if (str === "." || str === "..") throw new UriMapError("file: URI path contains a dot segment");
-    outSegs.push(bytes);
+    const bytes: number[] = [];
+    for (let i = 0; i < seg.length; i++) {
+      if (seg[i] === "%") {
+        bytes.push(parseInt(seg.slice(i + 1, i + 3), 16));
+        i += 2;
+      } else bytes.push(seg.charCodeAt(i));
+    }
+    const b = Buffer.from(bytes);
+    if (b.includes(0x2f)) return "file: URI path contains an encoded '/'";
+    if (b.includes(0)) return "file: URI path contains a NUL byte";
+    const s = b.toString("latin1");
+    if (s === "." || s === "..") return "file: URI path contains a dot segment";
+    outSegs.push(b);
   }
   const parts: Buffer[] = [];
   outSegs.forEach((b, i) => {
@@ -260,18 +247,4 @@ export function fileUriToPath(u: Uri): Buffer {
     parts.push(b);
   });
   return Buffer.concat(parts);
-}
-
-function pctDecode(s: string): Buffer {
-  const out: number[] = [];
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c === 0x25 && i + 2 < s.length && /^[0-9A-Fa-f]{2}$/.test(s.slice(i + 1, i + 3))) {
-      out.push(parseInt(s.slice(i + 1, i + 3), 16));
-      i += 2;
-    } else {
-      out.push(c & 0xff);
-    }
-  }
-  return Buffer.from(out);
 }

@@ -3,23 +3,45 @@
 import struct
 import zlib
 
-from . import proto, uri
-from .errors import WriteError
-from .reader import FORMAT_KEYS, INDEX_KEY, SOURCES_KEY, is_strong_etag
+from . import pb
+from . import uri as urimod
+from .errors import InvalidInput
+from .reader import ETAG_RE, FORMAT_KEYS, ID_CONCAT, ID_RANGE, MAX_PAYLOAD, MAX64
 
-U64_MAX = (1 << 64) - 1
-I64_MIN = -(1 << 63)
-I64_MAX = (1 << 63) - 1
-MAX_PAYLOAD = 65519
 DOS_TIME = 0
 DOS_DATE = (0 << 9) | (1 << 5) | 1  # 1980-01-01
-FLAGS = 0x0800  # UTF-8 names
+LH_SIG = 0x04034B50
+CD_SIG = 0x02014B50
+EOCD_SIG = 0x06054B50
+Z64_EOCD_SIG = 0x06064B50
+Z64_LOC_SIG = 0x07064B50
+FLAG_UTF8 = 0x0800
+INT64_MIN = -(1 << 63)
+INT64_MAX = (1 << 63) - 1
 
 
-class Entry:
-    """key: str. Either data (bytes) + compress, or ranges (list of dicts:
-    {'data': bytes} or {'source': int, 'offset': int, 'length': int})."""
+class WSource:
+    def __init__(self, kind, value, size=None, etag=None, modified_not_after=None):
+        self.kind = kind  # 'url' | 'key' | 'data'
+        self.value = value  # str for url/key, bytes for data
+        self.size = size
+        self.etag = etag
+        self.mnf = modified_not_after
 
+
+class WRange:
+    def __init__(self, source=0, offset=0, length=0, data=None):
+        self.source = source
+        self.offset = offset
+        self.length = length
+        self.data = data  # bytes for a literal range
+
+    @property
+    def size(self):
+        return len(self.data) if self.data is not None else self.length
+
+
+class WEntry:
     def __init__(self, key, data=None, ranges=None, compress=False, pinned=False):
         self.key = key
         self.data = data
@@ -27,20 +49,9 @@ class Entry:
         self.compress = compress
         self.pinned = pinned
 
-
-class Source:
-    """kind in {'url','key','data'}; value str/str/bytes; optional pins."""
-
-    def __init__(self, kind, value, size=None, etag=None, modified_not_after=None):
-        self.kind = kind
-        self.value = value
-        self.size = size
-        self.etag = etag
-        self.modified_not_after = modified_not_after
-
-    def as_dict(self):
-        return {self.kind: self.value, "size": self.size, "etag": self.etag,
-                "modified_not_after": self.modified_not_after}
+    @property
+    def is_ref(self):
+        return self.ranges is not None
 
 
 def _deflate(data):
@@ -48,203 +59,218 @@ def _deflate(data):
     return c.compress(data) + c.flush()
 
 
-def validate(entries, sources, page_size):
-    """Raise WriteError if the input must be rejected (spec §9.1).
+def _encode_payload(ranges):
+    enc = [pb.encode_range(r.source, r.offset, r.length, r.data) if r.data is None
+           else pb.encode_range(data=r.data) for r in ranges]
+    if len(ranges) == 1:
+        return ID_RANGE, enc[0]
+    return ID_CONCAT, pb.encode_concat(enc)
 
-    Returns {key_bytes: payload info} for reference entries."""
-    if page_size is not None and (not isinstance(page_size, int) or page_size < 1):
-        raise WriteError("page_size must be null or an integer >= 1")
-    keys = {}
+
+def validate(entries, sources, page_size):
+    """Check writer input against spec §9.1. Returns {key_bytes: entry}. Raises InvalidInput."""
+    by_key = {}
     for e in entries:
+        if not isinstance(e.key, str):
+            raise InvalidInput("key must be a string")
         try:
             kb = e.key.encode("utf-8")
         except UnicodeEncodeError:
-            raise WriteError(f"key {e.key!r} is not valid UTF-8") from None
+            raise InvalidInput("key %r is not valid UTF-8" % e.key)
         if not kb:
-            raise WriteError("empty key")
+            raise InvalidInput("empty key")
         if len(kb) > 65535:
-            raise WriteError("key longer than 65535 bytes")
+            raise InvalidInput("key longer than 65535 bytes")
         if kb in FORMAT_KEYS:
-            raise WriteError(f"key {e.key!r} is reserved for a format entry")
-        if kb in keys:
-            raise WriteError(f"duplicate key {e.key!r}")
-        keys[kb] = e
+            raise InvalidInput("key %r is reserved for a format entry" % e.key)
+        if kb in by_key:
+            raise InvalidInput("duplicate key %r" % e.key)
+        by_key[kb] = e
         if (e.data is None) == (e.ranges is None):
-            raise WriteError(f"entry {e.key!r} must have exactly one of bytes and ranges")
-        if e.ranges is not None and e.compress:
-            raise WriteError(f"reference entry {e.key!r} cannot be compressed")
+            raise InvalidInput("entry %r must have exactly one of bytes and ranges" % e.key)
+        if e.is_ref and e.compress:
+            raise InvalidInput("reference entry %r cannot be compressed" % e.key)
         if e.pinned:
             if page_size is None:
-                raise WriteError(f"entry {e.key!r} is pinned but there is no page index")
-            if e.data is None:
-                raise WriteError(f"pinned entry {e.key!r} is not a bytes entry")
-        if e.data is not None and len(e.data) >= 0xFFFFFFFF:
-            raise WriteError(f"entry {e.key!r} is too large")
+                raise InvalidInput("pinned entry %r requires a page index" % e.key)
+            if e.is_ref:
+                raise InvalidInput("pinned entry %r is not a bytes entry" % e.key)
+        if not e.is_ref and len(e.data) >= 0xFFFFFFFF:
+            raise InvalidInput("entry %r is 4 GiB or larger" % e.key)
+    if page_size is not None and (isinstance(page_size, bool) or not isinstance(page_size, int)
+                                  or page_size < 1):
+        raise InvalidInput("page_size must be a positive integer")
+
     for i, s in enumerate(sources):
         if s.kind == "url":
-            if s.value == "":
-                raise WriteError(f"source {i}: empty url")
-            if not uri.is_uri_reference(s.value):
-                raise WriteError(f"source {i}: url {s.value!r} is not an RFC 3986 URI-reference")
+            if not s.value:
+                raise InvalidInput("source %d: empty url" % i)
+            if not urimod.is_uri_reference(s.value):
+                raise InvalidInput("source %d: url %r is not an RFC 3986 URI-reference" % (i, s.value))
+            if s.etag is not None and not (isinstance(s.etag, str) and ETAG_RE.fullmatch(s.etag.encode("utf-8", "surrogatepass"))):
+                raise InvalidInput("source %d: etag %r is not a strong entity tag" % (i, s.etag))
+            if s.size is not None and not 0 <= s.size <= MAX64:
+                raise InvalidInput("source %d: size pin out of range" % i)
+            if s.mnf is not None and not INT64_MIN <= s.mnf <= INT64_MAX:
+                raise InvalidInput("source %d: modified_not_after out of range" % i)
         else:
-            if s.size is not None or s.etag is not None or s.modified_not_after is not None:
-                raise WriteError(f"source {i}: pins are only allowed on url sources")
-        if s.kind == "key":
-            try:
-                kb = s.value.encode("utf-8")
-            except UnicodeEncodeError:
-                raise WriteError(f"source {i}: key is not valid UTF-8") from None
-            if kb in FORMAT_KEYS:
-                raise WriteError(f"source {i}: names a format entry")
-            tgt = keys.get(kb)
-            if tgt is None:
-                raise WriteError(f"source {i}: key {s.value!r} is absent")
-            if tgt.data is None:
-                raise WriteError(f"source {i}: key {s.value!r} is a reference entry")
-        if s.etag is not None and not is_strong_etag(s.etag):
-            raise WriteError(f"source {i}: etag {s.etag!r} is not a strong entity tag")
-        if s.size is not None and not 0 <= s.size <= U64_MAX:
-            raise WriteError(f"source {i}: size pin out of range")
-        if s.modified_not_after is not None and \
-                not I64_MIN <= s.modified_not_after <= I64_MAX:
-            raise WriteError(f"source {i}: modified_not_after out of range")
-    payloads = {}
+            if s.size is not None or s.etag is not None or s.mnf is not None:
+                raise InvalidInput("source %d: pins are only allowed on url sources" % i)
+            if s.kind == "key":
+                try:
+                    kb = s.value.encode("utf-8")
+                except UnicodeEncodeError:
+                    raise InvalidInput("source %d: key is not valid UTF-8" % i)
+                if not kb:
+                    raise InvalidInput("source %d: empty key" % i)
+                if kb in FORMAT_KEYS:
+                    raise InvalidInput("source %d: key names a format entry" % i)
+                tgt = by_key.get(kb)
+                if tgt is None:
+                    raise InvalidInput("source %d: key %r is absent" % (i, s.value))
+                if tgt.is_ref:
+                    raise InvalidInput("source %d: key %r is a reference entry" % (i, s.value))
+            elif s.kind != "data":
+                raise InvalidInput("source %d: unknown kind" % i)
+
     for e in entries:
-        if e.ranges is None:
+        if not e.is_ref:
             continue
         total = 0
         for r in e.ranges:
-            if "data" in r:
-                total += len(r["data"])
-            else:
-                src, off, ln = r["source"], r["offset"], r["length"]
-                if src < 0 or off < 0 or ln < 0:
-                    raise WriteError(f"entry {e.key!r}: negative range field")
-                if src >= len(sources):
-                    raise WriteError(f"entry {e.key!r}: source {src} out of bounds")
-                if off + ln > U64_MAX:
-                    raise WriteError(f"entry {e.key!r}: offset + length exceeds 2^64-1")
-                total += ln
-        if total > U64_MAX:
-            raise WriteError(f"entry {e.key!r}: total size exceeds 2^64-1")
-        if len(e.ranges) == 1:
-            hid, payload = 0x7A76, proto.encode_range(e.ranges[0])
-        else:
-            hid, payload = 0x7A77, proto.encode_concat(e.ranges)
+            if r.data is None:
+                if not 0 <= r.source < len(sources):
+                    raise InvalidInput("entry %r: range source %d out of bounds" % (e.key, r.source))
+                if r.offset < 0 or r.length < 0:
+                    raise InvalidInput("entry %r: negative offset/length" % e.key)
+                end = r.offset + r.length
+                if end > MAX64:
+                    raise InvalidInput("entry %r: range offset + length exceeds 2^64-1" % e.key)
+                s = sources[r.source]
+                if s.kind == "data":
+                    n = len(s.value)
+                elif s.kind == "key":
+                    n = len(by_key[s.value.encode("utf-8")].data)
+                else:
+                    n = None
+                if n is not None and end > n:
+                    raise InvalidInput("entry %r: range extends past the end of source %d" % (e.key, r.source))
+            total += r.size
+        if total > MAX64:
+            raise InvalidInput("entry %r: reference size exceeds 2^64-1" % e.key)
+        _id, payload = _encode_payload(e.ranges)
         if len(payload) > MAX_PAYLOAD:
-            raise WriteError(f"entry {e.key!r}: reference payload is {len(payload)} bytes "
-                             f"(> {MAX_PAYLOAD})")
-        payloads[e.key.encode("utf-8")] = (hid, payload)
-    return payloads
-
-
-class _Out:
-    def __init__(self, f):
-        self.f = f
-        self.pos = 0
-
-    def write(self, b):
-        self.f.write(b)
-        self.pos += len(b)
+            raise InvalidInput("entry %r: reference payload is %d bytes (max %d)" % (e.key, len(payload), MAX_PAYLOAD))
+    return by_key
 
 
 def _local_header(name, method, crc, csize, usize):
-    return struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, FLAGS, method, DOS_TIME, DOS_DATE,
+    return struct.pack("<IHHHHHIIIHH", LH_SIG, 20, FLAG_UTF8, method, DOS_TIME, DOS_DATE,
                        crc, csize, usize, len(name), 0) + name
 
 
-def _cd_record(name, method, crc, csize, usize, lho, extra_blocks):
+def _cd_record(name, method, crc, csize, usize, offset, ref=None):
     extra = b""
-    need_z64 = lho >= 0xFFFFFFFF
-    if need_z64:
-        extra += struct.pack("<HHQ", 0x0001, 8, lho)
-    for hid, data in extra_blocks:
-        extra += struct.pack("<HH", hid, len(data)) + data
-    return struct.pack("<IHHHHHHIIIHHHHHII", 0x02014B50, 20, 45 if need_z64 else 20, FLAGS,
-                       method, DOS_TIME, DOS_DATE, crc, csize, usize, len(name), len(extra),
-                       0, 0, 0, 0, min(lho, 0xFFFFFFFF)) + name + extra
+    ver = 20
+    off32 = offset
+    if offset >= 0xFFFFFFFF:
+        extra += struct.pack("<HHQ", 0x0001, 8, offset)
+        off32 = 0xFFFFFFFF
+        ver = 45
+    if ref is not None:
+        rid, payload = ref
+        extra += struct.pack("<HH", rid, len(payload)) + payload
+    if len(extra) > 0xFFFF:
+        raise InvalidInput("extra field too large")
+    return struct.pack("<IHHHHHHIIIHHHHHII", CD_SIG, 20, ver, FLAG_UTF8, method, DOS_TIME, DOS_DATE,
+                       crc, csize, usize, len(name), len(extra), 0, 0, 0, 0, off32) + name + extra
 
 
-def write_archive(f, entries, sources, page_size=None, mirror=True):
-    """Write a vzip archive to binary file object f. Validates first."""
-    payloads = validate(entries, sources, page_size)
-    out = _Out(f)
-    records = {}  # key bytes -> cd record bytes (body records)
-    pinned_info = []
+def build(entries, sources, page_size=None, mirror=True):
+    """Build a vzip archive and return it as bytes. Raises InvalidInput."""
+    validate(entries, sources, page_size)
+    out = bytearray()
+    cd = []  # (name, method, crc, csize, usize, offset, ref)
+    pinned_info = []  # (name, body_offset, size, csize, method)
 
-    def put(name, method, body, usize, crc, extra_blocks=()):
-        lho = out.pos
-        out.write(_local_header(name, method, crc, len(body), usize))
-        body_off = out.pos
-        out.write(body)
-        rec = _cd_record(name, method, crc, len(body), usize, lho, list(extra_blocks))
-        return body_off, rec
+    def add(name, method, body, usize, crc, ref=None):
+        if len(body) >= 0xFFFFFFFF or usize >= 0xFFFFFFFF:
+            raise InvalidInput("entry %r is 4 GiB or larger" % name)
+        off = len(out)
+        out.extend(_local_header(name, method, crc, len(body), usize))
+        out.extend(body)
+        cd.append((name, method, crc, len(body), usize, off, ref))
+        return off + 30 + len(name)
 
-    def put_entry(e):
-        kb = e.key.encode("utf-8")
-        if e.data is not None:
-            crc = zlib.crc32(e.data)
-            if e.compress:
-                body, method = _deflate(e.data), 8
-            else:
-                body, method = e.data, 0
-            if len(body) >= 0xFFFFFFFF:
-                raise WriteError(f"entry {e.key!r}: compressed size too large")
-            body_off, rec = put(kb, method, body, len(e.data), crc)
-            if e.pinned:
-                pinned_info.append((kb, body_off, len(e.data), len(body), method))
+    def add_entry(e):
+        name = e.key.encode("utf-8")
+        if e.is_ref:
+            ref = _encode_payload(e.ranges)
+            body = ref[1] if mirror else b""
+            add(name, 0, body, len(body), zlib.crc32(body), ref)
         else:
-            hid, payload = payloads[kb]
-            body = payload if mirror else b""
-            _, rec = put(kb, 0, body, len(body), zlib.crc32(body), [(hid, payload)])
-        records[kb] = rec
+            data = bytes(e.data)
+            if e.compress:
+                body, method = _deflate(data), 8
+            else:
+                body, method = data, 0
+            boff = add(name, method, body, len(data), zlib.crc32(data))
+            if e.pinned:
+                pinned_info.append((name, boff, len(data), len(body), method))
 
     for e in entries:
         if not e.pinned:
-            put_entry(e)
-    src_raw = proto.encode_source_table([s.as_dict() for s in sources])
-    src_body = _deflate(src_raw)
-    s_off, s_rec = put(SOURCES_KEY, 8, src_body, len(src_raw), zlib.crc32(src_raw))
+            add_entry(e)
+
+    st = pb.encode_source_table([
+        pb.encode_source(s.kind, s.value, s.size, s.etag, s.mnf) for s in sources])
+    st_body = _deflate(st)
+    sources_off = add(b"__vz__/sources", 8, st_body, len(st), zlib.crc32(st))
+    sources_size = len(st_body)
+
     for e in entries:
         if e.pinned:
-            put_entry(e)
-    format_recs = [s_rec]
-    body_names = sorted(records)
-    comment = b"vzip/0" + struct.pack("<QQ", s_off, len(src_body))
+            add_entry(e)
+
+    comment_extra = b""
     if page_size is not None:
+        body_recs = [r for r in cd if r[0] not in FORMAT_KEYS]
+        body_recs.sort(key=lambda r: r[0])
+        encoded = [(r[0], _cd_record(*r)) for r in body_recs]
         pages = []
-        cur_off = 0
-        page_start = 0
-        page_first = None
-        for name in body_names:
-            rl = len(records[name])
-            if page_first is not None and cur_off - page_start + rl > page_size:
-                pages.append((page_first, page_start, cur_off - page_start))
-                page_first = None
-            if page_first is None:
-                page_first, page_start = name, cur_off
-            cur_off += rl
-        if page_first is not None:
-            pages.append((page_first, page_start, cur_off - page_start))
-        pinned_info.sort()
-        idx_raw = proto.encode_cd_index(pages, pinned_info)
-        idx_body = _deflate(idx_raw)
-        i_off, i_rec = put(INDEX_KEY, 8, idx_body, len(idx_raw), zlib.crc32(idx_raw))
-        format_recs.append(i_rec)
-        comment += struct.pack("<QQ", i_off, len(idx_body))
-    cd_off = out.pos
-    for name in body_names:
-        out.write(records[name])
-    for rec in format_recs:
-        out.write(rec)
-    cd_size = out.pos - cd_off
-    n = len(body_names) + len(format_recs)
+        cur_first, cur_off, cur_len = None, 0, 0
+        pos = 0
+        for name, rec in encoded:
+            if cur_first is not None and cur_len + len(rec) > page_size:
+                pages.append(pb.encode_page(cur_first, cur_off, cur_len))
+                cur_first = None
+            if cur_first is None:
+                cur_first, cur_off, cur_len = name, pos, 0
+            cur_len += len(rec)
+            pos += len(rec)
+        if cur_first is not None:
+            pages.append(pb.encode_page(cur_first, cur_off, cur_len))
+        pinned_info.sort(key=lambda p: p[0])
+        idx = pb.encode_cd_index(pages, [pb.encode_pinned(*p) for p in pinned_info])
+        idx_body = _deflate(idx)
+        index_off = add(b"__vz__/index", 8, idx_body, len(idx), zlib.crc32(idx))
+        comment_extra = struct.pack("<QQ", index_off, len(idx_body))
+        fmt_recs = [r for r in cd if r[0] in FORMAT_KEYS]
+        cd_bytes = b"".join(rec for _n, rec in encoded) + b"".join(_cd_record(*r) for r in fmt_recs)
+    else:
+        cd_bytes = b"".join(_cd_record(*r) for r in cd)
+
+    cd_off = len(out)
+    out.extend(cd_bytes)
+    cd_size = len(cd_bytes)
+    n = len(cd)
+    comment = b"vzip/0" + struct.pack("<QQ", sources_off, sources_size) + comment_extra
     if n >= 0xFFFF or cd_size >= 0xFFFFFFFF or cd_off >= 0xFFFFFFFF:
-        z64_off = out.pos
-        out.write(struct.pack("<IQHHIIQQQQ", 0x06064B50, 44, 45, 45, 0, 0, n, n, cd_size,
-                              cd_off))
-        out.write(struct.pack("<IIQI", 0x07064B50, 0, z64_off, 1))
-    out.write(struct.pack("<IHHHHIIH", 0x06054B50, 0, 0,
-                          min(n, 0xFFFF), min(n, 0xFFFF),
-                          min(cd_size, 0xFFFFFFFF), min(cd_off, 0xFFFFFFFF), len(comment)))
-    out.write(comment)
+        z64off = len(out)
+        out.extend(struct.pack("<IQHHIIQQQQ", Z64_EOCD_SIG, 44, 45, 45, 0, 0, n, n, cd_size, cd_off))
+        out.extend(struct.pack("<IIQI", Z64_LOC_SIG, 0, z64off, 1))
+    out.extend(struct.pack("<IHHHHIIH", EOCD_SIG, 0, 0,
+                           min(n, 0xFFFF), min(n, 0xFFFF),
+                           min(cd_size, 0xFFFFFFFF), min(cd_off, 0xFFFFFFFF), len(comment)))
+    out.extend(comment)
+    return bytes(out)

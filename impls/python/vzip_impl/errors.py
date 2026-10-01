@@ -1,37 +1,10 @@
-"""Error classes (spec §8.4)."""
+class VzError(Exception):
+    """A classified vzip error. cls is one of: archive, entry, body, payload, resolution, request."""
+
+    def __init__(self, cls, msg):
+        super().__init__(msg)
+        self.cls = cls
 
 
-class VzipError(Exception):
-    cls = "unknown"
-
-    def __init__(self, message):
-        super().__init__(message)
-        self.message = message
-
-
-class ArchiveError(VzipError):
-    cls = "archive"
-
-
-class EntryError(VzipError):
-    cls = "entry"
-
-
-class BodyError(VzipError):
-    cls = "body"
-
-
-class PayloadError(VzipError):
-    cls = "payload"
-
-
-class ResolutionError(VzipError):
-    cls = "resolution"
-
-
-class RequestError(VzipError):
-    cls = "request"
-
-
-class WriteError(Exception):
-    """The writer's input is invalid (spec §9.1)."""
+class InvalidInput(Exception):
+    """Writer input rejected (spec §9.1 / harness rules)."""

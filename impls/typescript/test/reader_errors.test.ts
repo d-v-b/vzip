@@ -1,385 +1,370 @@
-// One test per reader error case (spec §8.1, §8.4).
+// Reader error cases (spec §8). One test per error case.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
-import * as path from "node:path";
-import * as zlib from "node:zlib";
+import fs from "node:fs";
+import path from "node:path";
+import zlib from "node:zlib";
 import { Archive, type Request } from "../src/reader.ts";
-import { VzipError, type ErrorClass } from "../src/errors.ts";
-import { encodeCdIndex, encodeConcat, encodeRange, encodeSourceTable, type Source } from "../src/proto.ts";
-import { assemble, block, buildBuf, findRec, parseZip, recBytes, replaceFormatBody, rng, src, tmpDir, writeTmp } from "./helpers.ts";
-import type { WriterInput } from "../src/writer.ts";
+import { VzError } from "../src/errors.ts";
+import { encodeCdIndex, encodeConcat, encodeRange, type SourceMsg } from "../src/proto.ts";
+import { extraBlock, rawZip, runCli, tmpdir, writeTmp, type RawEntry } from "./helpers.ts";
 
-const dir = tmpDir();
-writeTmp(dir, "data.bin", Buffer.from("0123456789"));
-let counter = 0;
-const b = (s: string) => Buffer.from(s);
+const dir = tmpdir();
+let n = 0;
+const WHOLE: Request = { kind: "whole" };
 
-function save(buf: Uint8Array): string {
-  return writeTmp(dir, `e${counter++}.vzip`, buf);
+function save(buf: Buffer): string {
+  return writeTmp(dir, `a${n++}.vzip`, buf);
 }
+function open(buf: Buffer): Archive {
+  return Archive.open(save(buf));
+}
+const url = (u: string, pins: Partial<SourceMsg> = {}): SourceMsg => ({
+  kind: "url", url: u, size: null, etag: null, modifiedNotAfter: null, ...pins,
+});
+const data = (d: Buffer): SourceMsg => ({ kind: "data", data: d, size: null, etag: null, modifiedNotAfter: null });
+const keySrc = (k: string): SourceMsg => ({ kind: "key", key: k, size: null, etag: null, modifiedNotAfter: null });
+const ref1 = (name: string, r: Parameters<typeof encodeRange>[0], extra: Partial<RawEntry> = {}): RawEntry => {
+  const p = encodeRange(r);
+  return { name, body: p, extra: extraBlock(0x7a76, p), ...extra };
+};
+const R = (source: number, offset: number, length: number) => ({
+  source: BigInt(source), offset: BigInt(offset), length: BigInt(length), data: null,
+});
 
-function openErr(buf: Uint8Array): VzipError {
+async function errClass(f: () => unknown): Promise<string> {
   try {
-    Archive.open(save(buf)).close();
+    await f();
   } catch (e) {
-    assert.ok(e instanceof VzipError);
-    assert.equal(e.cls, "archive");
-    if (process.env.VZ_DEBUG) console.error("   ->", e.message);
-    return e;
+    if (e instanceof VzError) return e.cls;
+    throw e;
   }
-  assert.fail("open succeeded");
+  return "none";
 }
 
-async function opErr(buf: Uint8Array, op: "classify" | "get" | "raw" | "list", key: string, cls: ErrorClass, req?: Request): Promise<void> {
-  const a = Archive.open(save(buf));
-  try {
-    if (op === "classify") a.classify(key);
-    else if (op === "get") await a.get(key, req);
-    else if (op === "raw") a.raw(key);
-    else a.list(key);
-  } catch (e) {
-    assert.ok(e instanceof VzipError, String(e));
-    assert.equal(e.cls, cls, e.message);
-    return;
-  } finally {
-    a.close();
-  }
-  assert.fail(`${op}(${key}) succeeded`);
+function assertArchiveErr(buf: Buffer) {
+  assert.throws(() => open(buf), (e: unknown) => e instanceof VzError && e.cls === "archive");
 }
 
-const base = (extra: Partial<WriterInput> = {}) =>
-  buildBuf({
-    sources: [src.url("data.bin")],
-    entries: [
-      { key: "a", bytes: b("hello hello hello"), compress: true },
-      { key: "s", bytes: b("stored") },
-      { key: "r", ranges: [rng.src(0, 1, 3)] },
-    ],
-    ...extra,
-  });
+// ---------------------------------------------------------------- archive errors
 
-function mutateRec(buf: Buffer, name: string, f: (r: ReturnType<typeof findRec>) => void): Buffer {
-  const p = parseZip(buf);
-  f(findRec(p, name));
-  return assemble(p);
-}
-
-const sourcesWith = (sources: Source[]) => replaceFormatBody(base(), "sources", zlib.deflateRawSync(encodeSourceTable(sources)));
-const rawSources = (bytes: Uint8Array) => replaceFormatBody(base(), "sources", zlib.deflateRawSync(bytes));
-
-// ---------------- archive errors ----------------
-
-const archiveCases: Record<string, () => Uint8Array> = {
-  "file shorter than an end record": () => b("tiny"),
-  "no vzip comment": () => {
-    const p = parseZip(base());
-    p.comment = Buffer.alloc(0);
-    return assemble(p);
-  },
-  "comment without vzip/ magic": () => {
-    const p = parseZip(base());
-    p.comment = Buffer.from(p.comment);
-    p.comment.write("vzap/0", 0, "latin1");
-    return assemble(p);
-  },
-  "unsupported version": () => {
-    const p = parseZip(base());
-    p.comment = Buffer.from(p.comment);
-    p.comment.write("vzip/1", 0, "latin1");
-    return assemble(p);
-  },
-  "fake record at size-60 (disk number 38): no fallback": () => {
-    const p = parseZip(base());
-    p.recs[p.recs.length - 1].comment = Buffer.concat([Buffer.from([0x50, 0x4b, 0x05, 0x06]), Buffer.alloc(12)]);
-    const out = assemble(p);
-    out.writeUInt16LE(38, out.length - 44 + 4);
-    return out;
-  },
-  "zip64 locator missing": () => {
-    const out = base();
-    out.writeUInt32LE(0xffffffff, out.length - 44 + 16);
-    return out;
-  },
-  "zip64 record bad signature": () => {
-    const out = assemble(parseZip(base()), { zip64: true });
-    out.writeUInt32LE(0x12345678, out.length - 44 - 20 - 56);
-    return out;
-  },
-  "zip64 record size field not 44": () => {
-    const out = assemble(parseZip(base()), { zip64: true });
-    out.writeBigUInt64LE(56n, out.length - 44 - 20 - 56 + 4);
-    return out;
-  },
-  "zip64 record outside the file": () => {
-    const out = assemble(parseZip(base()), { zip64: true });
-    out.writeBigUInt64LE(1n << 40n, out.length - 44 - 20 + 8);
-    return out;
-  },
-  "central directory outside the file": () => {
-    const out = base();
-    out.writeUInt32LE(out.length, out.length - 44 + 12);
-    return out;
-  },
-  "sources body outside the file": () => {
-    const out = base();
-    out.writeBigUInt64LE(BigInt(out.length), out.length - 22 + 6);
-    return out;
-  },
-  "sources body with trailing byte": () => replaceFormatBody(base(), "sources", Buffer.concat([zlib.deflateRawSync(encodeSourceTable([])), Buffer.from([0])])),
-  "sources body truncated": () => replaceFormatBody(base(), "sources", zlib.deflateRawSync(Buffer.alloc(100, 1)).subarray(0, 5)),
-  "sources body not DEFLATE": () => replaceFormatBody(base(), "sources", Buffer.from([0xff, 0xff, 0xff])),
-  "source table malformed": () => rawSources(Buffer.from([0x0a, 0x05, 0x00])),
-  "source without kind": () => rawSources(Buffer.from([0x0a, 0x02, 0x20, 0x01])),
-  "source with empty url": () => sourcesWith([src.url("")]),
-  "pin on a key source": () => sourcesWith([{ ...src.key("a"), size: 3n }]),
-  "pin on a data source": () => sourcesWith([{ ...src.data(b("x")), modifiedNotAfter: 0n }]),
-  "weak etag pin": () => sourcesWith([src.url("x", { etag: 'W/"a"' })]),
-  "unquoted etag pin": () => sourcesWith([src.url("x", { etag: "abc" })]),
-  "unparseable central directory (unpaged)": () => {
-    const p = parseZip(base());
-    const cd = Buffer.concat(p.recs.map(recBytes));
-    cd.writeUInt32LE(0, 0);
-    return assemble(p, { cdRaw: cd });
-  },
-  "central directory with trailing bytes (unpaged)": () => {
-    const p = parseZip(base());
-    return assemble(p, { cdRaw: Buffer.concat([...p.recs.map(recBytes), Buffer.alloc(3)]) });
-  },
-  "__vz__/index record in archive without page index": () => {
-    const p = parseZip(base());
-    const r = findRec(p, "s");
-    p.recs.push({ ...r, name: Buffer.from("__vz__/index") });
-    return assemble(p);
-  },
-};
-const paged = () => base({ pageSize: 1, entries: [{ key: "a", bytes: b("1") }, { key: "b", bytes: b("2") }, { key: "c", bytes: b("3"), pinned: true }] });
-const idx = (pages: { firstKey: string; offset: bigint; length: bigint }[], pinned: any[] = []) =>
-  replaceFormatBody(paged(), "index", zlib.deflateRawSync(encodeCdIndex({ pages, pinned })));
-Object.assign(archiveCases, {
-  "page index does not decode": () => replaceFormatBody(paged(), "index", zlib.deflateRawSync(Buffer.from([0x0a, 0x09]))),
-  "page index does not inflate": () => replaceFormatBody(paged(), "index", Buffer.from([1, 2, 3])),
-  "page of length 0": () => idx([{ firstKey: "a", offset: 0n, length: 0n }]),
-  "page outside the central directory": () => idx([{ firstKey: "a", offset: 0n, length: 100000n }]),
-  "pages not contiguous from 0": () => idx([{ firstKey: "a", offset: 1n, length: 10n }]),
-  "pages with a gap": () => idx([{ firstKey: "a", offset: 0n, length: 10n }, { firstKey: "b", offset: 11n, length: 10n }]),
-  "first_key not increasing": () => idx([{ firstKey: "b", offset: 0n, length: 10n }, { firstKey: "a", offset: 10n, length: 10n }]),
-  "first_key equal": () => idx([{ firstKey: "a", offset: 0n, length: 10n }, { firstKey: "a", offset: 10n, length: 10n }]),
-  "empty first_key": () => idx([{ firstKey: "", offset: 0n, length: 10n }]),
-  "empty pinned key": () => idx([], [{ key: "", dataOffset: 0n, size: 0n, csize: 0n, method: 0 }]),
-  "pinned key listed twice": () =>
-    idx([], [{ key: "q", dataOffset: 0n, size: 0n, csize: 0n, method: 0 }, { key: "q", dataOffset: 0n, size: 0n, csize: 0n, method: 0 }]),
-  "pinned format entry": () => idx([], [{ key: "__vz__/sources", dataOffset: 0n, size: 0n, csize: 0n, method: 0 }]),
-  "pinned method 3": () => idx([], [{ key: "q", dataOffset: 0n, size: 0n, csize: 0n, method: 3 }]),
-  "pinned body outside the file": () => idx([], [{ key: "q", dataOffset: 0n, size: 1n, csize: 1000000n, method: 0 }]),
+test("archive error: not a zip", () => assertArchiveErr(Buffer.from("hello world, this is not a zip file at all!!!!!!!!!!!!")));
+test("archive error: empty file", () => assertArchiveErr(Buffer.alloc(0)));
+test("archive error: bad magic", () => assertArchiveErr(rawZip({ entries: [], magic: "vzop/0" })));
+test("archive error: unsupported version", () => assertArchiveErr(rawZip({ entries: [], magic: "vzip/1" })));
+test("archive error: plain zip comment of 22 bytes without magic", () =>
+  assertArchiveErr(rawZip({ entries: [], magic: "abcdef" })));
+test("archive error: sources body with trailing bytes", () => {
+  const body = Buffer.concat([zlib.deflateRawSync(Buffer.alloc(0)), Buffer.from([0])]);
+  assertArchiveErr(rawZip({ entries: [], sourcesBody: body }));
+});
+test("archive error: sources body truncated", () => {
+  const body = zlib.deflateRawSync(Buffer.from("0a020801", "hex"));
+  assertArchiveErr(rawZip({ entries: [], sourcesBody: body.subarray(0, body.length - 1) }));
+});
+test("archive error: source table malformed (wire type 3)", () =>
+  assertArchiveErr(rawZip({ entries: [], sources: Buffer.from([0x0b]) })));
+test("archive error: source with no kind", () => assertArchiveErr(rawZip({ entries: [], sources: Buffer.from("0a00", "hex") })));
+test("archive error: empty url", () => assertArchiveErr(rawZip({ entries: [], sources: [url("")] })));
+test("archive error: empty key source", () => assertArchiveErr(rawZip({ entries: [], sources: [keySrc("")] })));
+test("archive error: pin on data source", () =>
+  assertArchiveErr(rawZip({ entries: [], sources: [{ ...data(Buffer.alloc(1)), size: 1n }] })));
+test("archive error: weak etag pin", () => assertArchiveErr(rawZip({ entries: [], sources: [url("a", { etag: 'W/"x"' })] })));
+test("archive error: invalid UTF-8 url string", () =>
+  assertArchiveErr(rawZip({ entries: [], sources: Buffer.from("0a030a01ff", "hex") })));
+test("archive error: uint32 overflow is fine in sources but size pin as LEN is not", () =>
+  assertArchiveErr(rawZip({ entries: [], sources: Buffer.from("0a050a01612200", "hex") })));
+test("archive error: unpaged archive with __vz__/index record", () =>
+  assertArchiveErr(rawZip({ entries: [{ name: "__vz__/index", body: Buffer.alloc(0) }] })));
+test("archive error: central directory does not parse", () =>
+  assertArchiveErr(rawZip({ entries: [{ name: "a" }], cdHook: (cd) => { const c = Buffer.from(cd); c[0] = 0; return c; } })));
+test("archive error: central directory outside the file", () => {
+  const b = rawZip({ entries: [] });
+  b.writeUInt32LE(0xfffffff0, b.length - 22 - 6);
+  assertArchiveErr(b);
+});
+test("archive error: zip64 marker without locator", () => {
+  const b = rawZip({ entries: [] });
+  b.writeUInt16LE(0xffff, b.length - 22 - 12);
+  assertArchiveErr(b);
+});
+test("archive error: page index with zero-length page", () =>
+  assertArchiveErr(rawZip({ entries: [], index: encodeCdIndex({ pages: [{ firstKey: "a", offset: 0n, length: 0n }], pinned: [] }) })));
+test("archive error: page index pages not contiguous", () =>
+  assertArchiveErr(rawZip({ entries: [{ name: "a" }], index: encodeCdIndex({ pages: [{ firstKey: "a", offset: 1n, length: 10n }], pinned: [] }) })));
+test("archive error: page outside central directory", () =>
+  assertArchiveErr(rawZip({ entries: [{ name: "a" }], index: encodeCdIndex({ pages: [{ firstKey: "a", offset: 0n, length: 100000n }], pinned: [] }) })));
+test("archive error: first_key not increasing", () =>
+  assertArchiveErr(rawZip({
+    entries: [{ name: "a" }, { name: "b" }],
+    index: encodeCdIndex({ pages: [{ firstKey: "b", offset: 0n, length: 47n }, { firstKey: "a", offset: 47n, length: 47n }], pinned: [] }),
+  })));
+test("archive error: pinned key twice", () => {
+  const p = { key: "a", dataOffset: 0n, size: 0n, csize: 0n, method: 0n };
+  assertArchiveErr(rawZip({ entries: [], index: encodeCdIndex({ pages: [], pinned: [p, p] }) }));
+});
+test("archive error: pinned format entry", () =>
+  assertArchiveErr(rawZip({ entries: [], index: encodeCdIndex({ pages: [], pinned: [{ key: "__vz__/sources", dataOffset: 0n, size: 0n, csize: 0n, method: 0n }] }) })));
+test("archive error: pinned method 9", () =>
+  assertArchiveErr(rawZip({ entries: [], index: encodeCdIndex({ pages: [], pinned: [{ key: "a", dataOffset: 0n, size: 0n, csize: 0n, method: 9n }] }) })));
+test("archive error: pinned body outside file", () =>
+  assertArchiveErr(rawZip({ entries: [], index: encodeCdIndex({ pages: [], pinned: [{ key: "a", dataOffset: 0n, size: 5n, csize: 1000000n, method: 0n }] }) })));
+test("archive error: empty pinned key", () =>
+  assertArchiveErr(rawZip({ entries: [], index: encodeCdIndex({ pages: [], pinned: [{ key: "", dataOffset: 0n, size: 0n, csize: 0n, method: 0n }] }) })));
+test("archive error via CLI: open failure is reported as JSON with exit 0", () => {
+  const p = save(Buffer.from("nope"));
+  const q = writeTmp(dir, "q-open.json", "[]");
+  const r = runCli(["read", p, q]);
+  assert.equal(r.status, 0);
+  const j = JSON.parse(r.stdout);
+  assert.equal(j.open.ok, false);
+  assert.equal(j.open.class, "archive");
+  assert.deepEqual(j.results, []);
 });
 
-for (const [name, mk] of Object.entries(archiveCases)) {
-  test(`archive error: ${name}`, () => {
-    openErr(mk());
-  });
+// ---------------------------------------------------------------- entry errors
+
+async function entryErrorFor(e: RawEntry) {
+  const a = open(rawZip({ entries: [e, { name: "ok", body: Buffer.from("x") }], sources: [data(Buffer.alloc(4))] }));
+  assert.equal(await errClass(() => a.classify("bad")), "entry");
+  assert.equal(await errClass(() => a.get("bad", WHOLE)), "entry");
+  assert.equal(await errClass(() => a.raw("bad")), "entry");
+  assert.deepEqual(await a.get("ok", WHOLE), Buffer.from("x")); // others unaffected
+  assert.ok(a.list("").includes("bad")); // entry errors are listed
 }
 
-test("archive error: file does not exist", () => {
-  assert.throws(() => Archive.open(path.join(dir, "nope.vzip")), (e: unknown) => e instanceof VzipError && e.cls === "archive");
+test("entry error: unknown method", () => entryErrorFor({ name: "bad", method: 99 }));
+test("entry error: encrypted", () => entryErrorFor({ name: "bad", flags: 0x801 }));
+test("entry error: extra field does not parse", () => entryErrorFor({ name: "bad", extra: Buffer.from([1, 0, 9]) }));
+test("entry error: two reference blocks", () =>
+  entryErrorFor({ name: "bad", extra: Buffer.concat([extraBlock(0x7a76, Buffer.alloc(0)), extraBlock(0x7a77, Buffer.alloc(0))]) }));
+test("entry error: reference with method 8", () => entryErrorFor({ name: "bad", method: 8, body: zlib.deflateRawSync(Buffer.alloc(0)), extra: extraBlock(0x7a76, Buffer.alloc(0)) }));
+test("entry error: size field 0xFFFFFFFF", () => entryErrorFor({ name: "bad", usize: 0xffffffff }));
+test("entry error: offset 0xFFFFFFFF without zip64 block", () => entryErrorFor({ name: "bad", lho: 0xffffffff }));
+test("entry error: offset 0xFFFFFFFF with short zip64 block", () =>
+  entryErrorFor({ name: "bad", lho: 0xffffffff, extra: extraBlock(1, Buffer.alloc(4)) }));
+test("entry error: two zip64 blocks", () =>
+  entryErrorFor({ name: "bad", extra: Buffer.concat([extraBlock(1, Buffer.alloc(8)), extraBlock(1, Buffer.alloc(8))]) }));
+
+test("zip64 extra block holds the local header offset", async () => {
+  const z = Buffer.alloc(8);
+  z.writeBigUInt64LE(0n);
+  const a = open(rawZip({ entries: [{ name: "k", body: Buffer.from("hi"), lho: 0xffffffff, extra: extraBlock(1, z) }] }));
+  assert.deepEqual(await a.get("k", WHOLE), Buffer.from("hi"));
 });
 
-// ---------------- valid variants that must open and read ----------------
-
-test("valid variants: ZIP64 end records, ZIP64 offset block, extra blocks in any order, unknown blocks", async () => {
-  const z = assemble(parseZip(base()), { zip64: true });
-  let a = Archive.open(save(z));
-  assert.equal(Buffer.from((await a.get("r"))!).toString(), "123");
-  a.close();
-  // ZIP64 local header offset for "s", reference block before an unknown block for "r".
-  const p = parseZip(base());
-  const s = findRec(p, "s");
-  const lho = s.fixed.readUInt32LE(42);
-  s.fixed.writeUInt32LE(0xffffffff, 42);
-  const z64 = Buffer.alloc(8);
-  z64.writeBigUInt64LE(BigInt(lho));
-  s.extra = Buffer.concat([block(0x1234, b("zz")), block(0x0001, z64)]);
-  const r = findRec(p, "r");
-  r.extra = Buffer.concat([r.extra, block(0x5555, b(""))]);
-  a = Archive.open(save(assemble(p)));
-  assert.equal(Buffer.from((await a.get("s"))!).toString(), "stored");
-  assert.equal(Buffer.from((await a.get("r"))!).toString(), "123");
-  // records with empty names or invalid UTF-8 are ignored
-  a.close();
-  const p2 = parseZip(base());
-  p2.recs.push({ ...findRec(p2, "s"), name: Buffer.from([0xff]) }, { ...findRec(p2, "s"), name: Buffer.alloc(0) });
-  a = Archive.open(save(assemble(p2)));
-  assert.deepEqual(a.list(""), ["a", "r", "s"]);
-  a.close();
+test("entry error: unparseable page; key reported as entry error even if not in page", async () => {
+  // two pages; corrupt the signature of the second
+  const a = open(rawZip({
+    entries: [{ name: "a" }, { name: "b" }],
+    index: encodeCdIndex({ pages: [{ firstKey: "a", offset: 0n, length: 47n }, { firstKey: "b", offset: 47n, length: 47n }], pinned: [] }),
+    cdHook: (cd) => { const c = Buffer.from(cd); c[47] = 0; return c; },
+  }));
+  assert.equal(a.classify("a"), "bytes");
+  assert.equal(await errClass(() => a.classify("b")), "entry");
+  assert.equal(await errClass(() => a.classify("c")), "entry");
+  assert.equal(a.classify("0"), "missing"); // before the first page
+  assert.equal(await errClass(() => a.list("")), "entry");
+  assert.deepEqual(a.list("a"), ["a"]); // second page not read for prefix "a"
 });
 
-// ---------------- entry errors ----------------
+// ---------------------------------------------------------------- body errors
 
-const entryCases: Record<string, () => Buffer> = {
-  "extra field does not parse": () => mutateRec(base(), "s", (r) => (r.extra = Buffer.from([1, 2, 3]))),
-  "extra block overruns": () => mutateRec(base(), "s", (r) => (r.extra = Buffer.from([1, 2, 9, 0, 1]))),
-  "two reference blocks": () => mutateRec(base(), "r", (r) => (r.extra = Buffer.concat([r.extra, block(0x7a77, new Uint8Array())]))),
-  "method 99": () => mutateRec(base(), "s", (r) => r.fixed.writeUInt16LE(99, 10)),
-  "encrypted (bit 0)": () => mutateRec(base(), "s", (r) => r.fixed.writeUInt16LE(0x0801, 8)),
-  "reference with method 8": () => mutateRec(base(), "r", (r) => r.fixed.writeUInt16LE(8, 10)),
-  "offset 0xFFFFFFFF without ZIP64 block": () => mutateRec(base(), "s", (r) => r.fixed.writeUInt32LE(0xffffffff, 42)),
-  "ZIP64 block too short": () =>
-    mutateRec(base(), "s", (r) => {
-      r.fixed.writeUInt32LE(0xffffffff, 42);
-      r.extra = block(0x0001, Buffer.alloc(4));
-    }),
-  "two ZIP64 blocks": () =>
-    mutateRec(base(), "s", (r) => {
-      r.fixed.writeUInt32LE(0xffffffff, 42);
-      r.extra = Buffer.concat([block(0x0001, Buffer.alloc(8)), block(0x0001, Buffer.alloc(8))]);
-    }),
-};
-for (const [name, mk] of Object.entries(entryCases)) {
-  test(`entry error: ${name}`, async () => {
-    const buf = mk();
-    const key = name.includes("reference") ? "r" : "s";
-    await opErr(buf, "classify", key, "entry");
-    await opErr(buf, "get", key, "entry");
-    await opErr(buf, "raw", key, "entry");
-    const a = Archive.open(save(buf));
-    assert.equal(Buffer.from((await a.get("a"))!).toString(), "hello hello hello"); // other keys unaffected
-    assert.ok(a.list("").includes(key)); // keys with entry errors are listed
-    // a key source naming it fails with a resolution error
-    a.close();
+test("body error: STORED sizes differ", async () => {
+  const a = open(rawZip({ entries: [{ name: "k", body: Buffer.from("abc"), usize: 2 }] }));
+  assert.equal(await errClass(() => a.get("k", { kind: "range", start: 0n, end: 1n })), "body");
+  assert.equal(await errClass(() => a.raw("k")), "body");
+});
+test("body error: DEFLATE with trailing bytes", async () => {
+  const body = Buffer.concat([zlib.deflateRawSync(Buffer.from("abc")), Buffer.from([0])]);
+  const a = open(rawZip({ entries: [{ name: "k", body, method: 8, usize: 3 }] }));
+  assert.equal(await errClass(() => a.get("k", { kind: "range", start: 0n, end: 1n })), "body");
+});
+test("body error: DEFLATE inflates to wrong size", async () => {
+  const a = open(rawZip({ entries: [{ name: "k", body: zlib.deflateRawSync(Buffer.from("abc")), method: 8, usize: 4 }] }));
+  assert.equal(await errClass(() => a.get("k", WHOLE)), "body");
+});
+test("body error: body outside file", async () => {
+  const a = open(rawZip({ entries: [{ name: "k", body: Buffer.from("abc"), csize: 100000, usize: 100000 }] }));
+  assert.equal(await errClass(() => a.get("k", { kind: "range", start: 0n, end: 1n })), "body");
+});
+test("body error on a key source becomes a resolution error", async () => {
+  const a = open(rawZip({
+    entries: [{ name: "__vz__/h", body: Buffer.from("abc"), usize: 2 }, ref1("r", R(0, 0, 1))],
+    sources: [keySrc("__vz__/h")],
+  }));
+  assert.equal(await errClass(() => a.get("r", WHOLE)), "resolution");
+  assert.equal(await errClass(() => a.raw("__vz__/h")), "body");
+});
+test("body error: raw of a reference entry with mismatched sizes", async () => {
+  const a = open(rawZip({ entries: [ref1("r", R(0, 0, 1), { usize: 0 })], sources: [data(Buffer.alloc(1))] }));
+  assert.equal(await errClass(() => a.raw("r")), "body");
+  assert.deepEqual(await a.get("r", WHOLE), Buffer.alloc(1)); // get ignores the body
+});
+
+// ---------------------------------------------------------------- payload errors
+
+async function payloadErr(extra: Buffer, sources: SourceMsg[] = [data(Buffer.alloc(4))]) {
+  const a = open(rawZip({ entries: [{ name: "r", extra }], sources }));
+  assert.equal(a.classify("r"), "reference");
+  assert.equal(await errClass(() => a.get("r", { kind: "range", start: 0n, end: 0n })), "payload");
+}
+test("payload error: source index out of bounds (even outside the window)", () =>
+  payloadErr(extraBlock(0x7a77, encodeConcat([R(0, 0, 1), R(5, 0, 0)]))));
+test("payload error: literal range with non-zero offset", () =>
+  payloadErr(extraBlock(0x7a76, Buffer.concat([encodeRange({ ...R(0, 1, 0), data: Buffer.alloc(0) })]))));
+test("payload error: wire type 3 in unknown field", () => payloadErr(extraBlock(0x7a76, Buffer.from([0x33]))));
+test("payload error: known field with wrong wire type", () => payloadErr(extraBlock(0x7a76, Buffer.from([0x1a, 0x00]))));
+test("payload error: uint32 source overflow", () =>
+  payloadErr(extraBlock(0x7a76, Buffer.from([0x08, 0x80, 0x80, 0x80, 0x80, 0x10]))));
+test("payload error: varint longer than 10 bytes", () =>
+  payloadErr(extraBlock(0x7a76, Buffer.from([0x18, ...Array(10).fill(0x80), 0x01]))));
+test("payload error: varint exceeds 2^64-1", () =>
+  payloadErr(extraBlock(0x7a76, Buffer.from([0x18, ...Array(9).fill(0xff), 0x02]))));
+test("payload error: field number 0", () => payloadErr(extraBlock(0x7a76, Buffer.from([0x00, 0x00]))));
+test("payload error: truncated LEN", () => payloadErr(extraBlock(0x7a76, Buffer.from([0x2a, 0x05, 0x00]))));
+test("payload error: offset + length overflow", () =>
+  payloadErr(extraBlock(0x7a76, encodeRange({ source: 0n, offset: (1n << 64n) - 1n, length: 1n, data: null }))));
+test("payload error: total size overflow", () =>
+  payloadErr(extraBlock(0x7a77, encodeConcat([
+    { source: 0n, offset: 0n, length: (1n << 63n), data: null },
+    { source: 0n, offset: 0n, length: (1n << 63n), data: null },
+  ]))));
+test("payload error: payload longer than 65519 bytes", () =>
+  payloadErr(extraBlock(0x7a76, encodeRange({ source: 0n, offset: 0n, length: 0n, data: Buffer.alloc(65520) }))));
+
+test("payload: reserved field 2, unknown fields and non-minimal varints are accepted", async () => {
+  const payload = Buffer.from([0x10, 0x05, 0x18, 0x81, 0x00, 0x20, 0x02, 0x3a, 0x00, 0x45, 1, 2, 3, 4]);
+  const a = open(rawZip({ entries: [{ name: "r", extra: extraBlock(0x7a76, payload) }], sources: [data(Buffer.from("abcd"))] }));
+  assert.deepEqual(await a.get("r", WHOLE), Buffer.from("bc"));
+});
+
+// ---------------------------------------------------------------- resolution errors
+
+test("resolution error: missing file, but other ranges and windows still work", async () => {
+  const a = open(rawZip({ entries: [{ name: "r", extra: extraBlock(0x7a77, encodeConcat([R(0, 0, 2), R(1, 0, 2)])) }], sources: [data(Buffer.from("ab")), url("nonexistent.bin")] }));
+  assert.equal(await errClass(() => a.get("r", WHOLE)), "resolution");
+  assert.deepEqual(await a.get("r", { kind: "range", start: 0n, end: 2n }), Buffer.from("ab"));
+});
+test("resolution error: data source too short", async () => {
+  const a = open(rawZip({ entries: [ref1("r", R(0, 1, 4))], sources: [data(Buffer.from("ab"))] }));
+  assert.equal(await errClass(() => a.get("r", WHOLE)), "resolution");
+  assert.deepEqual(await a.get("r", { kind: "range", start: 0n, end: 1n }), Buffer.from("b"));
+});
+test("resolution error: key source names a reference", async () => {
+  const a = open(rawZip({ entries: [ref1("r", R(0, 0, 1)), ref1("s", R(1, 0, 1))], sources: [data(Buffer.from("a")), keySrc("r")] }));
+  assert.equal(await errClass(() => a.get("s", WHOLE)), "resolution");
+});
+test("resolution error: key source missing", async () => {
+  const a = open(rawZip({ entries: [ref1("s", R(0, 0, 1))], sources: [keySrc("nope")] }));
+  assert.equal(await errClass(() => a.get("s", WHOLE)), "resolution");
+});
+test("resolution error: key source names a format entry", async () => {
+  const a = open(rawZip({ entries: [ref1("s", R(0, 0, 1))], sources: [keySrc("__vz__/sources")] }));
+  assert.equal(await errClass(() => a.get("s", WHOLE)), "resolution");
+});
+test("resolution error: key source with an entry error", async () => {
+  const a = open(rawZip({ entries: [{ name: "h", method: 77 }, ref1("s", R(0, 0, 1))], sources: [keySrc("h")] }));
+  assert.equal(await errClass(() => a.get("s", WHOLE)), "resolution");
+});
+test("resolution error: unsupported scheme", async () => {
+  const a = open(rawZip({ entries: [ref1("s", R(0, 0, 1))], sources: [url("ftp://x/y")] }));
+  assert.equal(await errClass(() => a.get("s", WHOLE)), "resolution");
+});
+test("resolution error: invalid URL syntax (checked only at resolve)", async () => {
+  const a = open(rawZip({ entries: [ref1("s", R(0, 0, 1)), { name: "b", body: Buffer.from("x") }], sources: [url("a b")] }));
+  assert.deepEqual(await a.get("b", WHOLE), Buffer.from("x"));
+  assert.equal(await errClass(() => a.get("s", WHOLE)), "resolution");
+});
+for (const [label, u] of [
+  ["file host", "file://example.com/etc/passwd"],
+  ["file port", "file://localhost:1/x"],
+  ["file query", "/x?"],
+  ["encoded slash", "a%2Fb"],
+  ["encoded dot-dot", "%2E%2E/x"],
+  ["NUL", "a%00b"],
+  ["relative file path", "file:x"],
+]) {
+  test(`resolution error: file: rule (${label})`, async () => {
+    const a = open(rawZip({ entries: [ref1("s", R(0, 0, 1))], sources: [url(u)] }));
+    assert.equal(await errClass(() => a.get("s", WHOLE)), "resolution");
   });
 }
-
-test("entry error: page that cannot be parsed", async () => {
-  const p = parseZip(paged());
-  // corrupt the signature of record "b" (in its own page with page_size 1)
-  findRec(p, "b").fixed.writeUInt32LE(0, 0);
-  const buf = assemble(p);
-  await opErr(buf, "get", "b", "entry");
-  await opErr(buf, "classify", "bb", "entry");
-  await opErr(buf, "list", "", "entry");
-  await opErr(buf, "list", "b", "entry");
-  const a = Archive.open(save(buf));
-  assert.deepEqual(a.list("a"), ["a"]);
-  assert.equal(a.classify("c"), "bytes"); // pinned
-  a.close();
-});
-
-// ---------------- body errors ----------------
-
-const bodyCases: Record<string, [() => Buffer, string]> = {
-  "body outside the file": [() => mutateRec(base(), "s", (r) => r.fixed.writeUInt32LE(0x7fffffff, 42)), "s"],
-  "DEFLATE body with trailing bytes": [() => mutateRec(base(), "a", (r) => r.fixed.writeUInt32LE(r.fixed.readUInt32LE(20) + 1, 20)), "a"],
-  "DEFLATE body truncated": [() => mutateRec(base(), "a", (r) => r.fixed.writeUInt32LE(r.fixed.readUInt32LE(20) - 1, 20)), "a"],
-  "DEFLATE inflates to the wrong size": [() => mutateRec(base(), "a", (r) => r.fixed.writeUInt32LE(r.fixed.readUInt32LE(24) + 1, 24)), "a"],
-  "STORED sizes differ": [() => mutateRec(base(), "s", (r) => r.fixed.writeUInt32LE(3, 24)), "s"],
-};
-for (const [name, [mk, key]] of Object.entries(bodyCases)) {
-  test(`body error: ${name}`, async () => {
-    const buf = mk();
-    await opErr(buf, "get", key, "body");
-    await opErr(buf, "get", key, "body", { type: "range", start: 0n, end: 1n });
-    await opErr(buf, "raw", key, "body");
-    const a = Archive.open(save(buf));
-    assert.equal(a.classify(key), "bytes");
-    a.close();
+test("file: URL forms that are accepted (absolute, LOCALHOST, fragment, #-only)", async () => {
+  const sub = fs.mkdtempSync(path.join(dir, "f-"));
+  fs.writeFileSync(path.join(sub, "d a.bin"), "0123456789");
+  const abs = "file://LOCALHOST" + encodeURI(path.join(sub, "d a.bin")) + "#frag";
+  const arch = rawZip({
+    entries: [ref1("a", R(0, 2, 3)), ref1("b", R(1, 1, 2)), ref1("c", R(2, 0, 4)), ref1("d", R(3, 0, 1))],
+    sources: [url(abs), url("./x/../d%20a.bin"), url("#self"), url("file:" + encodeURI(path.join(sub, "d a.bin")))],
   });
-}
-test("body error: reference entry raw with STORED sizes differing", async () => {
-  const buf = mutateRec(base(), "r", (r) => r.fixed.writeUInt32LE(1, 24));
-  await opErr(buf, "raw", "r", "body");
-  const a = Archive.open(save(buf));
-  assert.equal(Buffer.from((await a.get("r"))!).toString(), "123"); // get ignores the body
-  a.close();
+  const p = path.join(sub, "arch.vzip");
+  fs.writeFileSync(p, arch);
+  const a = Archive.open(p);
+  assert.deepEqual(await a.get("a", WHOLE), Buffer.from("234"));
+  assert.deepEqual(await a.get("b", WHOLE), Buffer.from("12"));
+  assert.deepEqual(await a.get("c", WHOLE), arch.subarray(0, 4));
+  assert.deepEqual(await a.get("d", WHOLE), Buffer.from("0"));
 });
-
-// ---------------- payload errors ----------------
-
-const withPayload = (id: number, payload: Uint8Array, sources: Source[] = [src.url("data.bin")]) =>
-  mutateRec(buildBuf({ sources, entries: [{ key: "r", ranges: [rng.lit("x")] }] }), "r", (r) => (r.extra = block(id, payload)));
-const payloadCases: Record<string, () => Buffer> = {
-  "undecodable Range": () => withPayload(0x7a76, Buffer.from([0x2a, 0x05])),
-  "undecodable Concat": () => withPayload(0x7a77, Buffer.from([0x0a, 0x01, 0x07])),
-  "source index out of bounds outside the window": () =>
-    withPayload(0x7a77, encodeConcat([rng.lit("abc"), rng.src(5, 0, 0)])),
-  "source range with no sources": () => withPayload(0x7a76, encodeRange(rng.src(0, 0, 0)), []),
-  "literal with non-zero length": () => withPayload(0x7a76, encodeRange({ source: 0, offset: 0n, length: 1n, data: b("a") })),
-  "literal with non-zero source": () => withPayload(0x7a76, encodeRange({ source: 1, offset: 0n, length: 0n, data: b("a") }), [src.data(b("x")), src.data(b("y"))]),
-  "offset + length exceeds 2^64-1": () => withPayload(0x7a76, encodeRange(rng.src(0, (1n << 64n) - 1n, 1n))),
-  "total size exceeds 2^64-1": () =>
-    withPayload(0x7a77, encodeConcat([rng.src(0, 0, (1n << 63n)), rng.src(0, 0, (1n << 63n))])),
-  "uint32 source overflow": () => withPayload(0x7a76, Buffer.from([0x08, 0x80, 0x80, 0x80, 0x80, 0x10])),
-};
-for (const [name, mk] of Object.entries(payloadCases)) {
-  test(`payload error: ${name}`, async () => {
-    const buf = mk();
-    await opErr(buf, "get", "r", "payload", { type: "range", start: 0n, end: 1n });
-    await opErr(buf, "get", "r", "payload", { type: "range", start: 0n, end: 0n });
-    const a = Archive.open(save(buf));
-    assert.equal(a.classify("r"), "reference");
-    assert.ok(a.raw("r") !== null);
-    a.close();
-  });
-}
-test("request error precedes everything; hidden keys are missing before lookup", async () => {
-  const buf = withPayload(0x7a76, Buffer.from([0xff]));
-  await opErr(buf, "get", "r", "request", { type: "range", start: 2n, end: 1n });
-  await opErr(buf, "get", "nope", "request", { type: "range", start: 2n, end: 1n });
-  const a = Archive.open(save(buf));
-  assert.equal(await a.get("__vz__/sources"), null);
-  a.close();
-});
-
-// ---------------- resolution errors ----------------
-
-const resolve1 = (s: Source, r = rng.src(0, 0, 2), extraEntries: WriterInput["entries"] = []) =>
-  replaceFormatBody(
-    buildBuf({ sources: [src.data(b("placeholder"))], entries: [{ key: "r", ranges: [r] }, ...extraEntries] }),
-    "sources",
-    zlib.deflateRawSync(encodeSourceTable([s])),
-  );
-const mtime = BigInt(Math.floor(fs.statSync(path.join(dir, "data.bin")).mtimeMs / 1000));
-const resolutionCases: Record<string, () => Buffer> = {
-  "file does not exist": () => resolve1(src.url("missing.bin")),
-  "source shorter than the range": () => resolve1(src.url("data.bin"), rng.src(0, 8, 3)),
-  "size pin mismatch": () => resolve1(src.url("data.bin", { size: 11n })),
-  "etag pin on file:": () => resolve1(src.url("data.bin", { etag: '"x"' })),
-  "modified_not_after pin fails": () => resolve1(src.url("data.bin", { modifiedNotAfter: mtime - 1n })),
-  "invalid URI reference": () => resolve1(src.url("a b.bin")),
-  "non-ASCII URL": () => resolve1(src.url("é.bin")),
-  "unsupported scheme": () => resolve1(src.url("ftp://example.com/x")),
-  "file: with remote host": () => resolve1(src.url("file://example.com/x")),
-  "file: with query": () => resolve1(src.url("data.bin?")),
-  "file: with encoded slash": () => resolve1(src.url("a%2Fb")),
-  "file: with encoded dot-dot": () => resolve1(src.url("%2E%2E/data.bin")),
-  "file: is a directory": () => resolve1(src.url(".")),
-  "data source shorter": () => resolve1(src.data(b("x"))),
-  "key source missing": () => resolve1(src.key("nope")),
-  "key source is a reference": () => resolve1(src.key("r")),
-  "key source is a format entry": () => resolve1(src.key("__vz__/sources")),
-  "key source too short": () => resolve1(src.key("k"), rng.src(0, 0, 5), [{ key: "k", bytes: b("abc") }]),
-  "key source with a body error": () =>
-    mutateRec(resolve1(src.key("k"), rng.src(0, 0, 2), [{ key: "k", bytes: b("abc") }]), "k", (r) => r.fixed.writeUInt32LE(2, 24)),
-  "key source with an entry error": () =>
-    mutateRec(resolve1(src.key("k"), rng.src(0, 0, 2), [{ key: "k", bytes: b("abc") }]), "k", (r) => r.fixed.writeUInt16LE(77, 10)),
-};
-for (const [name, mk] of Object.entries(resolutionCases)) {
-  test(`resolution error: ${name}`, async () => {
-    await opErr(mk(), "get", "r", "resolution");
-  });
-}
-
-test("resolution: ranges outside the window are not resolved; pins pass; hidden key source; self reference", async () => {
-  const buf = buildBuf({
-    sources: [src.url("missing.bin"), src.url("data.bin", { size: 10n, modifiedNotAfter: mtime }), src.key("__vz__/h"), src.url("#frag")],
-    entries: [
-      { key: "__vz__/h", bytes: b("HH"), compress: true },
-      { key: "r", ranges: [rng.lit("ab"), rng.src(0, 0, 0), rng.src(1, 2, 3), rng.src(2, 0, 2), rng.src(0, 5, 5)] },
-      { key: "self", ranges: [rng.src(3, 0, 2)] },
+test("file pins: size, modified_not_after pass and fail; etag cannot be checked", async () => {
+  const sub = fs.mkdtempSync(path.join(dir, "p-"));
+  const f = path.join(sub, "x.bin");
+  fs.writeFileSync(f, "0123456789");
+  fs.utimesSync(f, 1000000, 1000000.7);
+  const arch = rawZip({
+    entries: [ref1("ok", R(0, 0, 2)), ref1("size", R(1, 0, 2)), ref1("mtime", R(2, 0, 2)), ref1("etag", R(3, 0, 2)), ref1("zero", R(1, 0, 0))],
+    sources: [
+      url("x.bin", { size: 10n, modifiedNotAfter: 1000000n }),
+      url("x.bin", { size: 11n }),
+      url("x.bin", { modifiedNotAfter: 999999n }),
+      url("x.bin", { etag: '"e"' }),
     ],
   });
-  const a = Archive.open(save(buf));
-  assert.equal(Buffer.from((await a.get("r", { type: "range", start: 0n, end: 7n }))!).toString(), "ab234HH");
-  await assert.rejects(a.get("r"), (e: any) => e.cls === "resolution");
-  assert.equal(Buffer.from((await a.get("self"))!).toString(), "PK");
-  a.close();
+  fs.writeFileSync(path.join(sub, "a.vzip"), arch);
+  const a = Archive.open(path.join(sub, "a.vzip"));
+  assert.deepEqual(await a.get("ok", WHOLE), Buffer.from("01"));
+  assert.equal(await errClass(() => a.get("size", WHOLE)), "resolution");
+  assert.equal(await errClass(() => a.get("mtime", WHOLE)), "resolution");
+  assert.equal(await errClass(() => a.get("etag", WHOLE)), "resolution");
+  assert.deepEqual(await a.get("zero", WHOLE), Buffer.alloc(0)); // zero-length ranges are never resolved
+});
+
+// ---------------------------------------------------------------- request errors and order
+
+test("request error: start > end, even for missing and hidden keys", async () => {
+  const a = open(rawZip({ entries: [] }));
+  const req: Request = { kind: "range", start: 2n, end: 1n };
+  assert.equal(await errClass(() => a.get("nope", req)), "request");
+  assert.equal(await errClass(() => a.get("__vz__/x", req)), "request");
+});
+test("hidden keys are missing for classify/get but visible to raw", async () => {
+  const a = open(rawZip({ entries: [{ name: "__vz__/h", method: 99 }, { name: "__vz__/g", body: Buffer.from("g") }] }));
+  assert.equal(a.classify("__vz__/h"), "missing");
+  assert.equal(await a.get("__vz__/h", WHOLE), null);
+  assert.equal(await errClass(() => a.raw("__vz__/h")), "entry");
+  assert.deepEqual(await a.raw("__vz__/g"), Buffer.from("g"));
+  assert.equal(await a.raw("__vz__/index"), null);
+  assert.deepEqual(a.list(""), []);
+});
+test("records with invalid UTF-8 names are ignored", async () => {
+  const a = open(rawZip({ entries: [{ name: Buffer.from([0xff, 0x41]), method: 99 }, { name: "ok" }] }));
+  assert.deepEqual(a.list(""), ["ok"]);
+});
+test("queries CLI: malformed queries file exits non-zero", () => {
+  const p = save(rawZip({ entries: [] }));
+  for (const q of [
+    '[{"op":"nope","key":"a"}]',
+    '[{"op":"get"}]',
+    '[{"op":"list"}]',
+    '[{"op":"classify","key":"a","range":{"offset":1}}]',
+    '[{"op":"get","key":"a","range":null}]',
+    '[{"op":"get","key":"a","range":{"start":1}}]',
+    '[{"op":"get","key":"a","range":{"offset":1,"suffix":2}}]',
+    '[{"op":"get","key":"a","range":{"offset":-1}}]',
+    '[{"op":"get","key":"a","range":{"offset":1.5}}]',
+    '[{"op":"get","key":"a","key":"b"}]',
+  ]) {
+    const qp = writeTmp(dir, `bad-q-${n++}.json`, q);
+    assert.notEqual(runCli(["read", p, qp]).status, 0, q);
+  }
 });

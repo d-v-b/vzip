@@ -1,20 +1,8 @@
 [package]
 name = "vzip"
 version = "0.1.0"
-edition = "2021"
-
-[lib]
-name = "vzip"
-path = "src/lib.rs"
-
-[[bin]]
-name = "vzip-cli"
-path = "src/bin/vzip-cli.rs"
+edition = "2024"
 
 [dependencies]
-flate2 = "1"
-crc32fast = "1"
-serde_json = "1"
-
-[profile.release]
-opt-level = 3
+crc32fast = "1.5.2"
+flate2 = "1.1.10"

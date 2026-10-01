@@ -1,7 +1,7 @@
 # Independent implementations
 
 Each directory holds a reader, writer and harness CLI that an agent built from
-[SPEC.md](../SPEC.md) (format version 0, **revision 6**) and
+[SPEC.md](../SPEC.md) (format version 0, **revision 7**) and
 [HARNESS.md](../conformance/HARNESS.md) alone. The agents had no access to the
 reference implementation, the test vectors or each other's code. Each agent's
 `SPEC_NOTES.md` lists the ambiguities it reported; notes from every round are
@@ -9,16 +9,16 @@ in [conformance/notes/](../conformance/notes/).
 
 | dir | language | dependencies | HTTP | run |
 |---|---|---|---|---|
-| `rust/` | Rust | flate2, crc32fast, serde_json (hand-written HTTP/1.1 client) | http | `cargo build --release`, then `./vzip` |
+| `rust/` | Rust | flate2, crc32fast (hand-written HTTP/1.1 client, JSON parser, URI and date code) | http | `cargo build --release`, then `./vzip` |
 | `typescript/` | TypeScript (Node ≥ 23, type stripping) | none | http, https | `./vzip` |
 | `python/` | Python 3.12 | standard library | http, https | `./vzip` (needs `uv`) |
 
-**Against the revision-6 suite**, all three pass every check, including the
+**Against the revision-7 suite**, all three pass every check, including the
 HTTP profile:
-- 5129/5129 read queries;
+- 5120/5120 read queries;
 - 11/11 write cases;
-- 32/32 rejections;
-- 20000/20000 cross-reads;
-- 2506/2506 HTTP checks.
+- 41/41 rejections;
+- 19892/19892 cross-reads;
+- 3136/3136 HTTP checks.
 
 There is no divergence between them.
