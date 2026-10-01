@@ -4,6 +4,7 @@ import {
   registerVzipWorker,
   tiffZarrUrl,
 } from "../src/client.ts";
+import { WORKER_HEADER } from "../src/server.ts";
 
 const EXAMPLE =
   "https://ftp.ebi.ac.uk/pub/databases/IDR/idr0096-tratwal-marrowquant/20210609-ftp-ome-tiffs/4000_d11_m5_LT_2%20(20x_01).ome.tiff";
@@ -19,6 +20,11 @@ const setStatus = (text: string, error = false) => {
 
 async function getJson(url: string) {
   const r = await fetch(url);
+  if (r.headers.get(WORKER_HEADER) === null) {
+    throw new Error(
+      `the vzip service worker did not answer this request (HTTP ${r.status} from the network); reload the page and try again`,
+    );
+  }
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
   return r.json();
 }
@@ -61,6 +67,10 @@ let prefix: Promise<string> | undefined;
 
 async function virtualize(url: string) {
   $("result").hidden = true;
+  // Record the URL in the address bar, so the page can be shared or reloaded.
+  const here = new URL(location.href);
+  here.searchParams.set("url", url);
+  history.replaceState(null, "", here);
   setStatus("Starting the service worker…");
   prefix ??= registerVzipWorker(new URL("vzip-sw.js", location.href));
   const p = await prefix;
