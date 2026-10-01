@@ -33,8 +33,8 @@ TIMEOUT = 900
 
 def _matches(result: dict, accept: list[dict]) -> bool:
     for a in accept:
-        if a == {"ok": False}:
-            if result.get("ok") is False:
+        if a.get("ok") is False:
+            if result.get("ok") is False and ("class" not in a or result.get("class") == a["class"]):
                 return True
         elif {k: result.get(k) for k in a} == a and result.get("ok") is True:
             return True
@@ -67,6 +67,8 @@ def grade(out: dict, queries: list[dict], accepts: list[list[dict]], open_must: 
         return [{"query": "<run>", "got": out["crash"], "accept": "no crash"}]
     opened = bool(out.get("open", {}).get("ok"))
     if open_must == "fail":
+        if not opened and out.get("open", {}).get("class") != "archive":
+            return [{"query": "<open>", "got": out.get("open"), "accept": "class archive"}]
         return [] if not opened else [
             {"query": "<open>", "got": out.get("open"), "accept": "open fails (archive error)"}]
     if not opened:
@@ -162,6 +164,24 @@ def main() -> int:
             got = {n: _shape((o.get("results") or [None] * (i + 1))[i]) for n, o in outs.items()}
             if len(set(json.dumps(x, sort_keys=True) for x in got.values())) > 1:
                 report["divergence"].append({"vector": vname, "query": q, "by_impl": got})
+
+    # 1c. malformed queries files must make the CLI exit non-zero (HARNESS)
+    any_vec = next(iter(vectors.values()))["archive"]
+    bad_queries = {
+        "unknown_op": [{"op": "frobnicate", "key": "x"}],
+        "missing_key": [{"op": "get"}],
+        "range_with_two_forms": [{"op": "get", "key": "x", "range": {"offset": 1, "suffix": 2}}],
+        "not_an_array": {"op": "get", "key": "x"},
+    }
+    for impl, cli in impls.items():
+        for name, q in bad_queries.items():
+            qp = out / "vectors" / f"bad_{name}.json"
+            qp.write_text(json.dumps(q))
+            p = subprocess.run(cli + ["read", str(any_vec), str(qp)], capture_output=True,
+                               text=True, timeout=TIMEOUT)
+            report["reject"][f"{impl}:queries/{name}"] = {
+                "ok": p.returncode != 0, "exit": p.returncode, "file_left": False,
+                "stderr": p.stderr.strip()[-200:]}
 
     # 2. write + validate + cross-read
     for impl, cli in impls.items():

@@ -6,6 +6,7 @@ official protobuf runtime in tests/test_pb.py.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 _VARINT = 0
@@ -167,15 +168,26 @@ def parts(ref: Reference) -> tuple[Range, ...]:
 
 @dataclass(frozen=True, slots=True)
 class Source:
-    """One entry of the archive's source table. Exactly one field is set."""
+    """One entry of the archive's source table: exactly one kind, plus pins (spec §6.1)."""
 
     url: str | None = None  # external object; may be relative to the archive
     key: str | None = None  # another entry of this archive (internal reference)
     data: bytes | None = None  # literal bytes, e.g. a shared decoding header
+    size: int | None = None  # pin: total object size
+    etag: str | None = None  # pin: strong entity tag, with its quotes
+    modified_not_after: int | None = None  # pin: seconds since the Unix epoch
 
     def __post_init__(self) -> None:
         if sum(x is not None for x in (self.url, self.key, self.data)) != 1:
             raise ValueError("a Source has exactly one of url, key, data")
+        if self.pinned and self.url is None:
+            raise ValueError("pins are only allowed on url sources")
+        if self.etag is not None and not _STRONG_ETAG.match(self.etag):
+            raise ValueError(f"etag pin is not a strong entity tag in quotes: {self.etag!r}")
+
+    @property
+    def pinned(self) -> bool:
+        return any(x is not None for x in (self.size, self.etag, self.modified_not_after))
 
     def encode(self) -> bytes:
         out = bytearray()
@@ -185,21 +197,42 @@ class Source:
             _put_bytes(out, 2, self.key.encode())
         else:
             _put_bytes(out, 3, self.data)
+        # optional (explicit presence) fields are emitted whenever set, even if 0
+        if self.size is not None:
+            _put_tag(out, 4, _VARINT)
+            _put_varint(out, self.size)
+        if self.etag is not None:
+            _put_bytes(out, 5, self.etag.encode())
+        if self.modified_not_after is not None:
+            _put_tag(out, 6, _VARINT)
+            _put_varint(out, self.modified_not_after & 0xFFFFFFFFFFFFFFFF)  # int64
         return bytes(out)
 
     @classmethod
     def decode(cls, buf) -> Source:
-        kind = None
-        for f, v in _known(buf, {1: _LEN, 2: _LEN, 3: _LEN}):
-            kind = (f, v)  # oneof: the last member on the wire wins
+        kind, pins = None, {}
+        schema = {1: _LEN, 2: _LEN, 3: _LEN, 4: _VARINT, 5: _LEN, 6: _VARINT}
+        for f, v in _known(buf, schema):
+            if f in (1, 2, 3):
+                kind = (f, v)  # oneof: the last member on the wire wins
+            elif f == 4:
+                pins["size"] = v
+            elif f == 5:
+                pins["etag"] = _utf8(v)
+            else:
+                pins["modified_not_after"] = v - (1 << 64) if v >= 1 << 63 else v
         if kind is None:
             raise ValueError("Source has no kind set")
         f, v = kind
         if f == 1:
-            return cls(url=_utf8(v))
+            return cls(url=_utf8(v), **pins)
         if f == 2:
-            return cls(key=_utf8(v))
-        return cls(data=bytes(v))
+            return cls(key=_utf8(v), **pins)
+        return cls(data=bytes(v), **pins)
+
+
+# RFC 9110 entity-tag, strong form only: DQUOTE *etagc DQUOTE
+_STRONG_ETAG = re.compile(r'^"[\x21\x23-\x7e]*"$')
 
 
 def _u32(v: int) -> int:

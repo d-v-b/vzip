@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import bisect
+import datetime
+import math
 import os
-import re
 import zlib
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
@@ -42,10 +43,22 @@ from refstore.archive import (
     Entry,
     parse_central_directory,
     parse_local_header,
+    inflate_clean,
     parse_tail,
     read_source_table,
 )
+from refstore.errors import (
+    ArchiveError,
+    BodyError,
+    EntryError,
+    PayloadError,
+    RequestError,
+    ResolutionError,
+    VzipError,
+)
 from refstore.pb import Reference, Source, decode_cd_index, parts
+from refstore.uri import file_path, file_uri
+from refstore.uri import resolve as resolve_reference
 
 
 @dataclass
@@ -71,20 +84,6 @@ class Stats:
         self.__init__()
 
 
-# RFC 3986 URI-reference characters: unreserved, reserved, and percent-encodings
-_URI_REF = re.compile(r"^(?:[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=]|%[0-9A-Fa-f]{2})*$")
-_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
-
-
-def resolve_reference(base: str, ref: str) -> str:
-    """Strict RFC 3986 §5.2.2 resolution of `ref` against `base` (spec §6)."""
-    if not _URI_REF.match(ref):
-        raise ValueError(f"not a valid URI reference: {ref!r}")
-    if _SCHEME.match(ref):  # strict: a reference with a scheme is used as is
-        return ref
-    return urljoin(base, ref)
-
-
 class Resolver:
     """Map URLs to (obstore store, path). Pre-register stores for credentials."""
 
@@ -94,13 +93,7 @@ class Resolver:
     def resolve(self, url: str) -> tuple[object, str]:
         p = urlparse(url)
         if p.scheme == "file":
-            if p.netloc not in ("", "localhost"):
-                raise ValueError(f"file: URL with authority {p.netloc!r}")
-            if p.query:
-                raise ValueError("file: URL with a query")
-            if not p.path.startswith("/"):
-                raise ValueError("file: URL with a relative path")
-            return self._stores.setdefault("file://", LocalStore()), unquote(p.path)
+            return self._stores.setdefault("file://", LocalStore()), file_path(url)
         if p.scheme not in ("http", "https", "s3", "gs", "az", "abfs"):
             raise ValueError(f"unsupported URL scheme {p.scheme!r}")
         root = f"{p.scheme}://{p.netloc}"
@@ -110,7 +103,8 @@ class Resolver:
                 if p.scheme in ("http", "https")
                 else from_url(root)
             )
-        return self._stores[root], p.path.lstrip("/")
+        # object_store paths are decoded; it percent-encodes them itself when building URLs
+        return self._stores[root], unquote(p.path).lstrip("/")
 
 
 def _abs_range(size: int, br: ByteRequest | None) -> tuple[int, int]:
@@ -119,13 +113,33 @@ def _abs_range(size: int, br: ByteRequest | None) -> tuple[int, int]:
         return 0, size
     if isinstance(br, RangeByteRequest):
         if br.start > br.end:
-            raise ValueError(f"byte range start {br.start} > end {br.end}")
+            raise RequestError(f"byte range start {br.start} > end {br.end}")
         return min(br.start, size), min(br.end, size)
     if isinstance(br, OffsetByteRequest):
         return min(br.offset, size), size
     if isinstance(br, SuffixByteRequest):
         return max(size - br.suffix, 0), size
     raise TypeError(f"unexpected byte request {br!r}")
+
+
+def _check_index(pages, pinned, cd_size: int, file_size: int) -> None:
+    """Spec §7.2: a malformed page index is an archive error."""
+    pos, prev = 0, None
+    for p in pages:
+        if p.length == 0 or p.offset != pos or p.offset + p.length > cd_size:
+            raise ArchiveError("pages are not contiguous, empty, or outside the directory")
+        if prev is not None and p.first_key.encode() <= prev.encode():
+            raise ArchiveError("page first_key values do not strictly increase")
+        pos, prev = p.offset + p.length, p.first_key
+    seen = set()
+    for e in pinned:
+        if e.key in seen or e.key in (SOURCES_KEY, INDEX_KEY):
+            raise ArchiveError(f"pinned key {e.key!r} is duplicated or a format entry")
+        if e.method not in (0, 8):
+            raise ArchiveError(f"pinned {e.key!r} has method {e.method}")
+        if e.data_offset + e.csize > file_size:
+            raise ArchiveError(f"pinned {e.key!r} lies outside the file")
+        seen.add(e.key)
 
 
 class VZipStore(Store):
@@ -144,7 +158,7 @@ class VZipStore(Store):
     ) -> None:
         super().__init__(read_only=True)
         # spec §6: absolute, lexically normalised, symlinks not resolved
-        self.url = url if urlparse(url).scheme else Path(os.path.abspath(url)).as_uri()
+        self.url = url if urlparse(url).scheme else file_uri(url)
         self.resolve = resolve
         self.resolver = resolver or Resolver()
         self.stats = stats or Stats()
@@ -158,6 +172,8 @@ class VZipStore(Store):
         self._pages: list = []  # CdIndex pages, when the archive has one
         self._page_keys: list[str] = []
         self._loaded: set[int] = set()
+        self._bad_pages: dict[int, str] = {}
+        self._file_size = 0
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, VZipStore) and other.url == self.url
@@ -186,6 +202,16 @@ class VZipStore(Store):
     async def _open(self) -> None:
         if self._is_open:
             return
+        try:
+            await self._open_archive()
+        except ArchiveError:
+            raise
+        except Exception as e:  # noqa: BLE001 - spec §8.1: every open failure
+            raise ArchiveError(f"{type(e).__name__}: {e}") from None
+        self._refresh_keys()
+        await super()._open()
+
+    async def _open_archive(self) -> None:
         store, path = self.resolver.resolve(self.url)
         res = await obstore.get_async(store, path, options={"range": {"suffix": TAIL_GUESS}})
         tail = bytes(await res.bytes_async())
@@ -195,6 +221,12 @@ class VZipStore(Store):
         d = parse_tail(tail, size)
         self.is_vzip = d.is_vzip
         self._cd_offset = d.cd_offset
+        self._file_size = size
+        if d.cd_offset + d.cd_size > size:
+            raise ArchiveError("central directory lies outside the file")
+        for off, n in [(d.sources_offset, d.sources_size), (d.index_offset or 0, d.index_size)]:
+            if off + n > size:
+                raise ArchiveError("a format entry's body lies outside the file")
         if d.index_offset is not None:
             # Paged: fetch URL table + late entries + CdIndex (contiguous, just before
             # the CD), but not the CD itself; pages are loaded on demand.
@@ -215,6 +247,7 @@ class VZipStore(Store):
                 (INDEX_KEY, d.index_offset, d.index_size, index_body),
             ]:
                 self._entries[k] = Entry(k, -1, len(body), csize, 8, None, off)
+            _check_index(pages, pinned, d.cd_size, size)
             self._pages = pages
             self._page_keys = [p.first_key for p in pages]
             for e in pinned:
@@ -241,13 +274,11 @@ class VZipStore(Store):
                 self._sources = read_source_table(await self._entry_bytes(e, 0, e.size))
         if any(src.url == "" for src in self._sources):
             raise ValueError("empty url in the source table")
-        self._refresh_keys()
-        await super()._open()
 
     def _slice(self, offset: int, n: int, method: int) -> bytes:
         lo = offset - self._buf_start
         raw = self._buf[lo : lo + n]
-        return zlib.decompress(raw, -15) if method == 8 else raw
+        return inflate_clean(raw) if method == 8 else raw
 
     def _refresh_keys(self) -> None:
         self._keys = sorted(
@@ -265,8 +296,14 @@ class VZipStore(Store):
             for i in todo
         ))
         for i, data in zip(todo, datas):
-            for k, e in parse_central_directory(data, trust_offsets=True).items():
-                self._entries.setdefault(k, e)
+            try:
+                parsed = parse_central_directory(data, trust_offsets=True)
+            except ValueError as e:
+                self._bad_pages[i] = str(e)
+                parsed = {}
+            for k, e in parsed.items():
+                if bisect.bisect_right(self._page_keys, k) - 1 == i:  # spec §7.2
+                    self._entries.setdefault(k, e)
             self._loaded.add(i)
         self._refresh_keys()
 
@@ -277,13 +314,20 @@ class VZipStore(Store):
         i = bisect.bisect_right(self._page_keys, key) - 1
         if i >= 0:
             await self._load_pages([i])
+            if i in self._bad_pages:
+                raise EntryError(f"page {i}, which holds {key!r}, cannot be parsed: "
+                                 f"{self._bad_pages[i]}")
 
     async def _load_prefix(self, prefix: str) -> None:
         if not self._pages:
             return
         lo = max(bisect.bisect_right(self._page_keys, prefix) - 1, 0)
         hi = bisect.bisect_left(self._page_keys, prefix + "\U0010ffff")
-        await self._load_pages(range(lo, max(hi, lo + 1)))
+        idxs = range(lo, max(hi, lo + 1))
+        await self._load_pages(idxs)
+        bad = [i for i in idxs if i in self._bad_pages]
+        if bad:
+            raise EntryError(f"pages {bad} cannot be parsed")
 
     async def _entry_bytes(self, e: Entry, start: int, end: int) -> bytes:
         """Bytes [start, end) of an entry's *body* (the naive view)."""
@@ -295,12 +339,12 @@ class VZipStore(Store):
             # already fetched by _open (e.g. metadata written with late=True)
             lo = e.data_offset - self._buf_start
             raw = self._buf[lo : lo + e.csize]
-            return (zlib.decompress(raw, -15) if e.method == 8 else raw)[start:end]
+            return (inflate_clean(raw) if e.method == 8 else raw)[start:end]
         if e.method == 8:  # deflated: inflate the whole entry
             if e.data_offset is None:
                 await self._locate(e)
             raw = await self._read(self.url, e.data_offset, e.data_offset + e.csize, external=False)
-            return zlib.decompress(raw, -15)[start:end]
+            return inflate_clean(raw)[start:end]
         if e.method != 0:
             raise NotImplementedError(f"zip compression method {e.method}")
         if e.data_offset is None:
@@ -314,6 +358,22 @@ class VZipStore(Store):
         )
         e.data_offset = e.header_offset + parse_local_header(hdr)
 
+    async def _body(self, e: Entry, start: int, end: int) -> bytes:
+        """A bytes entry's (inflated) body slice; failures are body errors (spec §8.4)."""
+        try:
+            if e.method == 0 and e.csize != e.size:
+                raise ValueError(f"STORED entry with sizes {e.csize} != {e.size}")
+            if e.method == 8:
+                data = await self._entry_bytes(e, 0, 1 << 64)  # whole inflated body
+                if len(data) != e.size:
+                    raise ValueError(f"inflates to {len(data)} bytes, record says {e.size}")
+                return data[start:end]
+            return await self._entry_bytes(e, start, end)
+        except VzipError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise BodyError(f"{e.name!r}: {type(exc).__name__}: {exc}") from None
+
     async def _key_bytes(self, key: str, start: int, end: int) -> bytes:
         """Bytes [start, end) of another entry's value (a `key` source, spec §6).
 
@@ -324,28 +384,64 @@ class VZipStore(Store):
             await self._lookup(key)
             e = self._entries.get(key)
             if e is None:
-                raise ValueError(f"key source {key!r} is missing")
+                raise ResolutionError(f"key source {key!r} is missing")
             if key in (SOURCES_KEY, INDEX_KEY):
-                raise ValueError(f"key source {key!r} names a format entry")
+                raise ResolutionError(f"key source {key!r} names a format entry")
             if e.error:
-                raise ValueError(f"key source {key!r} has an entry error: {e.error}")
+                raise ResolutionError(f"key source {key!r} has an entry error: {e.error}")
             if e.is_ref:
-                raise ValueError(f"key source {key!r} is a reference entry")
+                raise ResolutionError(f"key source {key!r} is a reference entry")
             if end > e.size:
-                raise ValueError(f"key source {key!r} is shorter than {end} bytes")
+                raise ResolutionError(f"key source {key!r} is shorter than {end} bytes")
             if not key.startswith(RESERVED_PREFIX) and e.method == 0:
-                return await self._entry_bytes(e, start, end)
-            self._key_cache[key] = await self._entry_bytes(e, 0, e.size)
+                return await self._body(e, start, end)
+            self._key_cache[key] = await self._body(e, 0, e.size)
         data = self._key_cache[key]
         if end > len(data):
-            raise ValueError(f"key source {key!r} is shorter than {end} bytes")
+            raise ResolutionError(f"key source {key!r} is shorter than {end} bytes")
         return data[start:end]
 
+    async def _url_bytes(self, src: Source, start: int, end: int) -> bytes:
+        """Bytes [start, end) of a url source, checking its pins (spec §6.1)."""
+        url = resolve_reference(self.url, src.url)
+        if not src.pinned:
+            return await self._read(url, start, end, external=True)
+        if urlparse(url).scheme.lower() == "file":
+            path = file_path(url)
+            st = os.stat(path)
+            if src.etag is not None:
+                raise ResolutionError("an etag pin cannot be checked for a file: URL")
+            if src.size is not None and st.st_size != src.size:
+                raise ResolutionError(f"size pin {src.size} != {st.st_size}")
+            if (src.modified_not_after is not None
+                    and math.floor(st.st_mtime) > src.modified_not_after):
+                raise ResolutionError("modified_not_after pin failed: the file changed")
+            return await self._read(url, start, end, external=True)
+        store, path = self.resolver.resolve(url)
+        options: dict = {"range": (start, end)}
+        if src.etag is not None:
+            options["if_match"] = src.etag
+        if src.modified_not_after is not None:
+            options["if_unmodified_since"] = datetime.datetime.fromtimestamp(
+                src.modified_not_after, datetime.timezone.utc)
+        try:
+            res = await obstore.get_async(store, path, options=options)
+            data = bytes(await res.bytes_async())
+        except Exception as exc:  # noqa: BLE001 - 412 Precondition Failed and friends
+            raise ResolutionError(f"pin check or read failed for {url}: {exc}") from None
+        self.stats.record(url, start, len(data), external=True)
+        if src.size is not None and res.meta["size"] != src.size:
+            raise ResolutionError(f"size pin {src.size} != {res.meta['size']}")
+        if len(data) != end - start:
+            raise ResolutionError(f"{url} is shorter than {end} bytes")
+        return data
+
     async def _ref_bytes(self, ref: Reference, start: int, end: int) -> bytes:
-        """Bytes [start, end) of the value described by `ref`."""
+        """Bytes [start, end) of the value described by `ref` (spec §8.3)."""
         for r in parts(ref):  # payload errors: every range, even ones outside [start, end)
             if r.data is None and r.source >= len(self._sources):
-                raise ValueError(f"range uses source {r.source}; the table has {len(self._sources)}")
+                raise PayloadError(f"range uses source {r.source}; the table has "
+                                   f"{len(self._sources)}")
         pieces = []
         pos = 0
         for r in parts(ref):
@@ -359,17 +455,20 @@ class VZipStore(Store):
                 src = self._sources[r.source]
                 if src.data is not None:
                     if b > len(src.data):
-                        raise ValueError(f"data source {r.source} is shorter than {b} bytes")
+                        raise ResolutionError(f"data source {r.source} is shorter than {b} bytes")
                     pieces.append(src.data[a:b])
                 elif src.key is not None:
                     pieces.append(self._key_bytes(src.key, a, b))
-                else:  # relative URLs resolve against the archive
-                    url = resolve_reference(self.url, src.url)
-                    pieces.append(self._read(url, a, b, external=True))
+                else:
+                    pieces.append(self._url_bytes(src, a, b))
             pos += r.size
         coros = [p for p in pieces if not isinstance(p, bytes)]
-        # key ranges are coroutines too; gather runs them alongside external reads
-        done = iter(await asyncio.gather(*coros))
+        try:
+            done = iter(await asyncio.gather(*coros))
+        except ResolutionError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - spec §8.4: failures resolving a range
+            raise ResolutionError(f"{type(exc).__name__}: {exc}") from None
         return b"".join(p if isinstance(p, bytes) else next(done) for p in pieces)
 
     # ------------------------------------------------------------ zarr API
@@ -377,31 +476,42 @@ class VZipStore(Store):
     def classify(self, key: str) -> str | None:
         """The overlay's decision function: 'bytes', 'ref', or None (spec §4.1).
 
-        Raises ValueError for an entry error (spec §8.4).
+        Raises EntryError for an entry error (spec §8.4).
         """
         e = self._entries.get(key)
         if e is None or (self.resolve and key.startswith(RESERVED_PREFIX)):
             return None
         if e.error:
-            raise ValueError(f"{key!r}: {e.error}")
+            raise EntryError(f"{key!r}: {e.error}")
         return "ref" if (self.resolve and e.is_ref) else "bytes"
+
+    async def kind(self, key: str) -> str | None:
+        """classify() with the lookup, in the order of spec §8.4."""
+        await self._ensure_open()
+        if self.resolve and key.startswith(RESERVED_PREFIX):
+            return None
+        await self._lookup(key)
+        return self.classify(key)
 
     async def get(
         self, key: str, prototype: BufferPrototype, byte_range: ByteRequest | None = None
     ) -> Buffer | None:
         await self._ensure_open()
-        _abs_range(0, byte_range)  # reject malformed requests even for missing keys
-        await self._lookup(key)
-        kind = self.classify(key)
+        _abs_range(0, byte_range)  # 1. request errors, even for missing keys
+        kind = await self.kind(key)  # 2-3. hidden, lookup, entry error
         if kind is None:
             return None
         e = self._entries[key]
         if kind == "ref":
-            start, end = _abs_range(e.ref.size, byte_range)
-            data = await self._ref_bytes(e.ref, start, end)
+            try:
+                ref = e.ref
+            except ValueError as exc:
+                raise PayloadError(f"{key!r}: {exc}") from None
+            start, end = _abs_range(ref.size, byte_range)
+            data = await self._ref_bytes(ref, start, end)
         else:
             start, end = _abs_range(e.size, byte_range)
-            data = await self._entry_bytes(e, start, end)
+            data = await self._body(e, start, end)
         return prototype.buffer.from_bytes(data)
 
     async def get_partial_values(

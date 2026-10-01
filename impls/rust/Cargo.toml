@@ -1,0 +1,9 @@
+[package]
+name = "vzip"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crc32fast = "1.5.2"
+flate2 = "1.1.10"
+serde_json = "1.0.151"

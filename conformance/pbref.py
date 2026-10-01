@@ -31,6 +31,11 @@ def _build():
     for n, i, t in [("url", 1, _F.TYPE_STRING), ("key", 2, _F.TYPE_STRING),
                     ("data", 3, _F.TYPE_BYTES)]:
         src.field.add(name=n, number=i, type=t, label=_F.LABEL_OPTIONAL, oneof_index=0)
+    for j, (n, i, t) in enumerate([("size", 4, _F.TYPE_UINT64), ("etag", 5, _F.TYPE_STRING),
+                                   ("modified_not_after", 6, _F.TYPE_INT64)]):
+        src.oneof_decl.add(name=f"_{n}")
+        src.field.add(name=n, number=i, type=t, label=_F.LABEL_OPTIONAL, oneof_index=1 + j,
+                      proto3_optional=True)
 
     tbl = fdp.message_type.add(name="SourceTable")
     tbl.field.add(name="sources", number=1, type=_F.TYPE_MESSAGE, type_name=".vzip.v1.Source",
@@ -84,6 +89,6 @@ def source_table(sources: list[dict]) -> bytes:
     t = SourceTable()
     for s in sources:
         m = t.sources.add()
-        (k, v), = s.items()
-        setattr(m, k, bytes.fromhex(v) if k == "data" else v)
+        for k, v in s.items():
+            setattr(m, k, bytes.fromhex(v) if k == "data" else v)
     return t.SerializeToString(deterministic=True)

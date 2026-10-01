@@ -91,12 +91,22 @@ Zarr shard index. Zarr's own sharding codec then does the per-chunk lookup.
 
 ## Simple enough to implement from the spec
 
-To check the "afternoon" claim, three agents each implemented vzip from
-[SPEC.md](SPEC.md) alone, in Rust, TypeScript and Python. They had no access
-to any existing code. Each produced a reader and a writer of about 1,500–2,100
-lines. On the first attempt, all three passed the whole conformance suite and
-read each other's archives. The places where they still disagreed went back
+To check the "afternoon" claim, agents implemented vzip from
+[SPEC.md](SPEC.md) alone, in Rust, TypeScript and Python, with no access to
+any existing code. This was done in three rounds, with fresh agents each time.
+After each round, their notes and every disagreement between them went back
 into the spec ([conformance/REVISIONS.md](conformance/REVISIONS.md)).
+
+- **Size:** each implementation, reader plus writer, is about 1,500–2,100
+  lines.
+- **Round 1:** every implementation passed the conformance suite and read the
+  others' archives. But on 11 queries they gave different answers that the
+  spec allowed.
+- **Rounds 2, 3 and 4:** fresh agents again passed everything, and on every
+  tested query all of them, plus the reference, gave the same answer. That
+  includes error classes.
+
+The round-4 implementations are in [impls/](impls/).
 
 ## What vzip is not
 
