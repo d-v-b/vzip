@@ -78,15 +78,43 @@ test("archive error: unpaged archive with __vz__/index record", () =>
   assertArchiveErr(rawZip({ entries: [{ name: "__vz__/index", body: Buffer.alloc(0) }] })));
 test("archive error: central directory does not parse", () =>
   assertArchiveErr(rawZip({ entries: [{ name: "a" }], cdHook: (cd) => { const c = Buffer.from(cd); c[0] = 0; return c; } })));
+// offset of the zip64 end of central directory record in a rawZip() archive with a 22-byte comment
+const z64At = (b: Buffer): number => b.length - 44 - 20 - 56;
 test("archive error: central directory outside the file", () => {
   const b = rawZip({ entries: [] });
-  b.writeUInt32LE(0xfffffff0, b.length - 22 - 6);
+  b.writeBigUInt64LE(0xfffffff0n, z64At(b) + 48);
   assertArchiveErr(b);
 });
-test("archive error: zip64 marker without locator", () => {
+test("archive error: no zip64 end records", () => {
+  assertArchiveErr(rawZip({ entries: [], zip64: false }));
+});
+test("archive error: revision-8 archive (actual values in the end record, no zip64 records)", () => {
+  const b = rawZip({ entries: [{ name: "a" }] });
+  const z = z64At(b);
+  const fields = [24, 32, 40, 48].map((o) => Number(b.readBigUInt64LE(z + o))) as [number, number, number, number];
+  assertArchiveErr(rawZip({ entries: [{ name: "a" }], zip64: false, eocdFields: fields }));
+});
+test("archive error: zip64 record with a wrong signature", () => {
   const b = rawZip({ entries: [] });
-  b.writeUInt16LE(0xffff, b.length - 22 - 12);
+  b.writeUInt32LE(0x06064b51, z64At(b));
   assertArchiveErr(b);
+});
+test("archive error: zip64 record whose size field is not 44", () => {
+  const b = rawZip({ entries: [] });
+  b.writeBigUInt64LE(45n, z64At(b) + 4);
+  assertArchiveErr(b);
+});
+test("archive error: zip64 locator points outside the file", () => {
+  const b = rawZip({ entries: [] });
+  b.writeBigUInt64LE(BigInt(b.length), z64At(b) + 56 + 8);
+  assertArchiveErr(b);
+});
+test("the end record's counts, size and offset are ignored", async () => {
+  for (const eocdFields of [[0, 0, 0, 0], [7, 7, 12345, 99999]] as [number, number, number, number][]) {
+    const a = open(rawZip({ entries: [{ name: "k", body: Buffer.from("hi") }], eocdFields }));
+    assert.deepEqual(await a.get("k", WHOLE), Buffer.from("hi"));
+    assert.deepEqual(a.list(""), ["k"]);
+  }
 });
 test("archive error: page index with zero-length page", () =>
   assertArchiveErr(rawZip({ entries: [], index: encodeCdIndex({ pages: [{ firstKey: "a", offset: 0n, length: 0n }], pinned: [] }) })));

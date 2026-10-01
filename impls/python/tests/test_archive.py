@@ -211,11 +211,30 @@ class TestRoundTrip(Base):
         self.assertEqual(R[8]["class"], "resolution")  # path_dir/%2E%2E/d.bin -> encoded dot segment
         self.assertEqual(R[10]["value"], open(p, "rb").read()[1:3].hex())  # the archive itself
 
+    def assert_end_records(self, data, n):
+        """§3.2: zip64 record, locator, then an end record whose four fields are all ones."""
+        eocd = len(data) - (60 if data[-38:-32] == b"vzip/0" else 44)
+        self.assertEqual(struct.unpack_from("<IHHHHII", data, eocd),
+                         (0x06054B50, 0, 0, 0xFFFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF))
+        sig, disk, z64, disks = struct.unpack_from("<IIQI", data, eocd - 20)
+        self.assertEqual((sig, disk, z64, disks), (0x07064B50, 0, eocd - 76, 1))
+        sig, size, _made, need, _d, _cd, n1, n2, cd_size, cd_off = struct.unpack_from("<IQHHIIQQQQ", data, z64)
+        self.assertEqual((sig, size, need, n1, n2), (0x06064B50, 44, 45, n, n))
+        self.assertEqual(cd_off + cd_size, z64)
+
+    def test_small_archive_has_zip64_end_records(self):
+        for paged in (False, True):
+            data = writer.build([writer.WEntry("a", data=b"x")], [], page_size=64 if paged else None)
+            self.assert_end_records(data, 3 if paged else 2)
+            p = self.put("small.vzip", data)
+            self.assertEqual(reader.Archive(p).get("a"), b"x")
+            self.assertEqual(subprocess.run(["unzip", "-tq", p], capture_output=True).returncode, 0)
+
     def test_many_entries_zip64(self):
         n = 70000
         entries = [writer.WEntry("k%06d" % i, data=b"") for i in range(n)]
         data = writer.build(entries, [])
-        self.assertEqual(struct.unpack_from("<H", data, len(data) - 44 + 8)[0], 0xFFFF)
+        self.assert_end_records(data, n + 1)
         p = self.put("big.vzip", data)
         ar = reader.Archive(p)
         self.assertEqual(len(ar.list("")), n)
@@ -395,8 +414,8 @@ class TestReaderErrors(Base):
 
     def test_cd_outside_file(self):
         data = bytearray(self.good([E("a", b"x")]))
-        eocd = len(data) - 44
-        struct.pack_into("<I", data, eocd + 16, len(data))  # cd offset beyond
+        z64 = len(data) - 44 - 20 - 56
+        struct.pack_into("<Q", data, z64 + 48, len(data))  # cd offset beyond
         self.assertErr("archive", self.open, bytes(data))
 
     def test_cd_does_not_parse(self):
@@ -429,7 +448,29 @@ class TestReaderErrors(Base):
             self.assertErr("archive", self.open, self.good(sources_pb=s))
 
     def test_zip64_locator_missing(self):
-        self.assertErr("archive", self.open, self.good(eocd_counts=0xFFFF))
+        self.assertErr("archive", self.open, self.good(zip64=False))
+        # a revision-8 archive: no zip64 records, actual values in the end record
+        new = self.good([E("a", b"x")])
+        fields = struct.unpack_from("<QQQQ", new, len(new) - 44 - 20 - 32)
+        self.assertErr("archive", self.open, self.good([E("a", b"x")], zip64=False, eocd_fields=fields))
+
+    def test_zip64_record_invalid(self):
+        good = self.good([E("a", b"x")])
+        z64 = len(good) - 44 - 20 - 56
+        self.assertEqual(good[z64:z64 + 4], b"PK\x06\x06")
+        for off, fmt, value in ((z64, "<I", 0x06064B51),          # record signature
+                                (z64 + 4, "<Q", 45),              # size field is not 44
+                                (z64 + 56 + 8, "<Q", len(good))):  # locator points outside the file
+            data = bytearray(good)
+            struct.pack_into(fmt, data, off, value)
+            self.assertErr("archive", self.open, bytes(data))
+
+    def test_eocd_fields_ignored(self):
+        # readers take the directory's size and offset from the zip64 record (§3.2)
+        for fields in ((0, 0, 0, 0), (7, 7, 12345, 99999)):
+            ar = self.open(self.good([E("a", b"hello")], eocd_fields=fields))
+            self.assertEqual(ar.get("a"), b"hello")
+            self.assertEqual(ar.list(""), ["a"])
 
     def test_page_index_malformed(self):
         recs = [E("a", b"1"), E("b", b"2")]

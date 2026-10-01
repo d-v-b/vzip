@@ -308,7 +308,6 @@ class Archive:
         if eocd is None:
             raise _arch("not a vzip archive: no end of central directory record with a vzip comment")
         rec = self._pread(eocd, 22 + clen)
-        (_sig, _d, _cd, n_disk, n_total, cd_size, cd_off, _cl) = struct.unpack_from("<IHHHHIIH", rec)
         comment = rec[22:]
         if comment[:5] != b"vzip/":
             raise _arch("not a vzip archive: comment does not start with vzip/")
@@ -319,21 +318,22 @@ class Archive:
         if self.paged:
             self.index_offset, self.index_size = struct.unpack_from("<QQ", comment, 22)
 
-        if n_disk == 0xFFFF or n_total == 0xFFFF or cd_size == 0xFFFFFFFF or cd_off == 0xFFFFFFFF:
-            if eocd < 20:
-                raise _arch("zip64 end of central directory locator missing")
-            loc = self._pread(eocd - 20, 20)
-            lsig, _ldisk, z64off, _ndisks = struct.unpack("<IIQI", loc)
-            if lsig != Z64_LOC_SIG:
-                raise _arch("zip64 end of central directory locator missing")
-            if not self._within(z64off, 56):
-                raise _arch("zip64 end of central directory record outside the file")
-            z = self._pread(z64off, 56)
-            (zsig, zsize, _vm, _vn, _dk, _cdk, _n1, _n2, cd_size, cd_off) = struct.unpack("<IQHHIIQQQQ", z)
-            if zsig != Z64_EOCD_SIG:
-                raise _arch("bad zip64 end of central directory record signature")
-            if zsize != 44:
-                raise _arch("zip64 end of central directory record size is %d, not 44" % zsize)
+        # §3.2: the directory's size and offset always come from the zip64 record; the
+        # end record's own counts, size and offset are ignored
+        if eocd < 20:
+            raise _arch("zip64 end of central directory locator missing")
+        loc = self._pread(eocd - 20, 20)
+        lsig, _ldisk, z64off, _ndisks = struct.unpack("<IIQI", loc)
+        if lsig != Z64_LOC_SIG:
+            raise _arch("zip64 end of central directory locator missing")
+        if not self._within(z64off, 56):
+            raise _arch("zip64 end of central directory record outside the file")
+        z = self._pread(z64off, 56)
+        (zsig, zsize, _vm, _vn, _dk, _cdk, _n1, _n2, cd_size, cd_off) = struct.unpack("<IQHHIIQQQQ", z)
+        if zsig != Z64_EOCD_SIG:
+            raise _arch("bad zip64 end of central directory record signature")
+        if zsize != 44:
+            raise _arch("zip64 end of central directory record size is %d, not 44" % zsize)
         if not self._within(cd_off, cd_size):
             raise _arch("central directory lies outside the file")
         self.cd_off, self.cd_size = cd_off, cd_size

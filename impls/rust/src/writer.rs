@@ -350,7 +350,9 @@ pub fn write_archive<W: Write>(spec: &ArchiveSpec, w: W) -> Result<(), String> {
     let cd_size = cd_body.len() as u64;
     w.put(&cd_body).map_err(io)?;
     let n = prepared.len() as u64 + 1 + index_info.is_some() as u64;
-    if n >= 0xFFFF || cd_size >= 0xFFFF_FFFF || cd_offset >= 0xFFFF_FFFF {
+    // §3.2: the zip64 end records are written in every archive, and the end record's
+    // counts, size and offset are always all ones.
+    {
         let z_off = w.pos;
         let mut z = Vec::new();
         z.extend_from_slice(&0x06064b50u32.to_le_bytes());
@@ -380,10 +382,10 @@ pub fn write_archive<W: Write>(spec: &ArchiveSpec, w: W) -> Result<(), String> {
     e.extend_from_slice(&0x06054b50u32.to_le_bytes());
     e.extend_from_slice(&0u16.to_le_bytes());
     e.extend_from_slice(&0u16.to_le_bytes());
-    e.extend_from_slice(&(n.min(0xFFFF) as u16).to_le_bytes());
-    e.extend_from_slice(&(n.min(0xFFFF) as u16).to_le_bytes());
-    e.extend_from_slice(&(cd_size.min(0xFFFF_FFFF) as u32).to_le_bytes());
-    e.extend_from_slice(&(cd_offset.min(0xFFFF_FFFF) as u32).to_le_bytes());
+    e.extend_from_slice(&0xFFFFu16.to_le_bytes());
+    e.extend_from_slice(&0xFFFFu16.to_le_bytes());
+    e.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+    e.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
     e.extend_from_slice(&(comment.len() as u16).to_le_bytes());
     e.extend_from_slice(&comment);
     w.put(&e).map_err(io)?;

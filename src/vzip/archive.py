@@ -11,7 +11,8 @@ Layout written by `VZipWriter`:
     [central directory]         sorted; __vz__/sources and __vz__/index records last.
                                 Reference entries carry extra field 0x7a76 with a
                                 serialized Range, or 0x7a77 with a serialized Concat
-    [zip64 EOCD + locator]      only when needed
+    [zip64 EOCD + locator]      always (spec §3.2); the EOCD's counts, size and offset
+                                are all ones
     [EOCD]                      archive comment = b"vzip/0" + u64 offset + u64 size
                                 of the (deflated) SourceTable body [+ the same for
                                 the CdIndex]
@@ -365,16 +366,12 @@ class VZipWriter:
         cd_size = self._pos - cd_start
         n = len(self._cd)
 
-        if n >= _U16 or cd_start >= _U32 or cd_size >= _U32:
-            eocd64_off = self._pos
-            self._write(_EOCD64.pack(_SIG_EOCD64, 44, _MADE_BY, 45, 0, 0, n, n, cd_size, cd_start))
-            self._write(_LOC64.pack(_SIG_LOC64, 0, eocd64_off, 1))
-            n16 = min(n, _U16)
-            size32 = min(cd_size, _U32)
-            start32 = min(cd_start, _U32)
-        else:
-            n16, size32, start32 = n, cd_size, cd_start
-        self._write(_EOCD.pack(_SIG_EOCD, 0, 0, n16, n16, size32, start32, len(comment)))
+        # spec §3.2: the zip64 end records are written in every archive, and the end of
+        # central directory record's counts, size and offset are always all ones
+        eocd64_off = self._pos
+        self._write(_EOCD64.pack(_SIG_EOCD64, 44, _MADE_BY, 45, 0, 0, n, n, cd_size, cd_start))
+        self._write(_LOC64.pack(_SIG_LOC64, 0, eocd64_off, 1))
+        self._write(_EOCD.pack(_SIG_EOCD, 0, 0, _U16, _U16, _U32, _U32, len(comment)))
         self._write(comment)
 
     def __enter__(self) -> VZipWriter:
@@ -431,26 +428,25 @@ def parse_tail(tail: bytes, file_size: int) -> Directory:
     else:
         raise ValueError("not a vzip archive (no end of central directory record "
                          "with a 22- or 38-byte comment)")
-    sig, _, _, _, n, cd_size, cd_off, _ = _EOCD.unpack_from(tail, i)
     comment = tail[i + _EOCD.size :]
     if not comment.startswith(b"vzip/"):
         raise ValueError(f"not a vzip archive (comment starts {comment[:6]!r})")
     if not comment.startswith(MAGIC_COMMENT):
         raise ValueError(f"unsupported vzip format version {comment[5:6]!r}; this reader "
                          f"implements version {FORMAT_VERSION}")
-    n_disk = struct.unpack_from("<H", tail, i + 8)[0]
-    # spec §3.2: zip64 records are used iff an EOCD count/size/offset is all ones
-    if _U16 in (n, n_disk) or cd_size == _U32 or cd_off == _U32:
-        loc = i - _LOC64.size
-        if loc < 0 or tail[loc : loc + 4] != struct.pack("<I", _SIG_LOC64):
-            raise ValueError("end of central directory needs zip64 records, which are missing")
-        _, _, eocd64_off, _ = _LOC64.unpack_from(tail, loc)
-        j = eocd64_off - (file_size - len(tail))
-        if j < 0 or eocd64_off + _EOCD64.size > file_size:
-            raise ValueError("zip64 EOCD outside the file or the tail buffer")
-        (sig, rec_size, _, _, _, _, _, n, cd_size, cd_off) = _EOCD64.unpack_from(tail, j)
-        if sig != _SIG_EOCD64 or rec_size != 44:
-            raise ValueError("bad zip64 EOCD")
+    # spec §3.2: the directory's size and offset always come from the zip64 record; the
+    # EOCD's own counts, size and offset are ignored
+    loc = i - _LOC64.size
+    if loc < 0 or tail[loc : loc + 4] != struct.pack("<I", _SIG_LOC64):
+        raise ValueError("no zip64 end of central directory locator before the end of "
+                         "central directory record")
+    _, _, eocd64_off, _ = _LOC64.unpack_from(tail, loc)
+    j = eocd64_off - (file_size - len(tail))
+    if j < 0 or eocd64_off + _EOCD64.size > file_size:
+        raise ValueError("zip64 EOCD outside the file or the tail buffer")
+    (sig, rec_size, _, _, _, _, _, n, cd_size, cd_off) = _EOCD64.unpack_from(tail, j)
+    if sig != _SIG_EOCD64 or rec_size != 44:
+        raise ValueError("bad zip64 EOCD")
     soff, ssize = struct.unpack_from("<QQ", comment, len(MAGIC_COMMENT))
     ioff, isize = (None, 0)
     if clen == 38:

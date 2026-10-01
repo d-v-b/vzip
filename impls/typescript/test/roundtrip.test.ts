@@ -189,7 +189,29 @@ test("writer output is deterministic and canonical", () => {
   assert.equal(a.readUInt16LE(a.length - 38 - 2), 38);
 });
 
-test("zip64 end records when there are 0xFFFF or more entries", () => {
+test("zip64 end records in every archive, with an all-ones end record", () => {
+  const dir = tmpdir();
+  for (const [pageSize, clen, count] of [[null, 22, 2n], [64, 38, 3n]] as [number | null, number, bigint][]) {
+    const p = writeTmp(dir, `d${clen}.json`, JSON.stringify({ page_size: pageSize, entries: [{ key: "a", bytes: "00" }] }));
+    const out = path.join(dir, `small${clen}.vzip`);
+    assert.equal(runCli(["write", p, out]).status, 0);
+    const a = fs.readFileSync(out);
+    const eocd = a.length - 22 - clen;
+    assert.equal(a.readUInt32LE(eocd), 0x06054b50);
+    assert.deepEqual([a.readUInt16LE(eocd + 8), a.readUInt16LE(eocd + 10)], [0xffff, 0xffff]);
+    assert.deepEqual([a.readUInt32LE(eocd + 12), a.readUInt32LE(eocd + 16)], [0xffffffff, 0xffffffff]);
+    assert.equal(a.readUInt32LE(eocd - 20), 0x07064b50);
+    const z = eocd - 76;
+    assert.equal(a.readBigUInt64LE(eocd - 20 + 8), BigInt(z));
+    assert.equal(a.readUInt32LE(z), 0x06064b50);
+    assert.equal(a.readBigUInt64LE(z + 4), 44n);
+    assert.deepEqual([a.readBigUInt64LE(z + 24), a.readBigUInt64LE(z + 32)], [count, count]);
+    assert.equal(a.readBigUInt64LE(z + 40) + a.readBigUInt64LE(z + 48), BigInt(z));
+    assert.ok(unzipOk(out));
+  }
+});
+
+test("0xFFFF entries: the end record's count is all ones and the zip64 record holds it", () => {
   const dir = tmpdir();
   const entries = Array.from({ length: 0xffff }, (_, i) => ({ key: `k/${i}`, bytes: "" }));
   const p = writeTmp(dir, "d.json", JSON.stringify({ page_size: 4096, entries }));

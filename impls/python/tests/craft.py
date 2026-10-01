@@ -46,9 +46,13 @@ def cd_rec(e, off):
 
 
 def build(entries, sources_pb=b"", sources_body=None, index_pb=None, index_body=None,
-          magic=b"vzip/0", comment=None, cd_override=None, cd_extra=b"", eocd_counts=None,
-          prefix_cd=None, cd_sort=False):
-    """Assemble an archive. Entries are written in order, then sources, then index, then CD."""
+          magic=b"vzip/0", comment=None, cd_override=None, cd_extra=b"", zip64=True,
+          eocd_fields=None, prefix_cd=None, cd_sort=False):
+    """Assemble an archive. Entries are written in order, then sources, then index, then CD.
+
+    `zip64=False` leaves out the zip64 end records (invalid since revision 9). `eocd_fields`
+    replaces the end of central directory record's (count, count, cd size, cd offset), which
+    are all ones in a valid archive."""
     out = bytearray()
     recs = []
     for e in entries:
@@ -85,7 +89,13 @@ def build(entries, sources_pb=b"", sources_body=None, index_pb=None, index_body=
         comment = magic + struct.pack("<QQ", s_body_off, len(sb))
         if idx_info:
             comment += struct.pack("<QQ", *idx_info)
-    n = len(recs) + len(fmt) if eocd_counts is None else eocd_counts
-    out += struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, n, n, len(cd), cd_off, len(comment)) + comment
+    n = len(recs) + len(fmt)
+    if zip64:
+        z64off = len(out)
+        out += struct.pack("<IQHHIIQQQQ", 0x06064B50, 44, 45, 45, 0, 0, n, n, len(cd), cd_off)
+        out += struct.pack("<IIQI", 0x07064B50, 0, z64off, 1)
+    if eocd_fields is None:
+        eocd_fields = (0xFFFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF)
+    out += struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, *eocd_fields, len(comment)) + comment
     return bytes(out)
 

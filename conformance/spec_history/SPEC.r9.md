@@ -97,47 +97,6 @@ is welcome as issues or pull requests on the specification's repository. A
 report is most useful when it names the section, the input, and the
 behaviour each reading would produce.
 
-### 1.4 Prior work (informative)
-
-vzip is a binary container for a model of references that other projects
-established. This section credits them; nothing in it is normative.
-
-- **kerchunk.** Virtual Zarr originates with
-  [kerchunk](https://github.com/fsspec/kerchunk) (Martin Durant and
-  contributors, fsspec). kerchunk records where the chunks of HDF5, netCDF,
-  GRIB, TIFF and FITS files live, and fsspec's `ReferenceFileSystem` serves
-  them so that Zarr can read the files in place. vzip's data model (§2)
-  is the one defined by kerchunk's
-  [reference specification](https://fsspec.github.io/kerchunk/spec.html):
-
-  | kerchunk reference specification | vzip |
-  |---|---|
-  | a string value: inline data | a `bytes` entry (§4.2) |
-  | `[url, offset, length]` | a reference with one source range (§5.2) |
-  | a `base64:` string: inline binary data | a literal range (§5.2), or a `data` source (§6) |
-  | `templates` shared by many URLs | the source table (§6) |
-
-  kerchunk's version 1 specification anticipated "future possible binary
-  storage" of references. This document specifies one. kerchunk's Parquet
-  layout showed how compactly references can be stored.
-- **VirtualiZarr.**
-  [VirtualiZarr](https://github.com/zarr-developers/VirtualiZarr) (started
-  by Tom Nicholas, a zarr-developers project, grown out of kerchunk) recast
-  virtual Zarr as chunk manifests: a path, offset and length for every chunk
-  of a Zarr array. Those manifests are what a vzip archive's references
-  record, and the reference implementation's converters take VirtualiZarr
-  datasets as input. The need for a Zarr-native on-disk manifest format,
-  raised in
-  [zarr-specs#287](https://github.com/zarr-developers/zarr-specs/issues/287),
-  motivated this work.
-- **Icechunk.** Source pins (§6.1) adapt [Icechunk](https://icechunk.io/)'s
-  checks of virtual chunks against the ETag or modification time of the
-  object they reference.
-
-What vzip contributes is the container: a single ZIP file, a binary
-encoding, and a specification with a conformance suite that is independent of
-any one language or library.
-
 ## 2. Data model
 
 An archive defines a partial function from **keys** to **values**:
@@ -616,9 +575,8 @@ Writers SHOULD:
 This section applies to readers that support `http:` and `https:`.
 
 - **Requests:** a read of bytes `[a, b)` of an HTTP object is a GET with
-  `Range: bytes=a-(b−1)` and `Accept-Encoding: identity`. A reader SHOULD
-  combine reads of nearby ranges of the same object into one request
-  (§8.3). It
+  `Range: bytes=a-(b−1)` and `Accept-Encoding: identity`. A reader MAY
+  combine reads of nearby ranges of the same object into one request. It
   MUST NOT make any other request to resolve a range or check its pins: no
   HEAD, and no request for the whole object.
 - **Pins** add `If-Match` and `If-Unmodified-Since` headers to those same
@@ -896,20 +854,8 @@ A conforming reader provides the following operations on an opened archive:
    error, even if their source is missing or too short. This includes every
    zero-length range.
 
-**Coalescing.** A reader SHOULD combine reads of step 3 that fall in the
-same source value and lie close together into one read that also covers the
-bytes between them, and take each range's bytes from that read. Otherwise a
-reference made of many short ranges of one object, such as one range per row
-of an image whose rows are padded, costs one request per range. The bytes
-between the ranges are read but never returned. How close counts as "close"
-is up to the reader; the implementations in the specification's repository
-combine reads at most 64 KiB apart.
-
-Coalescing never changes the result of a `get`: a combined read ends at the
-end of one of the ranges it covers, so it fails only where that range's own
-read would. Apart from such gaps, readers SHOULD fetch only the bytes in
-step 3. A reader MUST NOT return bytes for a request it could not resolve
-completely.
+Readers SHOULD fetch only the bytes in step 3. A reader MUST NOT return bytes
+for a request it could not resolve completely.
 
 ### 8.4 Errors
 

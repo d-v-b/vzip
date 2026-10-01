@@ -133,7 +133,7 @@ def raw_deflate(b):
 
 # ------------------------------------------------------------ raw ZIP builder
 
-def build_zip(entries, sources_pb, comment=None, extra_cd=b""):
+def build_zip(entries, sources_pb, comment=None, extra_cd=b"", zip64=True, eocd_fields=None):
     """entries: list of dicts name, body(bytes, stored as given), method, usize,
     extra(cd extra bytes), flags, csize override."""
     out = b""
@@ -164,8 +164,18 @@ def build_zip(entries, sources_pb, comment=None, extra_cd=b""):
     if comment is None:
         comment = b"vzip/0" + struct.pack("<QQ", slho + 30 + len(sname), len(sbody))
     n = len(entries) + 1
-    out += struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, n, n, len(cd), cdo, len(comment)) + comment
-    return out
+    return out + end_records(n, len(cd), cdo, comment, zip64, eocd_fields)
+
+
+def end_records(n, cd_size, cd_off, comment, zip64=True, eocd_fields=None):
+    """zip64 record, locator and end record (§3.2). `zip64=False` leaves the zip64 records
+    out; `eocd_fields` replaces the end record's all-ones (count, count, cd size, cd offset)."""
+    out = b""
+    if zip64:
+        out += struct.pack("<IQHHIIQQQQ", 0x06064B50, 44, 45, 45, 0, 0, n, n, cd_size, cd_off)
+        out += struct.pack("<IIQI", 0x07064B50, 0, cd_off + cd_size, 1)
+    fields = eocd_fields or (0xFFFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF)
+    return out + struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, *fields, len(comment)) + comment
 
 
 def ref_extra(payload, id=0x7A76):
@@ -359,13 +369,33 @@ def test_writer_rejects():
             os.remove(out)
 
 
+def end_records_ok(data, n):
+    """§3.2: zip64 record, locator, then an end record whose four fields are all ones."""
+    eocd = len(data) - (60 if data[-38:-32] == b"vzip/0" else 44)
+    z = eocd - 76
+    return (struct.unpack_from("<IHHHHII", data, eocd) == (0x06054B50, 0, 0, 0xFFFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF)
+            and struct.unpack_from("<IIQI", data, eocd - 20) == (0x07064B50, 0, z, 1)
+            and struct.unpack_from("<IQ", data, z) == (0x06064B50, 44)
+            and struct.unpack_from("<QQ", data, z + 24) == (n, n)
+            and sum(struct.unpack_from("<QQ", data, z + 40)) == z)
+
+
+def test_small_archive_zip64():
+    for ps in [None, 64]:
+        r, out = write({"page_size": ps, "entries": [{"key": "a", "bytes": "00"}]}, f"small-{ps}.vzip")
+        check(f"small write {ps}", r.returncode == 0, r.stderr)
+        check(f"small archive zip64 end records {ps}", end_records_ok(open(out, "rb").read(), 2 + (ps is not None)), "")
+        u = subprocess.run(["unzip", "-tq", out], capture_output=True, text=True)
+        check(f"unzip -t small {ps}", u.returncode == 0, u.stdout)
+
+
 def test_many_entries_zip64():
     entries = [{"key": f"k{i:05d}", "bytes": ""} for i in range(65535)]
     for ps in [None, 4096]:
         r, out = write({"page_size": ps, "entries": entries}, f"many-{ps}.vzip")
         check(f"many entries write {ps}", r.returncode == 0, r.stderr)
         data = open(out, "rb").read()
-        check(f"zip64 eocd present {ps}", data.find(struct.pack("<I", 0x06064B50)) > 0)
+        check(f"zip64 end records {ps}", end_records_ok(data, 65536 + (ps is not None)), "")
         res = results(out, [{"op": "classify", "key": "k65534"}, {"op": "list", "prefix": "k6553"},
                             {"op": "classify", "key": "k65535"}])
         check(f"many entries read {ps}", res[0].get("kind") == "bytes" and len(res[1]["keys"]) == 5
@@ -400,9 +430,20 @@ def test_reader_errors():
     open_err("weak etag", build_zip([], pb_table([pb_source(url="a", etag='W/"x"')])))
     open_err("sources trailing bytes", make_trailing())
     open_err("index record in unpaged", build_zip([{"name": "__vz__/index", "body": b""}], ok_src))
-    open_err("cd outside file", patch_eocd(good, cd_offset=len(good) + 5))
-    open_err("cd bad record", patch_eocd(good, cd_size_delta=-1))
-    open_err("zip64 without locator", patch_eocd(good, cd_offset=0xFFFFFFFF))
+    open_err("cd outside file", patch_zip64(good, cd_offset=len(good) + 5))
+    open_err("cd bad record", patch_zip64(good, cd_size_delta=-1))
+    open_err("no zip64 end records", build_zip([], ok_src, zip64=False))
+    z = len(good) - 44 - 20 - 56
+    fields = struct.unpack_from("<QQQQ", good, z + 24)
+    open_err("revision-8 archive", good[:z] + good[z + 76:z + 76 + 8]
+             + struct.pack("<HHII", *fields) + good[-24:])
+    open_err("zip64 record signature", good[:z] + b"PK\x06\x07" + good[z + 4:])
+    open_err("zip64 record size not 44", good[:z + 4] + struct.pack("<Q", 45) + good[z + 12:])
+    open_err("zip64 locator outside file", good[:z + 64] + struct.pack("<Q", len(good)) + good[z + 72:])
+    for fields in [(0, 0, 0, 0), (7, 7, 12345, 99999)]:
+        p = save("eocd-ignored.vzip", build_zip([{"name": "k", "body": b"hi"}], ok_src, eocd_fields=fields))
+        rc, out = read(p, [{"op": "get", "key": "k"}])
+        check(f"end record fields ignored {fields}", out["open"]["ok"] and out["results"][0].get("value") == "6869", out)
     # bad url at open is fine (checked at resolution)
     p = save("badurl.vzip", build_zip([], pb_table([pb_source(url="a b")])))
     rc, out = read(p, [])
@@ -505,17 +546,18 @@ def make_trailing():
     lh = struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, 0x800, 8, 0, 0x21, 0, len(body), 0, len(sname), 0) + sname + body
     cd = struct.pack("<IHHHHHHIIIHHHHHII", 0x02014B50, 20, 20, 0x800, 8, 0, 0x21, 0, len(body), 0, len(sname), 0, 0, 0, 0, 0, 0) + sname
     comment = b"vzip/0" + struct.pack("<QQ", 30 + len(sname), len(body))
-    return lh + cd + struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(cd), len(lh), len(comment)) + comment
+    return lh + cd + end_records(1, len(cd), len(lh), comment)
 
 
-def patch_eocd(data, cd_offset=None, cd_size_delta=0):
-    i = len(data) - 44
-    assert data[i:i + 4] == b"PK\x05\x06"
+def patch_zip64(data, cd_offset=None, cd_size_delta=0):
+    """Change the central directory size or offset in the zip64 end record (22-byte comment)."""
+    i = len(data) - 44 - 20 - 56
+    assert data[i:i + 4] == b"PK\x06\x06"
     b = bytearray(data)
-    size, off = struct.unpack_from("<II", b, i + 12)
+    size, off = struct.unpack_from("<QQ", b, i + 40)
     if cd_offset is not None:
         off = cd_offset
-    struct.pack_into("<II", b, i + 12, size + cd_size_delta, off)
+    struct.pack_into("<QQ", b, i + 40, size + cd_size_delta, off)
     return bytes(b)
 
 
@@ -794,6 +836,7 @@ def main():
     test_queries_file()
     test_file_pins()
     test_http()
+    test_small_archive_zip64()
     test_many_entries_zip64()
     print(f"{PASSES} passed, {len(FAILS)} failed")
     shutil.rmtree(TMP, ignore_errors=True)

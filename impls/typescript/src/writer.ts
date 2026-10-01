@@ -284,8 +284,9 @@ export function buildArchive(a: WArchive): Buffer[] {
   const count = cd.length;
   const cdSize = cdBuf.length;
 
-  const needZip64 = count >= 0xffff || cdSize >= U32_ALL || cdOffset >= U32_ALL;
-  if (needZip64) {
+  // §3.2: the zip64 end records are written in every archive, and the end record's
+  // counts, size and offset are always all ones.
+  {
     const z = Buffer.alloc(56);
     z.writeUInt32LE(0x06064b50, 0);
     z.writeBigUInt64LE(44n, 4);
@@ -317,10 +318,10 @@ export function buildArchive(a: WArchive): Buffer[] {
   eocd.writeUInt32LE(0x06054b50, 0);
   eocd.writeUInt16LE(0, 4);
   eocd.writeUInt16LE(0, 6);
-  eocd.writeUInt16LE(count >= 0xffff ? 0xffff : count, 8);
-  eocd.writeUInt16LE(count >= 0xffff ? 0xffff : count, 10);
-  eocd.writeUInt32LE(cdSize >= U32_ALL ? U32_ALL : cdSize, 12);
-  eocd.writeUInt32LE(cdOffset >= U32_ALL ? U32_ALL : cdOffset, 16);
+  eocd.writeUInt16LE(0xffff, 8);
+  eocd.writeUInt16LE(0xffff, 10);
+  eocd.writeUInt32LE(U32_ALL, 12);
+  eocd.writeUInt32LE(U32_ALL, 16);
   eocd.writeUInt16LE(comment.length, 20);
   out.push(eocd, comment);
   return out;

@@ -56,6 +56,9 @@ export function rawZip(opts: {
   magic?: string;
   cdHook?: (cd: Buffer) => Buffer;
   pageRecs?: (recs: Buffer[], names: string[]) => void;
+  zip64?: boolean; // false leaves out the zip64 end records (invalid since revision 9)
+  // (count, count, cd size, cd offset) of the end record; all ones in a valid archive
+  eocdFields?: [number, number, number, number];
 }): Buffer {
   const out: Buffer[] = [];
   let off = 0;
@@ -117,12 +120,28 @@ export function rawZip(opts: {
     comment.writeBigUInt64LE(BigInt(iOff), 22);
     comment.writeBigUInt64LE(BigInt(iBody.length), 30);
   }
+  if (opts.zip64 ?? true) {
+    const z = Buffer.alloc(56 + 20);
+    z.writeUInt32LE(0x06064b50, 0);
+    z.writeBigUInt64LE(44n, 4);
+    z.writeUInt16LE(45, 12);
+    z.writeUInt16LE(45, 14);
+    z.writeBigUInt64LE(BigInt(recs.length), 24);
+    z.writeBigUInt64LE(BigInt(recs.length), 32);
+    z.writeBigUInt64LE(BigInt(cd.length), 40);
+    z.writeBigUInt64LE(BigInt(cdOff), 48);
+    z.writeUInt32LE(0x07064b50, 56);
+    z.writeBigUInt64LE(BigInt(cdOff + cd.length), 64);
+    z.writeUInt32LE(1, 72);
+    out.push(z);
+  }
+  const fields = opts.eocdFields ?? [0xffff, 0xffff, 0xffffffff, 0xffffffff];
   const eocd = Buffer.alloc(22);
   eocd.writeUInt32LE(0x06054b50, 0);
-  eocd.writeUInt16LE(recs.length, 8);
-  eocd.writeUInt16LE(recs.length, 10);
-  eocd.writeUInt32LE(cd.length, 12);
-  eocd.writeUInt32LE(cdOff, 16);
+  eocd.writeUInt16LE(fields[0], 8);
+  eocd.writeUInt16LE(fields[1], 10);
+  eocd.writeUInt32LE(fields[2], 12);
+  eocd.writeUInt32LE(fields[3], 16);
   eocd.writeUInt16LE(comment.length, 20);
   out.push(eocd, comment);
   return Buffer.concat(out);
