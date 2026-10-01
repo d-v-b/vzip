@@ -8,4 +8,5 @@ import "#kvstore/middleauth/register_backend";
 import "#kvstore/ngauth/register";
 import "#kvstore/ocdbt/register_backend";
 import "#kvstore/s3/register_backend";
+import "#kvstore/vzip/register_backend";
 import "#kvstore/zip/register_backend";

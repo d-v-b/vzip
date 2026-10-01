@@ -29,7 +29,20 @@ async function detectZip(
 ): Promise<AutoDetectMatch[]> {
   const { suffix } = options;
   if (suffix === undefined) return [];
-  if (parseEndOfCentralDirectoryRecord(suffix) === undefined) return [];
+  const eocdr = parseEndOfCentralDirectoryRecord(suffix);
+  if (eocdr === undefined) return [];
+  // A vzip archive is also a valid ZIP file, but it is meant to be read with
+  // the vzip adapter, which detects it separately. (Its raw ZIP view is still
+  // available by writing `|zip:` explicitly.)
+  const comment = suffix.subarray(
+    eocdr.eocdrOffset + EOCDR_WITHOUT_COMMENT_SIZE,
+  );
+  if (
+    comment.length >= 5 &&
+    new TextDecoder().decode(comment.subarray(0, 5)) === "vzip/"
+  ) {
+    return [];
+  }
   return [{ suffix: "zip:", description: "ZIP archive" }];
 }
 

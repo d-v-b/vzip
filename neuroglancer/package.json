@@ -490,6 +490,18 @@
       "neuroglancer/kvstore/s3:disabled": "./src/util/false.ts",
       "default": "./src/kvstore/s3/register_backend.ts"
     },
+    "#kvstore/vzip/register_frontend": {
+      "neuroglancer/kvstore/vzip:enabled": "./src/kvstore/vzip/register_frontend.ts",
+      "neuroglancer/kvstore:none_by_default": "./src/util/false.ts",
+      "neuroglancer/kvstore/vzip:disabled": "./src/util/false.ts",
+      "default": "./src/kvstore/vzip/register_frontend.ts"
+    },
+    "#kvstore/vzip/register_backend": {
+      "neuroglancer/kvstore/vzip:enabled": "./src/kvstore/vzip/register_backend.ts",
+      "neuroglancer/kvstore:none_by_default": "./src/util/false.ts",
+      "neuroglancer/kvstore/vzip:disabled": "./src/util/false.ts",
+      "default": "./src/kvstore/vzip/register_backend.ts"
+    },
     "#kvstore/zip/register_frontend": {
       "neuroglancer/kvstore/zip:enabled": "./src/kvstore/zip/register_frontend.ts",
       "neuroglancer/kvstore:none_by_default": "./src/util/false.ts",
