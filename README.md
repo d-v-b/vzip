@@ -4,7 +4,7 @@
 
 A spec for storing two kinds of things in a Zip archive:
 1. bytes
-2. ranges of bytes in external objects
+2. pointers to ranges of bytes in external objects
 
 read the [pitch](https://github.com/d-v-b/vzip/blob/main/PITCH.md), or the [spec](https://github.com/d-v-b/vzip/blob/main/SPEC.md). there are some implementations here too.
 
