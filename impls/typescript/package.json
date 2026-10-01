@@ -1,6 +1,7 @@
 {
   "name": "vzip-ts",
   "private": true,
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "scripts": {
     "test": "node --no-warnings --test test/"

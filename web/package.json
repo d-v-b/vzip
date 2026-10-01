@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "description": "vzip in the browser: a service worker that serves vzip archives, and virtualized TIFFs, as plain HTTP Zarr",
+  "license": "MIT OR Apache-2.0",
   "scripts": {
     "build": "node build.mjs",
     "test": "node --test test/",
