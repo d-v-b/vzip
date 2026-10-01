@@ -35,6 +35,10 @@ node web/build.mjs
 node web/serve.mjs 8080
 ```
 
+Live demo: https://d-v-b.github.io/vzip-demo/ (built by `web/pages.sh`, which
+pushes the demo and the Neuroglancer build to the public `d-v-b/vzip-demo`
+repository's `gh-pages` branch).
+
 ## What is supported
 
 - Tiled TIFF and BigTIFF, either byte order.

@@ -4,6 +4,8 @@
 //
 // Usage (after `node web/build.mjs` and building neuroglancer/):
 //   node web/demo/e2e.mjs <tiff url> <out dir> [wait ms]
+// With BASE=<url> (e.g. the GitHub Pages site), tests that deployment instead
+// of serving the local build.
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -17,8 +19,8 @@ const { chromium } = require("playwright");
 const [tiffUrl, outDir, waitMs = "20000"] = process.argv.slice(2);
 fs.mkdirSync(outDir, { recursive: true });
 
-const server = spawn("node", [path.join(here, "../serve.mjs"), "0"]);
-const base = await new Promise((resolve) =>
+const server = process.env.BASE ? undefined : spawn("node", [path.join(here, "../serve.mjs"), "0"]);
+const base = process.env.BASE ?? await new Promise((resolve) =>
   server.stdout.on("data", (d) => resolve(String(d).trim())),
 );
 
@@ -65,4 +67,4 @@ console.log(`errors (${errors.length}):`);
 for (const e of errors.slice(0, 10)) console.log("  " + e.slice(0, 300));
 
 await browser.close();
-server.kill();
+server?.kill();
