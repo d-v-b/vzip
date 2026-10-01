@@ -42,5 +42,7 @@ checked against each response; for cross-origin sources the server must
 expose ``ETag``, ``Last-Modified`` and ``Content-Range`` through
 ``Access-Control-Expose-Headers`` and allow ``If-Match`` and
 ``If-Unmodified-Since`` in ``Access-Control-Allow-Headers``. A pin that
-cannot be checked is an error. Other schemes (``gs:``, ``s3:``, ...) are read
+cannot be checked is an error. Unpinned sources only need ``Range`` to be
+allowed: if ``Content-Range`` is not exposed, a ``206`` response is accepted
+when its body has exactly the requested length. Other schemes (``gs:``, ``s3:``, ...) are read
 through Neuroglancer's own key-value stores, without pins.

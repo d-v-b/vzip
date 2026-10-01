@@ -30,6 +30,8 @@
  *   only if the server lists them in `Access-Control-Expose-Headers`, and
  *   `If-Match` / `If-Unmodified-Since` need a CORS preflight. Without them,
  *   pins cannot be checked, which is a resolution error (pins fail closed).
+ *   A cross-origin 206 without a visible `Content-Range` is accepted if its
+ *   body has exactly the requested length (a deviation from §6.2).
  */
 
 import type { VzipPins } from "#src/kvstore/vzip/proto.js";
@@ -135,6 +137,16 @@ export async function readHttpRange(
     return { data: body.slice(start, end), size: body.length };
   }
   const contentRange = single(response.headers, "Content-Range");
+  if (contentRange === null && response.type === "cors") {
+    // Deviation from spec §6.2: a cross-origin response hides
+    // `Content-Range` unless the server exposes it, and many servers that
+    // allow range requests do not. Only the body length can be checked, and
+    // the object's size is unknown, so a `size` pin fails (spec §6.1).
+    if (body.length !== end - start) {
+      fail(`206 of ${body.length} bytes for [${start}, ${end})`);
+    }
+    return { data: body, size: undefined };
+  }
   if (contentRange === null) fail("206 without Content-Range");
   const m = contentRange!.trim().match(/^bytes (\d+)-(\d+)\/(\d+|\*)$/i);
   if (m === null) fail(`invalid Content-Range ${JSON.stringify(contentRange)}`);

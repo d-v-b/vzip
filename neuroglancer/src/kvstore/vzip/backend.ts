@@ -127,6 +127,14 @@ function toSafeNumber(v: bigint, what: string): number {
   return Number(v);
 }
 
+// Shared by every store on the same archive (Neuroglancer opens one per
+// array), and released with the cached metadata.
+const pageCache = new WeakMap<
+  VzipMetadata,
+  Map<number, Promise<Map<string, VzipEntry>>>
+>();
+const referenceCache = new WeakMap<VzipEntry, VzipReference>();
+
 export class VzipKvStore implements KvStore {
   constructor(
     public sharedKvStoreContext: SharedKvStoreContextCounterpart,
@@ -134,9 +142,6 @@ export class VzipKvStore implements KvStore {
   ) {}
 
   private metadata: VzipMetadata | undefined;
-  // Pages of the central directory, loaded on demand (paged archives).
-  private pages = new Map<number, Promise<Map<string, VzipEntry>>>();
-  private references = new Map<string, VzipReference>();
 
   getUrl(key: string) {
     return this.base.getUrl() + `|vzip:${encodePathForUrl(key)}`;
@@ -167,7 +172,13 @@ export class VzipKvStore implements KvStore {
     index: number,
     options: Partial<ProgressOptions>,
   ): Promise<Map<string, VzipEntry>> {
-    let page = this.pages.get(index);
+    // Pages of the central directory, loaded on demand (paged archives).
+    let loaded = pageCache.get(metadata);
+    if (loaded === undefined) {
+      loaded = new Map();
+      pageCache.set(metadata, loaded);
+    }
+    let page = loaded.get(index);
     if (page === undefined) {
       const { cdOffset, pages, firstKeys } = metadata.paged!;
       const { offset, length } = pages[index];
@@ -194,8 +205,8 @@ export class VzipKvStore implements KvStore {
         }
         return entries;
       })();
-      this.pages.set(index, page);
-      page.catch(() => this.pages.delete(index));
+      loaded.set(index, page);
+      page.catch(() => loaded.delete(index));
     }
     return page;
   }
@@ -225,7 +236,7 @@ export class VzipKvStore implements KvStore {
   }
 
   private getReference(entry: VzipEntry): VzipReference {
-    let reference = this.references.get(entry.name);
+    let reference = referenceCache.get(entry);
     if (reference === undefined) {
       try {
         reference = decodeReference(
@@ -238,7 +249,7 @@ export class VzipKvStore implements KvStore {
           `${JSON.stringify(entry.name)}: ${(e as Error).message}`,
         );
       }
-      this.references.set(entry.name, reference);
+      referenceCache.set(entry, reference);
     }
     return reference;
   }
