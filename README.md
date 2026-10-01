@@ -8,6 +8,10 @@ A spec for storing two kinds of things in a Zip archive:
 
 read the [pitch](https://github.com/d-v-b/vzip/blob/main/PITCH.md), or the [spec](https://github.com/d-v-b/vzip/blob/main/SPEC.md). there are some implementations here too.
 
+## demos
+
+live demos are at https://d-v-b.github.io/vzip-demo/. for example, [tiff to zarr](https://d-v-b.github.io/vzip-demo/tiff-to-zarr/) virtualizes a remote OME-TIFF into a vzip archive in the browser and opens it in Neuroglancer.
+
 ## status
 
 experimental, proof of concept, anything can change
