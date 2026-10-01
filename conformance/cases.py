@@ -110,8 +110,6 @@ def _basic(root: Path) -> dict:
             {"key": "r/empty_query", "ranges": [{"source": 12, "offset": 0, "length": 2}]},
             {"key": "r/authority", "ranges": [{"source": 13, "offset": 0, "length": 2}]},
             {"key": "r/scheme_relative", "ranges": [{"source": 14, "offset": 0, "length": 2}]},
-            {"key": "r/oob_tail", "ranges": [
-                {"source": 3, "offset": 4, "length": 5}, {"data": H(b"!")}]},
             {"key": "r/zero_len_bad", "ranges": [
                 {"data": H(b"z")}, {"source": 5, "offset": 0, "length": 0}]},
             {"key": "r/encoded_slash", "ranges": [{"source": 15, "offset": 0, "length": 2}]},
@@ -170,6 +168,13 @@ def _http(server_base: str) -> dict:
             {"url": server_base + "noetag/vectors/data/blob.bin"},               # 17
             {"url": server_base + "redirect/2/vectors/data/blob.bin", "etag": etag_for(BLOB)},  # 18
             {"url": server_base + "redirect/6/vectors/data/blob.bin"},           # 19
+            {"url": server_base + "oldate/vectors/data/blob.bin", "modified_not_after": MTIME},  # 20
+            {"url": server_base + "oldate/vectors/data/blob.bin"},               # 21
+            {"url": server_base + "multipart/vectors/data/blob.bin"},            # 22
+            {"url": server_base + "badlen/vectors/data/blob.bin"},               # 23
+            {"url": server_base + "nolocation/vectors/data/blob.bin"},           # 24
+            {"url": server_base + "enclist/vectors/data/blob.bin"},              # 25
+            {"url": server_base.replace("http://", "http://user@") + "vectors/data/blob.bin"},  # 26
         ],
         "entries": [
             {"key": "meta", "bytes": H(b"{}")},
@@ -196,6 +201,13 @@ def _http(server_base: str) -> dict:
             {"key": "h/noetag_unpinned", "ranges": [{"source": 17, "offset": 1, "length": 2}]},
             {"key": "h/redirect_2", "ranges": [{"source": 18, "offset": 40, "length": 3}]},
             {"key": "h/redirect_6", "ranges": [{"source": 19, "offset": 40, "length": 3}]},
+            {"key": "h/oldate_pinned", "ranges": [{"source": 20, "offset": 1, "length": 2}]},
+            {"key": "h/oldate_unpinned", "ranges": [{"source": 21, "offset": 1, "length": 2}]},
+            {"key": "h/multipart", "ranges": [{"source": 22, "offset": 1, "length": 2}]},
+            {"key": "h/badlen", "ranges": [{"source": 23, "offset": 1, "length": 4}]},
+            {"key": "h/nolocation", "ranges": [{"source": 24, "offset": 1, "length": 2}]},
+            {"key": "h/enclist", "ranges": [{"source": 25, "offset": 1, "length": 2}]},
+            {"key": "h/userinfo", "ranges": [{"source": 26, "offset": 1, "length": 2}]},
         ],
     }
 
@@ -298,6 +310,12 @@ def invalid_descriptions(root: Path) -> dict[str, dict]:
         "uppercase_hex": {**base, "entries": [{"key": "a", "bytes": "AB"}]},
         "non_boolean_flag": {**base, "entries": [{"key": "a", "bytes": "", "compress": 1}]},
         "non_integer_page_size": {**base, "page_size": 1.0, "entries": []},
+        "data_range_past_end": {**base, "sources": [{"data": "616263"}], "entries": [
+            {"key": "r", "ranges": [{"source": 0, "offset": 2, "length": 2}]}]},
+        "key_range_past_end": {**base, "sources": [{"key": "a"}], "entries": [
+            {"key": "a", "bytes": "616263", "compress": True},
+            {"key": "r", "ranges": [{"source": 0, "offset": 0, "length": 4}]}]},
+        "empty_key_source": {**base, "sources": [{"key": ""}], "entries": []},
     }
 
 
@@ -746,6 +764,71 @@ def crafted(root: Path) -> dict[str, dict]:
         w.close(); f.close()
     pre_epoch.expect = [(get("ok"), [ok_value(b"anc")]), (get("bad"), [R])]
     case("pre_epoch_mtime_rounds_down")(pre_epoch)
+
+    # -- revision 7 ----------------------------------------------------------
+    def oob_tail(path):
+        # a data source range past the end of its value: writers must reject it (§9.1),
+        # and readers fail only the windows that need the missing bytes (§8.3)
+        f, w = _writer(path, sources=[Source(data=b"SHARED")])
+        _raw_ref(w, "x", 0x7A77, Concat((Range(source=0, offset=4, length=5),
+                                         Range(data=b"!"))).encode())
+        w.close(); f.close()
+    oob_tail.expect = [(get("x"), [R]), (get("x", {"start": 0, "end": 2}), [ok_value(b"ED")]),
+                       (get("x", {"start": 0, "end": 3}), [R])]
+    case("data_range_past_end_read")(oob_tail)
+
+    def size_sentinel(path):
+        f, w = _writer(path)
+        w.add_bytes("z", b"hello")
+        w.add_bytes("fine", b"ok")
+        w.close(); f.close()
+        b = bytearray(path.read_bytes())
+        i = next(_records(b, b"PK\x01\x02", 28, 46, b"z"))
+        struct.pack_into("<I", b, i + 24, 0xFFFFFFFF)  # uncompressed size
+        path.write_bytes(bytes(b))
+    size_sentinel.expect = fine + entry_error("z")
+    case("size_field_all_ones")(size_sentinel)
+
+    def dup_zip64(path):
+        f, w = _writer(path)
+        w._entry("z", b"hello", struct.pack("<HHQ", 1, 8, 0) * 2)  # two 0x0001 blocks
+        w.add_bytes("fine", b"ok")
+        w.close(); f.close()
+    dup_zip64.expect = fine + entry_error("z")
+    case("duplicate_zip64_block")(dup_zip64)
+
+    def big_payload(path):
+        f, w = _writer(path, sources=[Source(data=b"x")])
+        p = Range(data=b"a" * 65516).encode()  # 65520 bytes: fits the extra field, too long
+        assert len(p) == 65520
+        _raw_ref(w, "x", 0x7A76, p)
+        w.add_bytes("fine", b"ok")
+        w.close(); f.close()
+    big_payload.expect = fine + payload_error("x")
+    case("payload_over_65519_bytes")(big_payload)
+
+    def explicit_zero_source(path):
+        f, w = _writer(path)
+        _raw_ref(w, "x", 0x7A76, b"\x08\x00\x2a\x01a")  # source=0 encoded explicitly
+        w.close(); f.close()
+    explicit_zero_source.expect = [(get("x"), [ok_value(b"a")])]
+    case("literal_range_explicit_zero_source")(explicit_zero_source)
+
+    def missing_on_bad_page(path):
+        f, w = _writer(path, page_size=64)
+        for i in range(30):
+            w.add_bytes(f"k{i:02d}", b"v")
+        w.close(); f.close()
+        _corrupt_cd_record(path, "k10")
+    missing_on_bad_page.expect = [(get("k10x"), [E]), (classify("k10x"), [E])]
+    case("missing_key_on_unparseable_page")(missing_on_bad_page)
+
+    def empty_key_source(path):
+        f, w = _writer(path)
+        w._source_table_override = b"\x0a\x0f\x0a\x0ddata/blob.bin" + b"\x0a\x02\x12\x00"
+        w.add_bytes("fine", b"ok")
+        w.close(); f.close()
+    case("empty_key_source", open="fail")(empty_key_source)
 
     # -- archive errors (§8.4): open fails ------------------------------------
     def pin_on_key(path):

@@ -17,6 +17,7 @@ import bisect
 import datetime
 import math
 import os
+import re
 import zlib
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
@@ -128,6 +129,9 @@ def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int 
     import urllib.error
     import urllib.request
 
+    pu = urlparse(url)
+    if "@" in pu.netloc or not pu.hostname:
+        raise ResolutionError(f"{url}: userinfo or empty host in an http(s) URL")
     headers = {"Range": f"bytes={start}-{end - 1}", "Accept-Encoding": "identity"}
     if src.etag is not None:
         headers["If-Match"] = src.etag
@@ -142,6 +146,10 @@ def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int 
         max_redirections = 5  # spec §6.2
 
         def redirect_request(self, req, fp, code, msg, hdrs, newurl):
+            from refstore.uri import is_uri_reference
+
+            if not is_uri_reference(hdrs.get("Location", "")):
+                raise ResolutionError(f"redirect with an invalid Location: {hdrs.get('Location')!r}")
             if urlparse(newurl).scheme.lower() not in ("http", "https"):
                 raise ResolutionError(f"redirect to a non-http URL: {newurl}")
             return super().redirect_request(req, fp, code, msg, hdrs, newurl)
@@ -164,10 +172,9 @@ def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int 
     if src.etag is not None and etag != src.etag:
         raise ResolutionError(f"{url}: ETag {etag!r} does not match the pin {src.etag!r}")
     if src.modified_not_after is not None:
-        try:
-            lm = email.utils.parsedate_to_datetime(last_modified).timestamp()
-        except (TypeError, ValueError):
-            raise ResolutionError(f"{url}: no usable Last-Modified to check the pin") from None
+        lm = imf_fixdate(last_modified)
+        if lm is None:
+            raise ResolutionError(f"{url}: Last-Modified {last_modified!r} is not an IMF-fixdate")
         if lm > src.modified_not_after:
             raise ResolutionError(f"{url}: Last-Modified {last_modified} is after the pin")
     if enc != "identity":
@@ -178,11 +185,33 @@ def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int 
         return body[start:end], len(body)
     if status != 206 or not crange or not crange.startswith("bytes "):
         raise ResolutionError(f"{url}: unexpected response {status} {crange!r}")
-    rng, _, total = crange[6:].partition("/")
-    a, _, z = rng.partition("-")
-    if int(a) != start or int(z) != end - 1 or len(body) != end - start:
-        raise ResolutionError(f"{url}: server returned {crange!r} for [{start}, {end})")
+    m = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+|\*)", crange.strip())
+    if not m:
+        raise ResolutionError(f"{url}: invalid Content-Range {crange!r}")
+    a, z, total = int(m[1]), int(m[2]), m[3]
+    if a != start or z != end - 1 or len(body) != z - a + 1 or (total != "*" and z >= int(total)):
+        raise ResolutionError(f"{url}: server returned {crange!r} ({len(body)} bytes) for "
+                              f"[{start}, {end})")
     return body, None if total == "*" else int(total)
+
+
+_DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def imf_fixdate(v: str | None) -> int | None:
+    """Seconds since the epoch for an IMF-fixdate (RFC 9110 §5.6.7), else None."""
+    m = re.fullmatch(r"(\w{3}), (\d{2}) (\w{3}) (\d{4}) (\d{2}):(\d{2}):(\d{2}) GMT", v or "")
+    if not m or m[1] not in _DAYS or m[3] not in _MONTHS:
+        return None
+    try:
+        t = datetime.datetime(int(m[4]), _MONTHS.index(m[3]) + 1, int(m[2]), int(m[5]),
+                              int(m[6]), int(m[7]), tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return None
+    if _DAYS[t.weekday()] != m[1]:
+        return None
+    return int((t - datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)).total_seconds())
 
 
 def _check_index(pages, pinned, cd_size: int, file_size: int) -> None:
@@ -339,8 +368,8 @@ class VZipStore(Store):
             elif SOURCES_KEY in self._entries:
                 e = self._entries[SOURCES_KEY]
                 self._sources = read_source_table(await self._entry_bytes(e, 0, e.size))
-        if any(src.url == "" for src in self._sources):
-            raise ValueError("empty url in the source table")
+        if any(src.url == "" or src.key == "" for src in self._sources):
+            raise ValueError("empty url or key in the source table")
 
     def _slice(self, offset: int, n: int, method: int) -> bytes:
         lo = offset - self._buf_start
@@ -388,9 +417,12 @@ class VZipStore(Store):
     async def _load_prefix(self, prefix: str) -> None:
         if not self._pages:
             return
-        lo = max(bisect.bisect_right(self._page_keys, prefix) - 1, 0)
-        hi = bisect.bisect_left(self._page_keys, prefix + "\U0010ffff")
-        idxs = range(lo, max(hi, lo + 1))
+        # spec §8.2: page [lo, hi) is read iff (no hi or prefix < hi) and
+        # (lo <= prefix or lo starts with prefix), comparing UTF-8 bytes
+        pb = prefix.encode()
+        keys = [k.encode() for k in self._page_keys]
+        idxs = [i for i, lo in enumerate(keys)
+                if (i + 1 == len(keys) or pb < keys[i + 1]) and (lo <= pb or lo.startswith(pb))]
         await self._load_pages(idxs)
         bad = [i for i in idxs if i in self._bad_pages]
         if bad:

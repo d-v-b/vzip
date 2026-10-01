@@ -64,6 +64,8 @@ class Model:
             raise ModelError("not a URI reference")
         url = v if _SCHEME.match(v) else urljoin(self.base, v)
         p = urlparse(url)
+        if p.scheme == "http" and "@" in p.netloc:
+            raise ModelError("userinfo in an http URL")
         if p.scheme == "http" and self.http and url.startswith(self.http[0]):
             return self._http_bytes(url, src)
         if p.scheme != "file":
@@ -105,6 +107,10 @@ class Model:
         data = path.read_bytes()
         if quirk == "gzip":
             raise ModelError("content-encoding")
+        if quirk in ("multipart", "badlen", "nolocation", "enclist"):
+            raise ModelError(f"{quirk}: resolution error (spec §6.2)")
+        if quirk == "oldate" and "modified_not_after" in src:
+            raise ModelError("Last-Modified is not an IMF-fixdate")
         if quirk == "noetag" and ("etag" in src or "modified_not_after" in src):
             raise ModelError("pin uncheckable: no ETag / Last-Modified")
         if "etag" in src and src["etag"] != etag_for(data):

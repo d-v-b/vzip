@@ -19,6 +19,11 @@ usual:
 | `/nocond/`   | ignores `If-Match` / `If-Unmodified-Since` (a reader must check the headers itself) |
 | `/noetag/`   | sends no `ETag` and no `Last-Modified` |
 | `/redirect/N/` | answers 302 to `/redirect/N-1/...`, and `/redirect/0/...` to the plain path |
+| `/oldate/`   | sends `Last-Modified` in the obsolete RFC 850 format |
+| `/multipart/` | answers ranges with a `multipart/byteranges` 206 (no `Content-Range`) |
+| `/badlen/`   | sends one byte less than its `Content-Range` says |
+| `/nolocation/` | answers 302 without a `Location` header |
+| `/enclist/`  | adds `Content-Encoding: identity, identity` |
 """
 
 from __future__ import annotations
@@ -26,11 +31,13 @@ from __future__ import annotations
 import email.utils
 import hashlib
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote
 
-QUIRKS = ("norange", "nototal", "gzip", "nocond", "noetag", "redirect")
+QUIRKS = ("norange", "nototal", "gzip", "nocond", "noetag", "redirect", "oldate", "multipart",
+          "badlen", "nolocation", "enclist")
 
 
 def etag_for(data: bytes) -> str:
@@ -67,6 +74,8 @@ class Server:
                 parts = unquote(self.path.split("?")[0]).lstrip("/").split("/", 1)
                 quirk = parts[0] if parts[0] in QUIRKS else None
                 rel = parts[1] if quirk and len(parts) > 1 else "/".join(parts)
+                if quirk == "nolocation":
+                    return self._reply(302, b"")
                 if quirk == "redirect":
                     n, _, rest = rel.partition("/")
                     target = f"/redirect/{int(n) - 1}/{rest}" if int(n) > 0 else f"/{rest}"
@@ -83,6 +92,11 @@ class Server:
                     meta["Content-Encoding"] = "gzip"
                 if quirk == "noetag":
                     del meta["ETag"], meta["Last-Modified"]
+                if quirk == "oldate":
+                    meta["Last-Modified"] = time.strftime("%A, %d-%b-%y %H:%M:%S GMT",
+                                                          time.gmtime(mtime))
+                if quirk == "enclist":
+                    meta["Content-Encoding"] = "identity, identity"
                 h = {k.lower(): v for k, v in self.headers.items()}
                 if quirk == "nocond":
                     h.pop("if-match", None)
@@ -102,7 +116,13 @@ class Server:
                 if start >= len(data):
                     return self._reply(416, b"", {**meta, "Content-Range": f"bytes */{len(data)}"})
                 total = "*" if quirk == "nototal" else str(len(data))
-                return self._reply(206, data[start:end],
+                if quirk == "multipart":
+                    part = (f"--SEP\r\nContent-Range: bytes {start}-{end - 1}/{len(data)}\r\n\r\n"
+                            .encode() + data[start:end] + b"\r\n--SEP--\r\n")
+                    return self._reply(206, part, {
+                        **meta, "Content-Type": "multipart/byteranges; boundary=SEP"})
+                body = data[start:end][:-1] if quirk == "badlen" else data[start:end]
+                return self._reply(206, body,
                                    {**meta, "Content-Range": f"bytes {start}-{end - 1}/{total}"})
 
             do_GET = _serve

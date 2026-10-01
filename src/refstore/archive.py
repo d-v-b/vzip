@@ -98,6 +98,8 @@ class Entry:
             return None
         if self._ref is None:
             hid, raw = self.payload
+            if len(raw) > MAX_PAYLOAD:  # spec §4.3: a payload error, even if it fits
+                raise ValueError(f"reference payload of {len(raw)} bytes exceeds {MAX_PAYLOAD}")
             self._ref = (Range if hid == RANGE_EXTRA_ID else Concat).decode(raw)
         return self._ref
 
@@ -117,6 +119,7 @@ class VZipWriter:
         self._cd: list[tuple[str, int, int, int, int, int, bytes]] = []
         self._names: set[str] = set()
         self._ref_names: set[str] = set()
+        self._range_checks: list = []  # (key, Range) for spec §9.1 bounds checks
         self._sources: dict[Source, int] = {}
         self._late: list[tuple[str, bytes, bool]] = []
 
@@ -224,6 +227,7 @@ class VZipWriter:
         for r in ranges:
             if r.data is None and r.source >= len(self._sources):
                 raise ValueError(f"range of {key!r} uses unregistered source {r.source}")
+        self._range_checks.extend((key, r) for r in ranges if r.data is None)
         if len(ranges) == 1:
             hid, payload = RANGE_EXTRA_ID, ranges[0].encode()
         else:
@@ -237,6 +241,16 @@ class VZipWriter:
 
     def _check_sources(self, sources: list[Source]) -> None:
         """Writer requirements on the source table (spec §9.1)."""
+        if any(x.key == "" for x in sources):
+            raise ValueError("empty key source")
+        sizes = {name: size for name, _, size, *_ in self._cd}
+        sizes.update((k, len(d)) for k, d, _ in self._late)
+        for key, r in self._range_checks:
+            src = sources[r.source]
+            n = len(src.data) if src.data is not None else sizes.get(src.key)
+            if n is not None and src.url is None and r.offset + r.length > n:
+                raise ValueError(f"{key!r}: range [{r.offset}, {r.offset + r.length}) is past the "
+                                 f"end of source {r.source} ({n} bytes)")
         missing = sorted(x.key for x in sources if x.key is not None and x.key not in self._names)
         if missing:
             raise ValueError(f"internal references to missing entries: {missing}")
@@ -448,17 +462,16 @@ def parse_central_directory(cd: bytes, *, trust_offsets: bool) -> dict[str, Entr
                     z64.append(data)
         except (ValueError, IndexError, struct.error) as e:
             error = f"unparseable extra field: {e}"
+        # spec §3.2: sizes never use ZIP64; only the offset may, in one 8-byte block
         if error is None and len(z64) > 1:
             error = "more than one ZIP64 extra block"
-        elif error is None and _U32 in (size, csize, off):
-            # spec §3.2: the block holds, in order, the 64-bit values of the all-ones fields
-            need = [f for f, v in (("size", size), ("csize", csize), ("off", off)) if v == _U32]
-            data = z64[0] if z64 else b""
-            if len(data) < 8 * len(need):
+        elif error is None and _U32 in (size, csize):
+            error = "a size field is 0xFFFFFFFF"
+        elif error is None and off == _U32:
+            if not z64 or len(z64[0]) < 8:
                 error = "ZIP64 extra block missing or too short"
             else:
-                vals = dict(zip(need, struct.unpack_from(f"<{len(need)}Q", data)))
-                size, csize, off = vals.get("size", size), vals.get("csize", csize), vals.get("off", off)
+                (off,) = struct.unpack_from("<Q", z64[0])
         if error is None:
             if ref_blocks > 1:
                 error = "more than one reference extra field block"

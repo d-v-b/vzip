@@ -51,6 +51,13 @@ def _run_query(store: VZipStore, raw: VZipStore, q: dict) -> dict:
                 "error": f"{type(e).__name__}: {e}"}
 
 
+def _no_duplicates(pairs):
+    keys = [k for k, _ in pairs]
+    if len(keys) != len(set(keys)):
+        raise ValueError(f"duplicate JSON member names: {keys}")
+    return dict(pairs)
+
+
 def _check_query(q) -> None:
     """HARNESS: a malformed query makes the whole queries file invalid."""
     if not isinstance(q, dict) or q.get("op") not in ("classify", "get", "get_raw", "list"):
@@ -61,15 +68,19 @@ def _check_query(q) -> None:
         return
     if not isinstance(q.get("key"), str):
         raise ValueError(f"malformed query {q!r}")
-    r = q.get("range")
-    if r is not None and (not isinstance(r, dict) or set(r) not in
-                          ({"start", "end"}, {"offset"}, {"suffix"})):
-        raise ValueError(f"malformed range in {q!r}")
+    if "range" in q:
+        r = q["range"]
+        if q["op"] != "get":
+            raise ValueError(f"range on a {q['op']} query: {q!r}")
+        if not isinstance(r, dict) or set(r) not in ({"start", "end"}, {"offset"}, {"suffix"}):
+            raise ValueError(f"malformed range in {q!r}")
+        if any(not isinstance(v, int) or isinstance(v, bool) or v < 0 for v in r.values()):
+            raise ValueError(f"range values must be non-negative integers: {q!r}")
 
 
 def read(archive: str, queries_path: str) -> dict:
     with open(queries_path) as f:
-        queries = json.load(f)
+        queries = json.load(f, object_pairs_hook=_no_duplicates)
     if not isinstance(queries, list):
         raise ValueError("the queries file must hold a JSON array")
     for q in queries:
@@ -142,7 +153,7 @@ def _reject_nulls(desc: dict) -> None:
 
 def write(desc_path: str, out: str) -> None:
     with open(desc_path) as f:
-        desc = json.load(f)
+        desc = json.load(f, object_pairs_hook=_no_duplicates)
     _reject_nulls(desc)
     page_size = desc.get("page_size")
     if not isinstance(desc.get("mirror", True), bool):

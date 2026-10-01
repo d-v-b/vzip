@@ -214,11 +214,17 @@ def main() -> int:
         "missing_key": [{"op": "get"}],
         "range_with_two_forms": [{"op": "get", "key": "x", "range": {"offset": 1, "suffix": 2}}],
         "not_an_array": {"op": "get", "key": "x"},
+        "range_on_get_raw": [{"op": "get_raw", "key": "x", "range": {"offset": 1}}],
+        "list_without_prefix": [{"op": "list"}],
+        "range_null": [{"op": "get", "key": "x", "range": None}],
+        "partial_range": [{"op": "get", "key": "x", "range": {"start": 1}}],
+        "negative_range": [{"op": "get", "key": "x", "range": {"offset": -1}}],
+        "duplicate_members": '[{"op": "get", "key": "x", "key": "y"}]',
     }
     for impl, cli in impls.items():
         for name, q in bad_queries.items():
             qp = out / "vectors" / f"bad_{name}.json"
-            qp.write_text(json.dumps(q))
+            qp.write_text(q if isinstance(q, str) else json.dumps(q))
             p = subprocess.run(cli + ["read", str(any_vec), str(qp)], capture_output=True,
                                text=True, timeout=TIMEOUT)
             report["reject"][f"{impl}:queries/{name}"] = {

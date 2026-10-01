@@ -378,3 +378,59 @@ agents, and none caused a divergence:
   - `range: null`;
   - the overflow rejections, which the CLI's JSON number limit makes
     unreachable.
+
+## Revision 7: the open issues from rounds 5 and 6
+
+Format version 0, specification revision 7.
+
+**§1.3 note: this revision breaks the revision rule.** Several of its choices
+are ones none of the round-6 implementations used (listed below). That is
+allowed only because version 0 is still a draft. After version 0 is final,
+changes like these would need version 1.
+
+| issue | r7 decision | already matched r6 implementations? |
+|---|---|---|
+| HTTP-date formats for `Last-Modified` (RFC 850 two-digit years depend on the reader's clock) | IMF-fixdate only, correct weekday; anything else → the pin can't be checked (resolution error) | **No**: all three accepted the obsolete formats (`h/oldate_pinned`) |
+| 206 with no `Content-Range`, multipart, an inconsistent body length or total | resolution error | yes |
+| Redirect without a `Location`, or with an invalid one | resolution error | yes |
+| A `Content-Encoding` list such as `identity, identity` | resolution error (only an absent header or exactly `identity`) | TS yes; **Rust and Python no** |
+| Chunked transfer coding | readers MUST accept it | yes |
+| Userinfo or an empty host in `http(s)` URLs | resolution error | **No** (`h/userinfo`) |
+| `file:` authority `localhost:80`, `user@localhost`, encoded `localhost` | not allowed: exactly `localhost` | (not tested) |
+| ZIP64: a size field of 0xFFFFFFFF; duplicate `0x0001` blocks when the offset isn't all ones | entry errors | **No** |
+| Payload of 65520–65531 bytes (fits the extra field, over the limit) | payload error | **No** |
+| Empty `key` source | archive error at open, like an empty `url`; writers reject it | **No** |
+| Missing key whose lookup page cannot be parsed | entry error | yes |
+| Pages read by paged `list` | exact interval test, with a worked example | yes |
+| `raw` of the format entries | through the comment; `raw("__vz__/index")` is missing in unpaged archives | yes (all chose the comment) |
+| Literal range with an explicitly encoded zero `source` | checked by value: accepted | yes |
+| `key`/`data` source range past the end of a value the writer knows | writers MUST reject | **No** (no writer checked) |
+| "Lies within the file" | inside `[0, file size]`; overlaps aren't checked | yes |
+| §5.1: empty repeated elements; negative `int64` | emitted (`0a 00`); 10-byte two's complement | yes |
+| §9.1: reason for putting the index last | `__vz__/index` must follow the *pinned* entries; page offsets are relative to the CD | yes (editorial) |
+| Memory for 200 responses | a documented limit → request error | (not tested) |
+| HARNESS query rules | `range` only on `get`; `prefix` required; `range: null`, partial or negative ranges invalid; duplicate JSON members invalid; unknown members ignored | partly: TS accepted `range` on `get_raw`; Python accepted a negative range; **none** rejected duplicate members |
+
+**Kit:**
+- **Five new HTTP server modes:** `/oldate/`, `/multipart/`, `/badlen/`,
+  `/nolocation/`, `/enclist/`. There are eight new HTTP cases, including a
+  userinfo URL.
+- **Seven new crafted cases:** all-ones size, duplicate ZIP64 block, a
+  65520-byte payload, an explicit zero `source`, a missing key on a broken
+  page, an empty `key` source, and reading a `data` range past the end. The
+  last moved out of the basic description, because writers must now reject
+  it.
+- **Three new writer rejections and six new invalid query files.**
+- **Each new HTTP case was checked to fail or pass for its intended reason.**
+  This guards against the vacuous pass found in round 5.
+
+**Result:** the reference passes everything:
+- 5120/5120 read queries;
+- 11/11 write cases;
+- 41/41 rejections;
+- 4973/4973 cross-reads;
+- 1258/1258 HTTP checks.
+
+The round-6 implementations, run against r7, fail exactly the rows marked
+**No** above and nothing else. Revision 7 has not been through a fresh round
+of agents.
