@@ -38,6 +38,9 @@ cp -R web/dist/. "$site/$demo/"
 cp -R "$neuroglancer/dist/client/." "$site/$demo/neuroglancer/"
 find "$site/$demo" -name '*.map' -delete
 touch "$site/.nojekyll"
+# The first deploy served this demo's worker at the site root. Browsers that
+# installed it get this replacement, which unregisters it (see the file).
+cp web/demo/retired-sw.js "$site/vzip-sw.js"
 node web/pages_index.mjs "$site"
 
 git -C "$site" add -A

@@ -18,6 +18,9 @@ import { writeVzip } from "./writer.ts";
 
 export const ARCHIVE_KEY = "__vz__/archive.vzip";
 
+/** Marks every response of the handler, so pages can tell it from the network's. */
+export const WORKER_HEADER = "X-Vzip-Worker";
+
 export function encodeId(url: string): string {
   let s = "";
   for (const b of new TextEncoder().encode(url)) s += String.fromCharCode(b);
@@ -50,7 +53,8 @@ function response(status: number, body: string | Uint8Array | null, headers: Rec
     status,
     headers: {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Expose-Headers": "Content-Range, Content-Length",
+      "Access-Control-Expose-Headers": `Content-Range, Content-Length, ${WORKER_HEADER}`,
+      [WORKER_HEADER]: "1",
       ...(typeof body === "string" ? { "Content-Type": "text/plain; charset=utf-8" } : {}),
       ...headers,
     },
