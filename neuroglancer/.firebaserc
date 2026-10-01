@@ -1,0 +1,18 @@
+{
+  "projects": {
+    "default": "neuroglancer-demo"
+  },
+  "targets": {
+    "neuroglancer-demo": {
+      "hosting": {
+        "app": [
+          "neuroglancer"
+        ],
+        "docs": [
+          "neuroglancer-docs"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

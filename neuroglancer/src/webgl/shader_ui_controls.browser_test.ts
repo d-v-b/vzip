@@ -1,0 +1,1548 @@
+/**
+ * @license
+ * Copyright 2019 Google Inc.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import { expect, describe, it } from "vitest";
+import { constantWatchableValue } from "#src/trackable_value.js";
+import { DataType } from "#src/util/data_type.js";
+import { vec3, vec4 } from "#src/util/geom.js";
+import { defaultDataTypeRange } from "#src/util/lerp.js";
+import { glsl_string } from "#src/webgl/shader_lib.js";
+import { preprocessStrings } from "#src/webgl/shader_source_string_preprocessing.js";
+import { fragmentShaderTest } from "#src/webgl/shader_testing.js";
+import {
+  addControlsToBuilder,
+  getFallbackBuilderState,
+  setControlsInShader,
+  ShaderControlState,
+  TrackableTransferFunctionParameters,
+  parseShaderUiControls,
+  parseTransferFunctionParameters,
+  stripComments,
+} from "#src/webgl/shader_ui_controls.js";
+import type { TransferFunctionParameters } from "#src/widget/transfer_function.js";
+import {
+  ControlPoint,
+  SortedControlPoints,
+} from "#src/widget/transfer_function.js";
+
+const emptyParsePreprocessing = { stringLiteralIds: new Map<string, number>() };
+
+describe("stripComments", () => {
+  it("handles code without comments", () => {
+    const code = `int val;
+void main() {
+  int val2;
+  int val2 = "string literal // here";
+}
+`;
+    expect(stripComments(code)).toEqual(code);
+  });
+
+  it("handles // comments", () => {
+    const original = `int val;
+void main() {
+  int val2; // comment at end of line
+  int val2 = "string literal // here";
+}
+`;
+    const stripped = `int val;
+void main() {
+  int val2;                          
+  int val2 = "string literal // here";
+}
+`;
+    expect(stripComments(original)).toEqual(stripped);
+  });
+
+  it("handles /* comments", () => {
+    const original = `int val;
+void main() {
+  int val2; /* comment at end of line
+  int val3; // continues here */
+  int val2 = "string literal // here";
+}
+`;
+    const stripped = `int val;
+void main() {
+  int val2;                          
+                                
+  int val2 = "string literal // here";
+}
+`;
+    expect(stripComments(original)).toEqual(stripped);
+  });
+});
+
+describe("preprocessStrings", () => {
+  it("replaces unique string literals with unique non-zero string_t ids", () => {
+    const code = `
+void main() {
+  if (mode == "beta") {
+    emitRGB(vec3(1.0));
+  }
+  if (mode == "alpha") {
+    emitRGB(vec3(0.0));
+  }
+  if (mode == "beta") {
+    emitRGB(vec3(0.5));
+  }
+}
+`;
+    const result = preprocessStrings(code);
+    expect(result.stringLiteralIds.size).toBe(2);
+    const betaId = result.stringLiteralIds.get("beta");
+    const alphaId = result.stringLiteralIds.get("alpha");
+    expect(betaId).toBeDefined();
+    expect(alphaId).toBeDefined();
+    expect(betaId).not.toBe(0);
+    expect(alphaId).not.toBe(0);
+    expect(betaId).not.toBe(alphaId);
+    expect(result.code).toBe(`
+void main() {
+  if (mode == string_t(${betaId}u)) {
+    emitRGB(vec3(1.0));
+  }
+  if (mode == string_t(${alphaId}u)) {
+    emitRGB(vec3(0.0));
+  }
+  if (mode == string_t(${betaId}u)) {
+    emitRGB(vec3(0.5));
+  }
+}
+`);
+  });
+});
+
+describe("parseShaderUiControls", () => {
+  it("handles no controls", () => {
+    const code = `
+void main() {
+  emitRGB(vec3(1.0, 1.0, 1.0));
+}
+`;
+    expect(parseShaderUiControls(code)).toEqual({
+      source: code,
+      code: code,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map(),
+    });
+  });
+
+  it("handles slider control", () => {
+    const code = `
+#uicontrol float brightness slider(min=0, max=1)
+void main() {
+  emitRGB(vec3(1.0, 1.0, 1.0));
+}
+`;
+    const newCode = `
+
+void main() {
+  emitRGB(vec3(1.0, 1.0, 1.0));
+}
+`;
+    expect(parseShaderUiControls(code)).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "brightness",
+          {
+            type: "slider",
+            valueType: "float",
+            min: 0,
+            max: 1,
+            default: 0.5,
+            step: 0.01,
+          },
+        ],
+      ]),
+    });
+  });
+
+  it("handles checkbox control", () => {
+    const code = `
+#uicontrol bool myCheckbox checkbox
+#uicontrol bool myCheckbox2 checkbox(default=true)
+void main() {
+  emitRGB(vec3(1.0, 1.0, 1.0));
+}
+`;
+    const newCode = `
+
+
+void main() {
+  emitRGB(vec3(1.0, 1.0, 1.0));
+}
+`;
+    expect(parseShaderUiControls(code)).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        ["myCheckbox", { type: "checkbox", valueType: "bool", default: false }],
+        ["myCheckbox2", { type: "checkbox", valueType: "bool", default: true }],
+      ]),
+    });
+  });
+
+  it("reports only the invalid options error for empty select options", () => {
+    const code = `
+#uicontrol string_t choice select(options=[])
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    expect(parseShaderUiControls(code)).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [
+        {
+          line: 1,
+          message: "Expected options argument to contain at least one option",
+        },
+      ],
+      controls: new Map(),
+    });
+  });
+
+  it("handles color control", () => {
+    const code = `
+#uicontrol vec3 color color(default="red")
+void main() {
+  emitRGB(color);
+}
+`;
+    const newCode = `
+
+void main() {
+  emitRGB(color);
+}
+`;
+    expect(parseShaderUiControls(code)).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "color",
+          {
+            type: "color",
+            valueType: "vec3",
+            default: vec3.fromValues(1, 0, 0),
+            defaultString: "red",
+          },
+        ],
+      ]),
+    });
+  });
+
+  it("handles invlerp control without channel", () => {
+    const code = `
+#uicontrol invlerp normalized
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    expect(
+      parseShaderUiControls(code, {
+        imageData: { dataType: DataType.UINT8, channelRank: 0 },
+      }),
+    ).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "normalized",
+          {
+            type: "imageInvlerp",
+            dataType: DataType.UINT8,
+            clamp: true,
+            default: {
+              range: [0, 255],
+              window: [0, 255],
+              channel: [],
+            },
+          },
+        ],
+      ]),
+    });
+  });
+
+  it("handles invlerp control without channel (rank 1)", () => {
+    const code = `
+#uicontrol invlerp normalized
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    expect(
+      parseShaderUiControls(code, {
+        imageData: { dataType: DataType.UINT8, channelRank: 1 },
+      }),
+    ).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "normalized",
+          {
+            type: "imageInvlerp",
+            dataType: DataType.UINT8,
+            clamp: true,
+            default: {
+              range: [0, 255],
+              window: [0, 255],
+              channel: [0],
+            },
+          },
+        ],
+      ]),
+    });
+  });
+
+  it("handles invlerp control with channel (rank 0)", () => {
+    const code = `
+#uicontrol invlerp normalized(channel=[])
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    expect(
+      parseShaderUiControls(code, {
+        imageData: { dataType: DataType.UINT8, channelRank: 0 },
+      }),
+    ).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "normalized",
+          {
+            type: "imageInvlerp",
+            dataType: DataType.UINT8,
+            clamp: true,
+            default: {
+              range: [0, 255],
+              window: [0, 255],
+              channel: [],
+            },
+          },
+        ],
+      ]),
+    });
+  });
+
+  it("handles invlerp control with non-array channel (rank 1)", () => {
+    const code = `
+#uicontrol invlerp normalized(channel=1)
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    expect(
+      parseShaderUiControls(code, {
+        imageData: { dataType: DataType.UINT8, channelRank: 1 },
+      }),
+    ).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "normalized",
+          {
+            type: "imageInvlerp",
+            dataType: DataType.UINT8,
+            clamp: true,
+            default: {
+              range: [0, 255],
+              window: [0, 255],
+              channel: [1],
+            },
+          },
+        ],
+      ]),
+    });
+  });
+
+  it("handles invlerp control with array channel (rank 1)", () => {
+    const code = `
+#uicontrol invlerp normalized(channel=[1])
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    expect(
+      parseShaderUiControls(code, {
+        imageData: { dataType: DataType.UINT8, channelRank: 1 },
+      }),
+    ).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "normalized",
+          {
+            type: "imageInvlerp",
+            dataType: DataType.UINT8,
+            clamp: true,
+            default: {
+              range: [0, 255],
+              window: [0, 255],
+              channel: [1],
+            },
+          },
+        ],
+      ]),
+    });
+  });
+
+  it("handles invlerp control with array channel (rank 2)", () => {
+    const code = `
+#uicontrol invlerp normalized(channel=[1,2])
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    expect(
+      parseShaderUiControls(code, {
+        imageData: { dataType: DataType.UINT8, channelRank: 2 },
+      }),
+    ).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "normalized",
+          {
+            type: "imageInvlerp",
+            dataType: DataType.UINT8,
+            clamp: true,
+            default: {
+              range: [0, 255],
+              window: [0, 255],
+              channel: [1, 2],
+            },
+          },
+        ],
+      ]),
+    });
+  });
+
+  it("handles property invlerp control without property", () => {
+    const code = `
+#uicontrol invlerp red
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    const properties = new Map([
+      ["p1", DataType.UINT8],
+      ["p2", DataType.FLOAT32],
+    ]);
+    expect(
+      parseShaderUiControls(code, {
+        properties,
+      }),
+    ).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "red",
+          {
+            type: "propertyInvlerp",
+            properties,
+            clamp: true,
+            default: {
+              range: undefined,
+              window: undefined,
+              dataType: DataType.UINT8,
+              property: "p1",
+            },
+          },
+        ],
+      ]),
+    });
+  });
+
+  it("handles property invlerp control with property", () => {
+    const code = `
+#uicontrol invlerp red(property="p2")
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    const properties = new Map([
+      ["p1", DataType.UINT8],
+      ["p2", DataType.FLOAT32],
+    ]);
+    expect(
+      parseShaderUiControls(code, {
+        properties,
+      }),
+    ).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "red",
+          {
+            type: "propertyInvlerp",
+            properties,
+            clamp: true,
+            default: {
+              range: undefined,
+              window: undefined,
+              dataType: DataType.FLOAT32,
+              property: "p2",
+            },
+          },
+        ],
+      ]),
+    });
+  });
+
+  it("handles property invlerp control with range", () => {
+    const code = `
+#uicontrol invlerp red(property="p2", range=[1, 10])
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    const properties = new Map([
+      ["p1", DataType.UINT8],
+      ["p2", DataType.FLOAT32],
+    ]);
+    expect(
+      parseShaderUiControls(code, {
+        properties,
+      }),
+    ).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "red",
+          {
+            type: "propertyInvlerp",
+            properties,
+            clamp: true,
+            default: {
+              range: [1, 10],
+              window: undefined,
+              dataType: DataType.FLOAT32,
+              property: "p2",
+            },
+          },
+        ],
+      ]),
+    });
+  });
+
+  it("handles property invlerp control with window", () => {
+    const code = `
+#uicontrol invlerp red(property="p2", window=[1, 10])
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    const properties = new Map([
+      ["p1", DataType.UINT8],
+      ["p2", DataType.FLOAT32],
+    ]);
+    expect(
+      parseShaderUiControls(code, {
+        properties,
+      }),
+    ).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "red",
+          {
+            type: "propertyInvlerp",
+            properties,
+            clamp: true,
+            default: {
+              range: undefined,
+              window: [1, 10],
+              dataType: DataType.FLOAT32,
+              property: "p2",
+            },
+          },
+        ],
+      ]),
+    });
+  });
+  it("handles transfer function control without channel", () => {
+    const code = `
+#uicontrol transferFunction colormap(controlPoints=[])
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    const range = defaultDataTypeRange[DataType.UINT8];
+    expect(
+      parseShaderUiControls(code, {
+        imageData: { dataType: DataType.UINT8, channelRank: 0 },
+      }),
+    ).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "colormap",
+          {
+            type: "transferFunction",
+            dataType: DataType.UINT8,
+            default: {
+              sortedControlPoints: new SortedControlPoints([], DataType.UINT8),
+              channel: [],
+              defaultColor: vec3.fromValues(1, 1, 1),
+              window: range,
+            },
+          },
+        ],
+      ]),
+    });
+  });
+  it("handles transfer function control without channel (rank 1)", () => {
+    const code = `
+#uicontrol transferFunction colormap(controlPoints=[])
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    const range = defaultDataTypeRange[DataType.UINT16];
+    expect(
+      parseShaderUiControls(code, {
+        imageData: { dataType: DataType.UINT16, channelRank: 1 },
+      }),
+    ).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "colormap",
+          {
+            type: "transferFunction",
+            dataType: DataType.UINT16,
+            default: {
+              sortedControlPoints: new SortedControlPoints([], DataType.UINT16),
+              channel: [0],
+              defaultColor: vec3.fromValues(1, 1, 1),
+              window: range,
+            },
+          },
+        ],
+      ]),
+    });
+  });
+  it("handles transfer function control with channel (rank 0)", () => {
+    const code = `
+#uicontrol transferFunction colormap(controlPoints=[], channel=[])
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    const range = defaultDataTypeRange[DataType.UINT64];
+    expect(
+      parseShaderUiControls(code, {
+        imageData: { dataType: DataType.UINT64, channelRank: 0 },
+      }),
+    ).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "colormap",
+          {
+            type: "transferFunction",
+            dataType: DataType.UINT64,
+            default: {
+              sortedControlPoints: new SortedControlPoints([], DataType.UINT64),
+              channel: [],
+              defaultColor: vec3.fromValues(1, 1, 1),
+              window: range,
+            },
+          },
+        ],
+      ]),
+    });
+  });
+  it("handles transfer function control with non-array channel (rank 1)", () => {
+    const code = `
+#uicontrol transferFunction colormap(controlPoints=[], channel=1)
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    const range = defaultDataTypeRange[DataType.FLOAT32];
+    expect(
+      parseShaderUiControls(code, {
+        imageData: { dataType: DataType.FLOAT32, channelRank: 1 },
+      }),
+    ).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "colormap",
+          {
+            type: "transferFunction",
+            dataType: DataType.FLOAT32,
+            default: {
+              sortedControlPoints: new SortedControlPoints(
+                [],
+                DataType.FLOAT32,
+              ),
+              channel: [1],
+              defaultColor: vec3.fromValues(1, 1, 1),
+              window: range,
+            },
+          },
+        ],
+      ]),
+    });
+  });
+  it("handles transfer function control with array channel (rank 1)", () => {
+    const code = `
+#uicontrol transferFunction colormap(controlPoints=[], channel=[1])
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    const range = defaultDataTypeRange[DataType.FLOAT32];
+    expect(
+      parseShaderUiControls(code, {
+        imageData: { dataType: DataType.FLOAT32, channelRank: 1 },
+      }),
+    ).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "colormap",
+          {
+            type: "transferFunction",
+            dataType: DataType.FLOAT32,
+            default: {
+              sortedControlPoints: new SortedControlPoints(
+                [],
+                DataType.FLOAT32,
+              ),
+              channel: [1],
+              defaultColor: vec3.fromValues(1, 1, 1),
+              window: range,
+            },
+          },
+        ],
+      ]),
+    });
+  });
+  it("handles transfer function control with array channel (rank 2)", () => {
+    const code = `
+#uicontrol transferFunction colormap(controlPoints=[], channel=[1,2])
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    const range = defaultDataTypeRange[DataType.FLOAT32];
+    expect(
+      parseShaderUiControls(code, {
+        imageData: { dataType: DataType.FLOAT32, channelRank: 2 },
+      }),
+    ).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "colormap",
+          {
+            type: "transferFunction",
+            dataType: DataType.FLOAT32,
+            default: {
+              sortedControlPoints: new SortedControlPoints(
+                [],
+                DataType.FLOAT32,
+              ),
+              channel: [1, 2],
+              defaultColor: vec3.fromValues(1, 1, 1),
+              window: range,
+            },
+          },
+        ],
+      ]),
+    });
+  });
+  it("handles transfer function control with all properties non uint64 data", () => {
+    const code = `
+#uicontrol transferFunction colormap(controlPoints=[[200, "#00ff00", 0.1], [100, "#ff0000", 0.5], [0, "#000000", 0.0]], defaultColor="#0000ff", window=[0, 1000], channel=[])
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    const controlPoints = [
+      new ControlPoint(0, vec4.fromValues(0, 0, 0, 0)),
+      new ControlPoint(200, vec4.fromValues(0, 255, 0, 26)),
+      new ControlPoint(100, vec4.fromValues(255, 0, 0, 128)),
+    ];
+    const sortedControlPoints = new SortedControlPoints(
+      controlPoints,
+      DataType.UINT32,
+    );
+    expect(
+      parseShaderUiControls(code, {
+        imageData: { dataType: DataType.UINT32, channelRank: 0 },
+      }),
+    ).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "colormap",
+          {
+            type: "transferFunction",
+            dataType: DataType.UINT32,
+            default: {
+              sortedControlPoints,
+              channel: [],
+              defaultColor: vec3.fromValues(0, 0, 1),
+              window: [0, 1000],
+            },
+          },
+        ],
+      ]),
+    });
+    expect(sortedControlPoints.range).toEqual([0, 200]);
+  });
+  it("handles transfer function control with all properties uint64 data", () => {
+    const code = `
+#uicontrol transferFunction colormap(controlPoints=[["18446744073709551615", "#00ff00", 0.1], ["9223372111111111111", "#ff0000", 0.5], [0, "#000000", 0.0]], defaultColor="#0000ff", channel=[], window=[0, 2000])
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    const controlPoints = [
+      new ControlPoint(9223372111111111111n, vec4.fromValues(255, 0, 0, 128)),
+      new ControlPoint(0n, vec4.fromValues(0, 0, 0, 0)),
+      new ControlPoint(18446744073709551615n, vec4.fromValues(0, 255, 0, 26)),
+    ];
+    const sortedControlPoints = new SortedControlPoints(
+      controlPoints,
+      DataType.UINT64,
+    );
+    expect(
+      parseShaderUiControls(code, {
+        imageData: { dataType: DataType.UINT64, channelRank: 0 },
+      }),
+    ).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "colormap",
+          {
+            type: "transferFunction",
+            dataType: DataType.UINT64,
+            default: {
+              sortedControlPoints: sortedControlPoints,
+              channel: [],
+              defaultColor: vec3.fromValues(0, 0, 1),
+              window: [0n, 2000n],
+            },
+          },
+        ],
+      ]),
+    });
+  });
+});
+
+describe("parseTransferFunctionParameters", () => {
+  it("parses transfer function from JSON", () => {
+    const code = `
+#uicontrol transferFunction tf
+void main() {
+}
+`;
+    const parsed_val = parseShaderUiControls(code, {
+      imageData: { dataType: DataType.UINT8, channelRank: 0 },
+    });
+    const default_val = parsed_val.controls.get("tf")!.default;
+    const json = {
+      controlPoints: [
+        [150, "#ffffff", 1],
+        [0, "#000000", 0],
+      ],
+      defaultColor: "#ff0000",
+      window: [0, 200],
+    };
+    const parsed = parseTransferFunctionParameters(
+      json,
+      DataType.UINT8,
+      default_val as TransferFunctionParameters,
+    );
+    expect(parsed).toEqual({
+      sortedControlPoints: new SortedControlPoints(
+        [
+          new ControlPoint(0, vec4.fromValues(0, 0, 0, 0)),
+          new ControlPoint(150, vec4.fromValues(255, 255, 255, 255)),
+        ],
+        DataType.UINT8,
+      ),
+      channel: [],
+      defaultColor: vec3.fromValues(1, 0, 0),
+      window: [0, 200],
+    });
+  });
+  it("writes transfer function to JSON and detects changes from default", () => {
+    const code = `
+#uicontrol transferFunction tf
+void main() {
+}
+`;
+    const parsed_val = parseShaderUiControls(code, {
+      imageData: { dataType: DataType.UINT64, channelRank: 0 },
+    });
+    const default_val = parsed_val.controls.get("tf")!
+      .default as TransferFunctionParameters;
+    const transferFunctionParameters = new TrackableTransferFunctionParameters(
+      DataType.UINT64,
+      default_val,
+    );
+    expect(transferFunctionParameters.toJSON()).toEqual(undefined);
+
+    // Test setting a new control point
+    const sortedControlPoints = new SortedControlPoints(
+      [
+        new ControlPoint(0n, vec4.fromValues(0, 0, 0, 10)),
+        new ControlPoint(
+          18446744073709551615n,
+          vec4.fromValues(255, 255, 255, 255),
+        ),
+      ],
+      DataType.UINT64,
+    );
+    transferFunctionParameters.value = {
+      ...default_val,
+      sortedControlPoints,
+    };
+    expect(transferFunctionParameters.toJSON()).toEqual({
+      channel: undefined,
+      defaultColor: undefined,
+      window: undefined,
+      controlPoints: [
+        ["0", "#000000", 0.0392156862745098],
+        ["18446744073709551615", "#ffffff", 1],
+      ],
+    });
+
+    // Test setting a new default color
+    transferFunctionParameters.value = {
+      ...default_val,
+      defaultColor: vec3.fromValues(0, 1, 0),
+    };
+    expect(transferFunctionParameters.toJSON()).toEqual({
+      channel: undefined,
+      defaultColor: "#00ff00",
+      window: undefined,
+      controlPoints: undefined,
+    });
+
+    // Test setting a new window
+    transferFunctionParameters.value = {
+      ...default_val,
+      window: [0, 1000],
+    };
+    expect(transferFunctionParameters.toJSON()).toEqual({
+      channel: undefined,
+      defaultColor: undefined,
+      window: ["0", "1000"],
+      controlPoints: undefined,
+    });
+
+    // Test setting a new channel
+    transferFunctionParameters.value = {
+      ...default_val,
+      channel: [1],
+    };
+    expect(transferFunctionParameters.toJSON()).toEqual({
+      channel: [1],
+      defaultColor: undefined,
+      window: undefined,
+      controlPoints: undefined,
+    });
+  });
+});
+
+describe("parseShaderUiControls select", () => {
+  it("handles basic select control", () => {
+    const code = `
+#uicontrol string_t myMode select(options=["one", "two", "three"])
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    expect(parseShaderUiControls(code)).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "myMode",
+          {
+            type: "select",
+            valueType: "string_t",
+            options: [{ value: "one" }, { value: "two" }, { value: "three" }],
+            default: "one",
+          },
+        ],
+      ]),
+    });
+  });
+
+  it("handles explicit default option", () => {
+    const code = `
+#uicontrol string_t myMode select(options=["a", "b", "c"], default="c")
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    expect(parseShaderUiControls(code)).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "myMode",
+          {
+            type: "select",
+            valueType: "string_t",
+            options: [{ value: "a" }, { value: "b" }, { value: "c" }],
+            default: "c",
+          },
+        ],
+      ]),
+    });
+  });
+
+  it("errors on wrong type", () => {
+    const code = `
+#uicontrol vec3 myMode select(options=["x", "y"])
+void main() {
+}
+`;
+    const result = parseShaderUiControls(code);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0].message).toContain(
+      "type must be one of string_t, int, uint, or float",
+    );
+  });
+
+  it("errors when options is missing", () => {
+    const code = `
+#uicontrol string_t myMode select()
+void main() {
+}
+`;
+    const result = parseShaderUiControls(code);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0].message).toContain("options must be specified");
+  });
+
+  it("errors when options is an empty array", () => {
+    const code = `
+#uicontrol string_t myMode select(options=[])
+void main() {
+}
+`;
+    const result = parseShaderUiControls(code);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0].message).toContain("contain at least one option");
+  });
+
+  it("errors when options have duplicate values", () => {
+    const code = `
+#uicontrol string_t myMode select(options={"First": "x", "Second": "x"})
+void main() {
+}
+`;
+    const result = parseShaderUiControls(code);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0].message).toContain('Duplicate option value: "x"');
+  });
+
+  it("errors when options is not an array or object", () => {
+    const code = `
+#uicontrol string_t myMode select(options="bad")
+void main() {
+}
+`;
+    const result = parseShaderUiControls(code);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0].message).toContain(
+      "array of string_t values or an object mapping labels to string_t values",
+    );
+  });
+
+  it("errors when default is not one of the options", () => {
+    const code = `
+#uicontrol string_t myMode select(options=["x", "y"], default="z")
+void main() {
+}
+`;
+    const result = parseShaderUiControls(code);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0].message).toContain(
+      'default value "z" must match one of the options',
+    );
+  });
+
+  it("errors when default is not a string", () => {
+    const code = `
+#uicontrol string_t myMode select(options=["x", "y"], default=1)
+void main() {
+}
+`;
+    const result = parseShaderUiControls(code);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0].message).toContain(
+      "Invalid default value: Expected string",
+    );
+  });
+
+  it("handles labeled select options from an object mapping", () => {
+    const code = `
+#uicontrol string_t myMode select(options={"Alpha mode": "alpha", "Beta mode": "beta"}, default="beta")
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    expect(parseShaderUiControls(code)).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "myMode",
+          {
+            type: "select",
+            valueType: "string_t",
+            options: [
+              { label: "Alpha mode", value: "alpha" },
+              { label: "Beta mode", value: "beta" },
+            ],
+            default: "beta",
+          },
+        ],
+      ]),
+    });
+  });
+
+  it("handles uint select options", () => {
+    const code = `
+#uicontrol uint myMode select(options={"One": 1, "Two": 2}, default=2)
+void main() {
+}
+`;
+    const newCode = `
+
+void main() {
+}
+`;
+    expect(parseShaderUiControls(code)).toEqual({
+      source: code,
+      code: newCode,
+      preprocessing: emptyParsePreprocessing,
+      errors: [],
+      controls: new Map([
+        [
+          "myMode",
+          {
+            type: "select",
+            valueType: "uint",
+            options: [
+              { label: "One", value: 1 },
+              { label: "Two", value: 2 },
+            ],
+            default: 2,
+          },
+        ],
+      ]),
+    });
+  });
+
+  it("maps select values to preprocessed shader string ids", () => {
+    const code = `
+#uicontrol string_t myMode select(options=["alpha", "beta"])
+void main() {
+  outputValue = myMode == "beta" ? 1u : 0u;
+}
+`;
+    fragmentShaderTest({}, { outputValue: "uint" }, (tester) => {
+      const shaderControlState = new ShaderControlState(
+        constantWatchableValue(code),
+      );
+      try {
+        const parseResult = shaderControlState.parseResult.value;
+        addControlsToBuilder(
+          getFallbackBuilderState(parseResult),
+          tester.builder,
+        );
+        tester.builder.addFragmentCode(glsl_string);
+        tester.builder.setFragmentMainFunction(parseResult.code);
+        tester.build();
+        tester.shader.bind();
+        shaderControlState.restoreState({ myMode: "beta" });
+        setControlsInShader(
+          tester.gl,
+          tester.shader,
+          shaderControlState,
+          parseResult,
+        );
+        tester.execute();
+        expect(tester.values.outputValue).toEqual(1);
+      } finally {
+        shaderControlState.dispose();
+      }
+    });
+  });
+
+  it("uses the second select option as the default with preprocessed strings", () => {
+    const code = `
+#uicontrol string_t myMode select(options=["alpha", "beta"], default="beta")
+void main() {
+  outputValue = myMode == "beta" ? 1u : 0u;
+}
+`;
+    fragmentShaderTest({}, { outputValue: "uint" }, (tester) => {
+      const shaderControlState = new ShaderControlState(
+        constantWatchableValue(code),
+      );
+      try {
+        const parseResult = shaderControlState.parseResult.value;
+        addControlsToBuilder(
+          getFallbackBuilderState(parseResult),
+          tester.builder,
+        );
+        tester.builder.addFragmentCode(glsl_string);
+        tester.builder.setFragmentMainFunction(parseResult.code);
+        tester.build();
+        tester.shader.bind();
+        setControlsInShader(
+          tester.gl,
+          tester.shader,
+          shaderControlState,
+          parseResult,
+        );
+        tester.execute();
+        expect(tester.values.outputValue).toEqual(1);
+      } finally {
+        shaderControlState.dispose();
+      }
+    });
+  });
+
+  it("sets a select uniform to 0 when the shader has no mapped string", () => {
+    const code = `
+#uicontrol string_t myMode select(options=["alpha", "beta"])
+void main() {
+  outputValue = myMode == "gamma" ? 0u : myMode.value == 0u ? 1u : 0u;
+}
+`;
+    fragmentShaderTest({}, { outputValue: "uint" }, (tester) => {
+      const shaderControlState = new ShaderControlState(
+        constantWatchableValue(code),
+      );
+      try {
+        const parseResult = shaderControlState.parseResult.value;
+        addControlsToBuilder(
+          getFallbackBuilderState(parseResult),
+          tester.builder,
+        );
+        tester.builder.addFragmentCode(glsl_string);
+        tester.builder.setFragmentMainFunction(parseResult.code);
+        tester.build();
+        tester.shader.bind();
+        shaderControlState.restoreState({ myMode: "beta" });
+        setControlsInShader(
+          tester.gl,
+          tester.shader,
+          shaderControlState,
+          parseResult,
+        );
+        tester.execute();
+        expect(tester.values.outputValue).toEqual(1);
+      } finally {
+        shaderControlState.dispose();
+      }
+    });
+  });
+
+  it("uploads uint select values directly", () => {
+    const code = `
+#uicontrol uint myMode select(options={"One": 1, "Two": 2})
+void main() {
+  outputValue = myMode == 2u ? 1u : 0u;
+}
+`;
+    fragmentShaderTest({}, { outputValue: "uint" }, (tester) => {
+      const shaderControlState = new ShaderControlState(
+        constantWatchableValue(code),
+      );
+      try {
+        const parseResult = shaderControlState.parseResult.value;
+        addControlsToBuilder(
+          getFallbackBuilderState(parseResult),
+          tester.builder,
+        );
+        tester.builder.setFragmentMainFunction(parseResult.code);
+        tester.build();
+        tester.shader.bind();
+        shaderControlState.restoreState({ myMode: 2 });
+        setControlsInShader(
+          tester.gl,
+          tester.shader,
+          shaderControlState,
+          parseResult,
+        );
+        tester.execute();
+        expect(tester.values.outputValue).toEqual(1);
+      } finally {
+        shaderControlState.dispose();
+      }
+    });
+  });
+
+  it("ignores optimized-out select uniforms", () => {
+    const code = `
+#uicontrol string_t mode select(options=["large", "small", "default"], default="default")
+#uicontrol string_t modep select(options=["large", "small", "default"], default="default")
+void main() {
+  outputValue = mode == "large" ? 1u : 0u;
+}
+`;
+    fragmentShaderTest({}, { outputValue: "uint" }, (tester) => {
+      const shaderControlState = new ShaderControlState(
+        constantWatchableValue(code),
+      );
+      try {
+        const parseResult = shaderControlState.parseResult.value;
+        addControlsToBuilder(
+          getFallbackBuilderState(parseResult),
+          tester.builder,
+        );
+        tester.builder.addFragmentCode(glsl_string);
+        tester.builder.setFragmentMainFunction(parseResult.code);
+        tester.build();
+        tester.shader.bind();
+        shaderControlState.restoreState({ mode: "large", modep: "small" });
+        expect(() => {
+          setControlsInShader(
+            tester.gl,
+            tester.shader,
+            shaderControlState,
+            parseResult,
+          );
+        }).not.toThrow();
+        tester.execute();
+        expect(tester.values.outputValue).toEqual(1);
+      } finally {
+        shaderControlState.dispose();
+      }
+    });
+  });
+
+  it("sets invlerp uniforms", () => {
+    const code = `
+#uicontrol invlerp normalized
+void main() {
+  outputValue = normalized() == 1.0 ? 1u : 0u;
+}
+`;
+    fragmentShaderTest({}, { outputValue: "uint" }, (tester) => {
+      const shaderControlState = new ShaderControlState(
+        constantWatchableValue(code),
+        constantWatchableValue({
+          imageData: { dataType: DataType.UINT8, channelRank: 0 },
+        }),
+      );
+      try {
+        const parseResult = shaderControlState.parseResult.value;
+        tester.builder.addFragmentCode(`
+uint getDataValue() {
+  return 42u;
+}
+`);
+        addControlsToBuilder(
+          getFallbackBuilderState(parseResult),
+          tester.builder,
+        );
+        tester.builder.setFragmentMainFunction(parseResult.code);
+        tester.build();
+        tester.shader.bind();
+        shaderControlState.restoreState({ normalized: { range: [0, 42] } });
+        expect(() => {
+          setControlsInShader(
+            tester.gl,
+            tester.shader,
+            shaderControlState,
+            parseResult,
+          );
+        }).not.toThrow();
+        tester.execute();
+        expect(tester.values.outputValue).toEqual(1);
+      } finally {
+        shaderControlState.dispose();
+      }
+    });
+  });
+});

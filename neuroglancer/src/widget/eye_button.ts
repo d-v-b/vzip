@@ -1,0 +1,27 @@
+/**
+ * @license
+ * Copyright 2023 Google Inc.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import "#src/widget/eye_button.css";
+
+import svg_eye_crossed from "ikonate/icons/eye-crossed.svg?raw";
+import type { MakeIconOptions } from "#src/widget/icon.js";
+import { makeIcon } from "#src/widget/icon.js";
+
+export function makeEyeButton(options: MakeIconOptions = {}) {
+  const icon = makeIcon({ svg: svg_eye_crossed, ...options });
+  icon.classList.add("neuroglancer-eye-icon");
+  return icon;
+}

@@ -1,0 +1,28 @@
+/**
+ * @license
+ * Copyright 2019 Google Inc.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import svg_clipboard from "ikonate/icons/clipboard.svg?raw";
+import svg_copy from "ikonate/icons/copy.svg?raw";
+import type { MakeIconOptions } from "#src/widget/icon.js";
+import { makeIcon } from "#src/widget/icon.js";
+
+export function makeCopyButton(options: MakeIconOptions = {}) {
+  return makeIcon({ svg: svg_copy, ...options });
+}
+
+export function makeCopyUrlButton(options: MakeIconOptions = {}) {
+  return makeIcon({ svg: svg_clipboard, ...options });
+}

@@ -1,0 +1,231 @@
+/**
+ * @license
+ * Copyright 2016 Google Inc.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import "#src/status.css";
+
+import { makeCloseButton } from "#src/widget/close_button.js";
+
+let statusContainer: HTMLElement | undefined;
+let modalStatusContainer: HTMLElement | undefined;
+
+// Exported for use by #tests/fixtures/status_message_handler.js
+export const statusMessages = new Set<StatusMessage>();
+
+export const DEFAULT_STATUS_DELAY = 200;
+
+export type Delay = boolean | number;
+
+function getStatusContainer() {
+  if (statusContainer === undefined) {
+    statusContainer = document.createElement("ul");
+    statusContainer.id = "neuroglancer-status-container";
+    const el: HTMLElement | null = document.getElementById(
+      "neuroglancer-container",
+    );
+    if (el) {
+      el.appendChild(statusContainer);
+    } else {
+      document.body.appendChild(statusContainer);
+    }
+  }
+  return statusContainer;
+}
+
+function getModalStatusContainer() {
+  if (modalStatusContainer === undefined) {
+    modalStatusContainer = document.createElement("ul");
+    modalStatusContainer.id = "neuroglancer-status-container-modal";
+    const el: HTMLElement | null = document.getElementById(
+      "neuroglancer-container",
+    );
+    if (el) {
+      el.appendChild(modalStatusContainer);
+    } else {
+      document.body.appendChild(modalStatusContainer);
+    }
+  }
+  return modalStatusContainer;
+}
+
+// For use by #tests/fixtures/status_message_handler.js
+export function getStatusMessageContainers() {
+  return [getStatusContainer(), getModalStatusContainer()];
+}
+
+export class StatusMessage {
+  element: HTMLElement;
+  private modalElementWrapper: HTMLElement | undefined;
+  private timer: number | null;
+  private visibility = true;
+  private preventFocusChangeOnMouseDown = false;
+  private handleMouseDown = (event: MouseEvent) => {
+    if (this.preventFocusChangeOnMouseDown) {
+      // Prevent focus changes due to clicking on status message.
+      event.preventDefault();
+    }
+  };
+  constructor(delay: Delay = false, modal = false, insertAtBottom = false) {
+    const element = document.createElement("li");
+    this.element = element;
+    element.addEventListener("mousedown", this.handleMouseDown);
+    if (delay === true) {
+      delay = DEFAULT_STATUS_DELAY;
+    }
+    this.setModal(modal, insertAtBottom);
+    if (delay !== false) {
+      this.setVisible(false);
+      this.timer = window.setTimeout(this.setVisible.bind(this, true), delay);
+    } else {
+      this.timer = null;
+    }
+    statusMessages.add(this);
+  }
+
+  [Symbol.dispose]() {
+    this.dispose();
+  }
+
+  dispose() {
+    if (this.modalElementWrapper) {
+      modalStatusContainer!.removeChild(this.modalElementWrapper);
+    } else {
+      statusContainer!.removeChild(this.element);
+    }
+    if (this.timer !== null) {
+      clearTimeout(this.timer);
+    }
+    statusMessages.delete(this);
+  }
+  setText(text: string, makeVisible?: boolean) {
+    this.element.textContent = text;
+    if (makeVisible) {
+      this.setVisible(true);
+    }
+  }
+  setHTML(text: string, makeVisible?: boolean) {
+    this.element.innerHTML = text;
+    if (makeVisible) {
+      this.setVisible(true);
+    }
+  }
+  setPreventFocusChangeOnMouseDown(value: boolean) {
+    this.preventFocusChangeOnMouseDown = value;
+  }
+  setModal(value: boolean, insertAtBottom: boolean = false) {
+    const insertIntoStatusContainer = () => {
+      const container = getStatusContainer();
+      if (insertAtBottom) {
+        container.appendChild(this.element);
+      } else {
+        container.prepend(this.element);
+      }
+    };
+
+    if (value) {
+      if (this.modalElementWrapper === undefined) {
+        const modalElementWrapper = document.createElement("div");
+        modalElementWrapper.addEventListener("mousedown", this.handleMouseDown);
+        const dismissModalElement = makeCloseButton({
+          title: "Dismiss",
+          onClick: () => {
+            this.setModal(false);
+          },
+        });
+        dismissModalElement.classList.add("neuroglancer-dismiss-modal");
+        modalElementWrapper.appendChild(dismissModalElement);
+        modalElementWrapper.appendChild(this.element);
+        this.modalElementWrapper = modalElementWrapper;
+        this.applyVisibility();
+        getModalStatusContainer().appendChild(modalElementWrapper);
+      }
+    } else {
+      if (this.modalElementWrapper !== undefined) {
+        modalStatusContainer!.removeChild(this.modalElementWrapper);
+        this.modalElementWrapper = undefined;
+        insertIntoStatusContainer();
+      } else if (this.element.parentElement === null) {
+        insertIntoStatusContainer();
+      }
+    }
+  }
+
+  private applyVisibility() {
+    const newVisibility = this.visibility ? "" : "none";
+    this.element.style.display = newVisibility;
+    const { modalElementWrapper } = this;
+    if (modalElementWrapper !== undefined) {
+      modalElementWrapper.style.display = newVisibility;
+    }
+  }
+
+  setVisible(value: boolean) {
+    if (this.timer !== null) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    if (value !== this.visibility) {
+      this.visibility = value;
+      this.applyVisibility();
+    }
+  }
+
+  static forPromise<T>(
+    promise: Promise<T>,
+    options: { initialMessage: string; delay?: Delay; errorPrefix: string },
+  ): Promise<T> {
+    const status = new StatusMessage(options.delay);
+    status.setText(options.initialMessage);
+    const dispose = status.dispose.bind(status);
+    promise.then(dispose, (reason) => {
+      let msg: string;
+      if (reason instanceof Error) {
+        msg = reason.message;
+      } else {
+        msg = "" + reason;
+      }
+      const { errorPrefix = "" } = options;
+      status.setErrorMessage(errorPrefix + msg);
+      status.setVisible(true);
+    });
+    return promise;
+  }
+
+  setErrorMessage(message: string) {
+    this.element.textContent = message + " ";
+    const button = document.createElement("button");
+    button.textContent = "Dismiss";
+    button.addEventListener("click", () => {
+      this.dispose();
+    });
+    this.element.appendChild(button);
+  }
+
+  static showMessage(message: string): StatusMessage {
+    const msg = new StatusMessage();
+    msg.element.textContent = message;
+    msg.setVisible(true);
+    return msg;
+  }
+
+  static showTemporaryMessage(
+    message: string,
+    closeAfter = 2000,
+  ): StatusMessage {
+    const msg = StatusMessage.showMessage(message);
+    window.setTimeout(() => msg.dispose(), closeAfter);
+    return msg;
+  }
+}
