@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TIFF to Zarr in the browser</title>
+<meta name="description" content="Paste the URL of a remote (OME-)TIFF: a service worker virtualizes it into a vzip archive in the browser and serves it as plain Zarr, opened here in Neuroglancer.">
+<style>
+  :root {
+    --bg: #fafaf8; --fg: #1d1d1b; --muted: #6b6b66; --line: #deddd8;
+    --panel: #ffffff; --accent: #2d5bd7; --error: #b3261e;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #141413; --fg: #ecebe6; --muted: #9b9a94; --line: #34332f;
+      --panel: #1d1d1b; --accent: #8aa8ff; --error: #f2b8b5; }
+  }
+  body { background: var(--bg); color: var(--fg); margin: 0; line-height: 1.5; }
+  main { max-width: 860px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  p.lede { color: var(--muted); margin: 0 0 24px; }
+  form { display: flex; gap: 8px; flex-wrap: wrap; }
+  input { flex: 1 1 420px; min-width: 0; padding: 8px 10px; font: inherit; font-size: 0.9rem;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--fg); }
+  button, a.button { padding: 8px 14px; font: inherit; border-radius: 6px; border: 1px solid var(--accent);
+    background: var(--accent); color: var(--bg); cursor: pointer; text-decoration: none; display: inline-block; }
+  a.button.secondary { background: transparent; color: var(--accent); }
+  #status { margin: 16px 0; color: var(--muted); min-height: 1.5em; }
+  #status.error { color: var(--error); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-top: 16px; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.85rem; word-break: break-all; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; margin: 8px 0 16px; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .examples { font-size: 0.9rem; color: var(--muted); margin-top: 8px; }
+  .examples a { color: var(--accent); }
+  footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 0.9rem; color: var(--muted); }
+  footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>vzip in the browser</h1>
+  <p class="lede">Paste the URL of a tiled TIFF or OME-TIFF (or of a .vzip archive). A service worker
+    reads the TIFF's directories with a few range requests, writes a vzip archive in memory, and
+    serves it as plain Zarr at a local URL that any Zarr viewer on this site can open. Pixel data is
+    read from the original file only when a viewer asks for it.</p>
+  <form id="form">
+    <input id="url" type="url" required aria-label="TIFF or vzip URL">
+    <button type="submit">Virtualize</button>
+  </form>
+  <div class="examples">Example: <a href="#" id="example">IDR idr0096, mouse bone marrow (OME-TIFF, 487 MB, JPEG 2000)</a></div>
+  <div id="status" role="status"></div>
+  <section id="result" hidden>
+    <div><strong id="name"></strong></div>
+    <div>Zarr URL: <code id="zarr-url"></code></div>
+    <table><thead><tr><th>level</th><th>shape</th><th>chunk</th><th>data type</th><th>codecs</th></tr></thead>
+      <tbody id="levels"></tbody></table>
+    <div class="actions">
+      <a class="button" id="open-ng" target="_blank" rel="noopener">Open in Neuroglancer</a>
+      <a class="button secondary" id="download">Download .vzip</a>
+    </div>
+  </section>
+  <footer>Part of <a href="https://github.com/d-v-b/vzip">vzip</a>, a ZIP container for
+    byte-range references: specification, implementations and the source of this demo.</footer>
+</main>
+<script type="module" src="demo.js"></script>
+</body>
+</html>

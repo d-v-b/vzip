@@ -13,9 +13,9 @@ import numpy as np
 import tifffile
 import zarr
 
-import refstore.codecs  # noqa: F401  (registers imagecodecs_jpeg2k)
-from refstore.archive import VZipWriter  # noqa: F401
-from refstore.store import VZipStore
+import vzip.codecs  # noqa: F401  (registers imagecodecs_jpeg2k)
+from vzip.archive import VZipWriter  # noqa: F401
+from vzip.store import VZipStore
 
 
 def main(archive: str, url: str) -> None:

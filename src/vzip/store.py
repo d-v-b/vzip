@@ -35,7 +35,7 @@ from zarr.abc.store import (
 )
 from zarr.core.buffer import Buffer, BufferPrototype
 
-from refstore.archive import (
+from vzip.archive import (
     LFH_SIZE,
     RESERVED_PREFIX,
     TAIL_GUESS,
@@ -48,7 +48,7 @@ from refstore.archive import (
     parse_tail,
     read_source_table,
 )
-from refstore.errors import (
+from vzip.errors import (
     ArchiveError,
     BodyError,
     EntryError,
@@ -57,9 +57,9 @@ from refstore.errors import (
     ResolutionError,
     VzipError,
 )
-from refstore.pb import Reference, Source, decode_cd_index, parts
-from refstore.uri import file_path, file_uri
-from refstore.uri import resolve as resolve_reference
+from vzip.pb import Reference, Source, decode_cd_index, parts
+from vzip.uri import file_path, file_uri
+from vzip.uri import resolve as resolve_reference
 
 
 @dataclass
@@ -144,7 +144,7 @@ def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int 
         max_redirections = 5  # spec §6.2
 
         def redirect_request(self, req, fp, code, msg, hdrs, newurl):
-            from refstore.uri import is_uri_reference
+            from vzip.uri import is_uri_reference
 
             if not is_uri_reference(hdrs.get("Location", "")):
                 raise ResolutionError(f"redirect with an invalid Location: {hdrs.get('Location')!r}")

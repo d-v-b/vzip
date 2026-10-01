@@ -1439,51 +1439,6 @@ wheels = [
 ]
 
 [[package]]
-name = "refstore"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "fastparquet" },
-    { name = "h5netcdf" },
-    { name = "h5py" },
-    { name = "icechunk" },
-    { name = "imagecodecs" },
-    { name = "kerchunk" },
-    { name = "numpy" },
-    { name = "obstore" },
-    { name = "protobuf" },
-    { name = "pyarrow" },
-    { name = "pytest" },
-    { name = "requests" },
-    { name = "tifffile" },
-    { name = "virtualizarr" },
-    { name = "xarray" },
-    { name = "zarr" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiohttp", specifier = ">=3.14.3" },
-    { name = "fastparquet", specifier = ">=2026.9.0" },
-    { name = "h5netcdf", specifier = ">=1.8.1" },
-    { name = "h5py", specifier = ">=3.16.0" },
-    { name = "icechunk", specifier = ">=2.2.2" },
-    { name = "imagecodecs", specifier = ">=2026.8.16" },
-    { name = "kerchunk", specifier = ">=0.2.10" },
-    { name = "numpy", specifier = ">=2.5.3" },
-    { name = "obstore", specifier = ">=0.11.1" },
-    { name = "protobuf", specifier = ">=7.36.2" },
-    { name = "pyarrow", specifier = ">=25.0.1" },
-    { name = "pytest", specifier = ">=9.1.1" },
-    { name = "requests", specifier = ">=2.34.2" },
-    { name = "tifffile", specifier = ">=2026.9.20" },
-    { name = "virtualizarr", specifier = ">=2.7.3" },
-    { name = "xarray", specifier = ">=2026.9.0" },
-    { name = "zarr", specifier = ">=3.4.0" },
-]
-
-[[package]]
 name = "requests"
 version = "2.34.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1669,6 +1624,51 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/36/2a/cb2d364594631236083d86142ac72103a63241717ec2de01920340d08293/virtualizarr-2.7.3.tar.gz", hash = "sha256:3708ecedaf9c8580e78f8435b3882b95cf02a32c94a052da7afc024da2833ba4", size = 851130, upload-time = "2026-08-07T15:04:10.495Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a0/f3/6c9aa0140d89b831e59429efb3bfb5b4f9cf314158e65391fdb9dd52a6ad/virtualizarr-2.7.3-py3-none-any.whl", hash = "sha256:1f935f54b07bf867516b36b559bfeefcaa78f2b47537c99d8ca4d770ec7bce8c", size = 756396, upload-time = "2026-08-07T15:04:08.623Z" },
+]
+
+[[package]]
+name = "vzip"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "fastparquet" },
+    { name = "h5netcdf" },
+    { name = "h5py" },
+    { name = "icechunk" },
+    { name = "imagecodecs" },
+    { name = "kerchunk" },
+    { name = "numpy" },
+    { name = "obstore" },
+    { name = "protobuf" },
+    { name = "pyarrow" },
+    { name = "pytest" },
+    { name = "requests" },
+    { name = "tifffile" },
+    { name = "virtualizarr" },
+    { name = "xarray" },
+    { name = "zarr" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiohttp", specifier = ">=3.14.3" },
+    { name = "fastparquet", specifier = ">=2026.9.0" },
+    { name = "h5netcdf", specifier = ">=1.8.1" },
+    { name = "h5py", specifier = ">=3.16.0" },
+    { name = "icechunk", specifier = ">=2.2.2" },
+    { name = "imagecodecs", specifier = ">=2026.8.16" },
+    { name = "kerchunk", specifier = ">=0.2.10" },
+    { name = "numpy", specifier = ">=2.5.3" },
+    { name = "obstore", specifier = ">=0.11.1" },
+    { name = "protobuf", specifier = ">=7.36.2" },
+    { name = "pyarrow", specifier = ">=25.0.1" },
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "requests", specifier = ">=2.34.2" },
+    { name = "tifffile", specifier = ">=2026.9.20" },
+    { name = "virtualizarr", specifier = ">=2.7.3" },
+    { name = "xarray", specifier = ">=2026.9.0" },
+    { name = "zarr", specifier = ">=3.4.0" },
 ]
 
 [[package]]

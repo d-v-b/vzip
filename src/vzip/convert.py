@@ -17,7 +17,7 @@ from virtualizarr.manifests import ManifestArray
 from virtualizarr.writers.icechunk import extract_codecs, update_attributes
 from zarr.storage import MemoryStore
 
-from refstore.archive import VZipWriter
+from vzip.archive import VZipWriter
 
 
 def split_virtual_dataset(
@@ -92,7 +92,7 @@ def write_vzip(
 
 
 def read_vzip(path: str, **kwargs) -> xr.Dataset:
-    from refstore.store import VZipStore
+    from vzip.store import VZipStore
 
     return xr.open_zarr(VZipStore(str(path), **kwargs), consolidated=False, zarr_format=3)
 

@@ -1,0 +1,17 @@
+{
+  "name": "vzip-web",
+  "private": true,
+  "type": "module",
+  "description": "vzip in the browser: a service worker that serves vzip archives, and virtualized TIFFs, as plain HTTP Zarr",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/",
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "@types/node": "24.10.0",
+    "esbuild": "0.25.12",
+    "playwright": "1.60.0",
+    "typescript": "5.9.3"
+  }
+}

@@ -7,9 +7,11 @@ Reads only the TIFF's IFDs over HTTP range requests, then writes:
 * `<level>/c/<c>/<ty>/<tx>`: a Range reference to that tile's bytes
 * `OME/METADATA.ome.xml`: the OME-XML, as a real (deflated) bytes entry
 
-The URL source is pinned to the object's size, ETag and Last-Modified (spec §6.1).
+The URL source is pinned to the object's size, ETag and Last-Modified (spec §6.1),
+unless `--no-pins` is given. Browsers can only check pins on servers that expose
+those headers to cross-origin pages, which many (EBI's included) do not.
 
-Usage: uv run python experiments/tiff_to_vzip.py <url> <out.vzip>
+Usage: uv run python experiments/tiff_to_vzip.py [--no-pins] <url> <out.vzip>
 """
 
 from __future__ import annotations
@@ -26,9 +28,9 @@ import tifffile
 import zarr
 from zarr.storage import MemoryStore
 
-from refstore.archive import VZipWriter
-from refstore.codecs import Jpeg2kCodec
-from refstore.pb import Range, Source
+from vzip.archive import VZipWriter
+from vzip.codecs import Jpeg2kCodec
+from vzip.pb import Range, Source
 
 JPEG2K = {33003, 33004, 33005, 34712}
 
@@ -39,7 +41,7 @@ def head(url: str) -> dict:
         return {k.lower(): v for k, v in r.headers.items()}
 
 
-def main(url: str, out: str) -> None:
+def main(url: str, out: str, pin: bool = True) -> None:
     t0 = time.time()
     h = head(url)
     size = int(h["content-length"])
@@ -93,8 +95,8 @@ def main(url: str, out: str) -> None:
         }],
     }
 
-    pins = {"size": size, "modified_not_after": mtime}
-    if etag and not etag.startswith("W/"):
+    pins = {"size": size, "modified_not_after": mtime} if pin else {}
+    if pin and etag and not etag.startswith("W/"):
         pins["etag"] = etag
     with open(out, "wb") as fh:
         w = VZipWriter(fh, page_size=1 << 16)
@@ -114,4 +116,7 @@ def main(url: str, out: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    args = sys.argv[1:]
+    pin = "--no-pins" not in args
+    url, out = [a for a in args if a != "--no-pins"]
+    main(url, out, pin)

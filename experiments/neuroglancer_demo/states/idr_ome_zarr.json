@@ -1,0 +1,62 @@
+{
+  "layers": [
+    {
+      "type": "image",
+      "source": "{base}/data/idr0096_4000_d11_m5_LT_2_unpinned.vzip|vzip:|zarr3:",
+      "localDimensions": {
+        "c'": [
+          1,
+          ""
+        ]
+      },
+      "localPosition": [
+        0
+      ],
+      "blend": "additive",
+      "shader": "void main() {\n  float v = toNormalized(getDataValue());\n  emitRGB(vec3(v, 0.0, 0.0));\n}\n",
+      "name": "red",
+      "opacity": 1.0
+    },
+    {
+      "type": "image",
+      "source": "{base}/data/idr0096_4000_d11_m5_LT_2_unpinned.vzip|vzip:|zarr3:",
+      "localDimensions": {
+        "c'": [
+          1,
+          ""
+        ]
+      },
+      "localPosition": [
+        1
+      ],
+      "blend": "additive",
+      "shader": "void main() {\n  float v = toNormalized(getDataValue());\n  emitRGB(vec3(0.0, v, 0.0));\n}\n",
+      "name": "green",
+      "opacity": 1.0
+    },
+    {
+      "type": "image",
+      "source": "{base}/data/idr0096_4000_d11_m5_LT_2_unpinned.vzip|vzip:|zarr3:",
+      "localDimensions": {
+        "c'": [
+          1,
+          ""
+        ]
+      },
+      "localPosition": [
+        2
+      ],
+      "blend": "additive",
+      "shader": "void main() {\n  float v = toNormalized(getDataValue());\n  emitRGB(vec3(0.0, 0.0, v));\n}\n",
+      "name": "blue",
+      "opacity": 1.0
+    }
+  ],
+  "position": [
+    19958,
+    16312
+  ],
+  "crossSectionScale": 50,
+  "crossSectionBackgroundColor": "#000000",
+  "layout": "xy"
+}

@@ -30,7 +30,7 @@ import zlib
 from dataclasses import dataclass
 from typing import BinaryIO
 
-from refstore.pb import (
+from vzip.pb import (
     Page,
     Pinned,
     Concat,
@@ -257,7 +257,7 @@ class VZipWriter:
         fmt = sorted(x.key for x in sources if x.key in (SOURCES_KEY, INDEX_KEY))
         if fmt:
             raise ValueError(f"key sources naming format entries: {fmt}")
-        from refstore.uri import is_uri_reference
+        from vzip.uri import is_uri_reference
 
         bad = [x.url for x in sources if x.url is not None and not is_uri_reference(x.url)]
         if any(x.url == "" for x in sources) or bad:

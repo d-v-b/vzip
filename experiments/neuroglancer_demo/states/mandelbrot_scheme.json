@@ -1,0 +1,11 @@
+{
+  "layers": [
+    {
+      "type": "image",
+      "source": "vzip://{base}/data/mandelbrot.vzip",
+      "name": "HDF5 via vzip"
+    }
+  ],
+  "layout": "xy",
+  "crossSectionScale": 2.2
+}

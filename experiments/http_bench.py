@@ -29,9 +29,9 @@ from fsspec.implementations.asyn_wrapper import AsyncFileSystemWrapper  # noqa: 
 sys.path.insert(0, str(Path(__file__).parent))
 from bench import PER_FILE, ROOT, dir_size, layout, make_targets, synthetic  # noqa: E402
 
-from refstore.convert import write_vzip
-from refstore.shards import write_vzip_sharded
-from refstore.store import VZipStore
+from vzip.convert import write_vzip
+from vzip.shards import write_vzip_sharded
+from vzip.store import VZipStore
 
 warnings.filterwarnings("ignore")
 LATENCY = float(os.environ.get("LATENCY", "0.02"))

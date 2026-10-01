@@ -1,7 +1,7 @@
 """Conformance-harness CLI (conformance/HARNESS.md) for the reference implementation.
 
-    python -m refstore.cli read <archive> <queries.json>
-    python -m refstore.cli write <description.json> <out>
+    python -m vzip.cli read <archive> <queries.json>
+    python -m vzip.cli write <description.json> <out>
 """
 
 from __future__ import annotations
@@ -14,9 +14,9 @@ from zarr.abc.store import OffsetByteRequest, RangeByteRequest, SuffixByteReques
 from zarr.core.buffer import default_buffer_prototype
 from zarr.core.sync import sync
 
-from refstore.archive import RESERVED_PREFIX, VZipWriter
-from refstore.pb import Range, Source
-from refstore.store import VZipStore
+from vzip.archive import RESERVED_PREFIX, VZipWriter
+from vzip.pb import Range, Source
+from vzip.store import VZipStore
 
 
 def _byte_request(r: dict | None):

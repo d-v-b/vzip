@@ -1,6 +1,6 @@
 """Run the vzip conformance suite against one or more implementations.
 
-    uv run python conformance/run.py --impl ref="uv run python -m refstore.cli" \\
+    uv run python conformance/run.py --impl ref="uv run python -m vzip.cli" \\
         --impl rust=/path/to/vzip --out conformance/results/round1
 
 For every implementation:
@@ -163,7 +163,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--impl", action="append", required=True, help="name=command")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--ref", default="uv run python -m refstore.cli")
+    ap.add_argument("--ref", default="uv run python -m vzip.cli")
     ap.add_argument("--skip", action="append", default=[], help="skip descriptions by name")
     args = ap.parse_args()
     out = Path(args.out).resolve()

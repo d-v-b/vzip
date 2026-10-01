@@ -567,3 +567,32 @@ incompatible change needed. Feedback is welcome as issues or pull requests.
 Against r8, the round-7 implementations fail exactly the rows marked **No**
 or partly above (`h/dupetag`, TS `h/upperbytes`, and two query-file
 rejections), and nothing else.
+
+## Open feedback: browser readers (from the Neuroglancer driver)
+
+The Neuroglancer driver
+([`src/kvstore/vzip/`](https://github.com/d-v-b/neuroglancer/tree/vzip/src/kvstore/vzip)
+in the fork d-v-b/neuroglancer) is the first
+reader to run inside a web browser. Its demo reads the IDR OME-TIFF from
+`ftp.ebi.ac.uk`, and that turned up §6.2 rules a browser cannot follow:
+
+- **`Accept-Encoding` cannot be set.** It is a forbidden request header.
+  Browsers send `identity` for range requests on their own, and the driver
+  still rejects encoded responses.
+- **Redirects are not under the reader's control.** `fetch` follows up to 20
+  redirects itself, so the 5-redirect limit cannot be enforced.
+- **Headers are hidden cross-origin.** `ETag`, `Last-Modified` and
+  `Content-Range` are visible only if the server lists them in
+  `Access-Control-Expose-Headers`. `If-Match` and `If-Unmodified-Since` also
+  need the server to allow them in the CORS preflight. EBI allows `Range`,
+  but none of these.
+  - **Pins** therefore cannot be checked against such a server, and pinned
+    reads fail closed. The demo uses an archive written without pins.
+  - **Every 206 response** lacks a visible `Content-Range`, so §6.2 as written
+    rejects all reads. The driver accepts a cross-origin 206 with no visible
+    `Content-Range` if the body has exactly the requested length. The size is
+    then unknown, so a `size` pin fails.
+
+A future revision could define a "browser profile" that permits these
+relaxations explicitly. It could also say what a writer can do to keep pins
+checkable in browsers, such as recommending servers that expose the headers.

@@ -342,8 +342,8 @@ def invalid_descriptions(root: Path) -> dict[str, dict]:
 
 
 def _writer(path: Path, sources=None, **kw):
-    from refstore.archive import VZipWriter
-    from refstore.pb import Source
+    from vzip.archive import VZipWriter
+    from vzip.pb import Source
 
     f = open(path, "wb")
     w = VZipWriter(f, **kw)
@@ -371,7 +371,7 @@ def _varint(n: int) -> bytes:
 def crafted(root: Path) -> dict[str, dict]:
     """name -> {"build": fn(path), "open": "ok" | "fail", "expect": [(query, accept)],
     "read_path": optional fn(path) -> path to hand to the reader}"""
-    from refstore.pb import Concat, Range, Source
+    from vzip.pb import Concat, Range, Source
 
     cases: dict[str, dict] = {}
     REF = {"ok": True, "kind": "reference"}
