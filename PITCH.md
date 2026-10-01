@@ -94,7 +94,7 @@ Zarr shard index. Zarr's own sharding codec then does the per-chunk lookup.
 
 To check the "afternoon" claim, agents implemented vzip from
 [SPEC.md](SPEC.md) alone, in Rust, TypeScript and Python, with no access to
-any existing code. This was done in five rounds, with fresh agents each time.
+any existing code. This was done in six rounds, with fresh agents each time.
 After each round, their notes and every disagreement between them went back
 into the spec ([conformance/REVISIONS.md](conformance/REVISIONS.md)).
 
@@ -103,12 +103,12 @@ into the spec ([conformance/REVISIONS.md](conformance/REVISIONS.md)).
 - **Round 1:** every implementation passed the conformance suite and read the
   others' archives. But on 11 queries they gave different answers that the
   spec allowed.
-- **Rounds 2–5:** fresh agents again passed everything, and on every
+- **Rounds 2–6:** fresh agents again passed everything, and on every
   tested query all of them, plus the reference, gave the same answer. That
   includes error classes.
 
-Round 5 added HTTP, which all three implementations support. Those
-implementations are in [impls/](impls/).
+Rounds 5 and 6 added HTTP, which all three implementations support. The
+round-6 implementations are in [impls/](impls/).
 
 ## What vzip is not
 

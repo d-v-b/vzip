@@ -1,180 +1,171 @@
+// HTTP source resolution against a local server (spec §6.1, §6.2).
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
-import * as zlib from "node:zlib";
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { Archive } from "../src/reader.ts";
-import { VzError } from "../src/errors.ts";
-import { imfFixdate } from "../src/fetch.ts";
-import { type RawEntry, fLen, msg, rangeMsg, rawZip, refExtra, srcUrl, table, tmpdir, writeDesc } from "./helpers.ts";
+import { VzipError } from "../src/errors.ts";
+import type { Source } from "../src/proto.ts";
+import { buildBuf, rng, src, tmpDir, writeTmp } from "./helpers.ts";
 
-const DATA = Buffer.from("0123456789abcdefghijklmnopqrstuvwxyz");
+const BODY = Buffer.from("0123456789abcdefghijklmnopqrstuvwxyz");
+const LM = "Sun, 06 Nov 1994 08:49:37 GMT";
+const LM_SECS = 784111777n;
 const ETAG = '"v1"';
-const MTIME = 1_700_000_000; // seconds
-const requests: { method: string; url: string; headers: http.IncomingHttpHeaders }[] = [];
 let server: http.Server;
-let base = "";
+let origin = "";
+const log: { method: string; url: string; headers: http.IncomingHttpHeaders }[] = [];
 
-function handler(req: http.IncomingMessage, res: http.ServerResponse): void {
-  requests.push({ method: req.method!, url: req.url!, headers: req.headers });
-  const u = req.url!;
-  if (u === "/redirect") {
-    res.writeHead(302, { Location: "/a.bin" }).end();
-    return;
-  }
-  if (u.startsWith("/loop")) {
-    const n = Number(u.slice(5) || "0");
-    res.writeHead(307, { Location: `/loop${n + 1}` }).end();
-    return;
-  }
-  if (u === "/notfound") {
-    res.writeHead(404).end();
-    return;
-  }
-  if (u === "/gzip") {
-    res.writeHead(200, { "Content-Encoding": "gzip" }).end(zlib.gzipSync(DATA));
-    return;
-  }
-  if (u === "/full") {
-    res.writeHead(200).end(DATA);
-    return;
-  }
-  // Conditional headers.
+function serveRange(req: http.IncomingMessage, res: http.ServerResponse, opts: { etag?: string | null; lm?: string | null; star?: boolean; shift?: number } = {}) {
+  const etag = opts.etag === undefined ? ETAG : opts.etag;
+  const lm = opts.lm === undefined ? LM : opts.lm;
+  const h: Record<string, string> = {};
+  if (etag !== null) h.ETag = etag;
+  if (lm !== null) h["Last-Modified"] = lm;
   const im = req.headers["if-match"];
-  if (im !== undefined && im !== ETAG) {
-    res.writeHead(412).end();
+  if (im !== undefined && im !== etag) {
+    res.writeHead(412, h).end();
     return;
   }
   const ius = req.headers["if-unmodified-since"];
-  if (ius !== undefined && MTIME > Date.parse(ius) / 1000) {
-    res.writeHead(412).end();
+  if (ius !== undefined && lm !== null && Date.parse(lm) > Date.parse(ius)) {
+    res.writeHead(412, h).end();
     return;
   }
-  const m = /^bytes=(\d+)-(\d+)$/.exec(String(req.headers.range ?? ""));
+  const m = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range ?? "");
   if (!m) {
-    res.writeHead(200).end(DATA);
+    res.writeHead(200, h).end(BODY);
     return;
   }
-  const a = Number(m[1]);
-  let z = Number(m[2]);
-  if (a >= DATA.length) {
-    res.writeHead(416, { "Content-Range": `bytes */${DATA.length}` }).end();
+  const a = Number(m[1]) + (opts.shift ?? 0);
+  const z = Math.min(Number(m[2]) + (opts.shift ?? 0), BODY.length - 1);
+  if (a >= BODY.length) {
+    res.writeHead(416, { ...h, "Content-Range": `bytes */${BODY.length}` }).end();
     return;
   }
-  z = Math.min(z, DATA.length - 1);
-  if (u === "/wrongrange") {
-    res.writeHead(206, { "Content-Range": `bytes ${a + 1}-${z}/${DATA.length}` }).end(DATA.subarray(a + 1, z + 1));
-    return;
-  }
-  const total = u === "/star" ? "*" : String(DATA.length);
-  res.writeHead(206, { "Content-Range": `bytes ${a}-${z}/${total}`, ETag: ETAG }).end(DATA.subarray(a, z + 1));
+  h["Content-Range"] = `bytes ${a}-${z}/${opts.star ? "*" : BODY.length}`;
+  res.writeHead(206, h).end(BODY.subarray(a, z + 1));
 }
 
 before(async () => {
-  server = http.createServer(handler);
-  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
-  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  server = http.createServer((req, res) => {
+    log.push({ method: req.method!, url: req.url!, headers: req.headers });
+    const u = req.url!;
+    if (u === "/obj") return serveRange(req, res);
+    if (u === "/ignore-range") return res.writeHead(200, { ETag: ETAG, "Last-Modified": LM }).end(BODY);
+    if (u === "/star") return serveRange(req, res, { star: true });
+    if (u === "/shifted") return serveRange(req, res, { shift: 1 });
+    if (u === "/no-etag") return serveRange(req, res, { etag: null });
+    if (u === "/weak") return serveRange(req, res, { etag: 'W/"v1"' });
+    if (u === "/no-lm") return serveRange(req, res, { lm: null });
+    if (u === "/bad-lm") return serveRange(req, res, { lm: "yesterday" });
+    if (u === "/gzip") return res.writeHead(206, { "Content-Encoding": "gzip", "Content-Range": `bytes 0-1/36` }).end("01");
+    if (u === "/identity") return res.writeHead(206, { "Content-Encoding": "identity", "Content-Range": `bytes 0-1/36` }).end("01");
+    if (u === "/500") return res.writeHead(500).end();
+    if (u === "/404") return res.writeHead(404).end();
+    if (u === "/ignores-preconditions") {
+      // returns content regardless of If-Match/If-Unmodified-Since, with a different ETag and newer date
+      return res.writeHead(200, { ETag: '"v2"', "Last-Modified": "Mon, 07 Nov 1994 08:49:37 GMT" }).end(BODY);
+    }
+    let m = /^\/redir\/(\d+)$/.exec(u);
+    if (m) {
+      const k = Number(m[1]);
+      return res.writeHead([301, 302, 303, 307, 308][k % 5], { Location: k === 0 ? "/obj" : `${k - 1}` }).end();
+    }
+    if (u === "/redir-abs") return res.writeHead(302, { Location: `${origin}/obj` }).end();
+    if (u === "/redir-file") return res.writeHead(302, { Location: "file:///etc/hosts" }).end();
+    if (u === "/redir-none") return res.writeHead(302).end();
+    m = /^\/q\?(.*)$/.exec(u);
+    if (m && m[1] === "x=1") return serveRange(req, res);
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
 after(() => server.close());
 
-async function cls(p: Promise<unknown>): Promise<string> {
+const dir = tmpDir();
+let n = 0;
+async function getWith(s: Source, start: number, end: number): Promise<Buffer> {
+  const buf = buildBuf({ sources: [s], entries: [{ key: "r", ranges: [rng.src(0, start, end - start)] }] });
+  const a = Archive.open(writeTmp(dir, `h${n++}.vzip`, buf));
   try {
-    await p;
-    return "ok";
-  } catch (e) {
-    if (e instanceof VzError) return e.cls;
-    throw e;
+    return Buffer.from((await a.get("r"))!);
+  } finally {
+    a.close();
   }
 }
+async function expectResolution(s: Source, start = 2, end = 5): Promise<void> {
+  await assert.rejects(getWith(s, start, end), (e: unknown) => e instanceof VzipError && e.cls === "resolution");
+}
 
-test("HTTP sources: ranges, pins, status handling", async () => {
-  const dir = tmpdir();
-  const srcs = [
-    srcUrl(`${base}/a.bin`), // 0
-    srcUrl(`${base}/a.bin`, { size: 36, etag: ETAG, mna: MTIME }), // 1 all pins pass
-    srcUrl(`${base}/a.bin`, { size: 37 }), // 2 size fails
-    srcUrl(`${base}/a.bin`, { etag: '"v2"' }), // 3 etag fails (412)
-    srcUrl(`${base}/a.bin`, { mna: MTIME - 1 }), // 4 mna fails (412)
-    srcUrl(`${base}/star`), // 5 ok
-    srcUrl(`${base}/star`, { size: 36 }), // 6 size cannot be checked
-    srcUrl(`${base}/full`, { size: 36 }), // 7 200 accepted
-    srcUrl(`${base}/full`, { size: 35 }), // 8 200 size fails
-    srcUrl(`${base}/gzip`), // 9 content-encoding
-    srcUrl(`${base}/notfound`), // 10 404
-    srcUrl(`${base}/wrongrange`), // 11 wrong range
-    srcUrl(`${base}/redirect`), // 12 redirect ok
-    srcUrl(`${base}/loop`), // 13 too many redirects
-    srcUrl(`${base}/a.bin`, { mna: 253402300800n }), // 14 year 10000: cannot send
-    srcUrl(`HTTP://127.0.0.1:${(server.address() as AddressInfo).port}/a.bin#frag`), // 15 ok
-  ];
-  const entries: RawEntry[] = srcs.map((_, i) => ({ name: `s${i}`, extra: refExtra(rangeMsg(i, 10, 4)) }));
-  entries.push({ name: "past", extra: refExtra(rangeMsg(0, 34, 4)) });
-  entries.push({ name: "beyond", extra: refExtra(rangeMsg(0, 40, 4)) });
-  entries.push({
-    name: "concat",
-    extra: refExtra(msg(fLen(1, rangeMsg(0, 0, 2)), fLen(1, msg(fLen(5, "-"))), fLen(1, rangeMsg(1, 34, 2))), true),
-  });
-  const p = path.join(dir, "h.vzip");
-  fs.writeFileSync(p, rawZip(entries, { sources: table(...srcs) }));
-  const a = Archive.open(p);
-  const ok = new Set([0, 1, 5, 7, 12, 15]);
-  for (let i = 0; i < srcs.length; i++) {
-    requests.length = 0;
-    if (ok.has(i)) {
-      assert.equal(Buffer.from((await a.get(`s${i}`))!).toString(), "abcd", `s${i}`);
-    } else {
-      assert.equal(await cls(a.get(`s${i}`)), "resolution", `s${i}`);
-    }
-    for (const r of requests) {
-      assert.equal(r.method, "GET");
-      assert.equal(r.headers.range, "bytes=10-13");
-      assert.equal(r.headers["accept-encoding"], "identity");
-    }
-    if (i === 1) {
-      assert.equal(requests.length, 1);
-      assert.equal(requests[0].headers["if-match"], ETAG);
-      assert.equal(requests[0].headers["if-unmodified-since"], "Tue, 14 Nov 2023 22:13:20 GMT");
-    }
-    if (i === 14) assert.equal(requests.length, 0);
+test("HTTP reads: range requests, headers, pins, 200 fallback, redirects, query", async () => {
+  log.length = 0;
+  assert.equal((await getWith(src.url(`${origin}/obj`), 2, 5)).toString(), "234");
+  assert.equal(log.length, 1);
+  assert.equal(log[0].method, "GET");
+  assert.equal(log[0].headers.range, "bytes=2-4");
+  assert.equal(log[0].headers["accept-encoding"], "identity");
+  assert.equal(log[0].headers["if-match"], undefined);
+
+  log.length = 0;
+  const pinned = src.url(`${origin}/obj`, { size: 36n, etag: ETAG, modifiedNotAfter: LM_SECS });
+  assert.equal((await getWith(pinned, 10, 12)).toString(), "ab");
+  assert.equal(log.length, 1);
+  assert.equal(log[0].headers["if-match"], ETAG);
+  assert.equal(log[0].headers["if-unmodified-since"], LM);
+
+  assert.equal((await getWith(src.url(`${origin}/obj`, { modifiedNotAfter: LM_SECS + 1000n }), 0, 1)).toString(), "0");
+  assert.equal((await getWith(src.url(`${origin}/ignore-range`, { size: 36n, etag: ETAG }), 30, 36)).toString(), "uvwxyz");
+  assert.equal((await getWith(src.url(`${origin}/star`), 1, 3)).toString(), "12");
+  assert.equal((await getWith(src.url(`${origin}/identity`), 0, 2)).toString(), "01");
+  assert.equal((await getWith(src.url(`${origin}/q?x=1`), 0, 2)).toString(), "01");
+
+  log.length = 0;
+  assert.equal((await getWith(src.url(`${origin}/redir/4`, { etag: ETAG }), 3, 4)).toString(), "3");
+  assert.equal(log.length, 6);
+  for (const l of log) {
+    assert.equal(l.headers.range, "bytes=3-3");
+    assert.equal(l.headers["if-match"], ETAG);
+    assert.equal(l.headers["accept-encoding"], "identity");
   }
-  assert.equal(await cls(a.get("past")), "resolution");
-  assert.equal(await cls(a.get("beyond")), "resolution");
-  requests.length = 0;
-  assert.equal(Buffer.from((await a.get("concat", { type: "range", start: 1n, end: 4n }))!).toString(), "1-y");
-  assert.deepEqual(requests.map((r) => r.headers.range), ["bytes=1-1", "bytes=34-34"]);
-  // An unreachable source doesn't affect other keys or open.
-  assert.equal(await cls(a.get("s10", { type: "range", start: 0n, end: 0n })), "ok");
+  assert.equal((await getWith(src.url(`${origin}/redir-abs`), 0, 1)).toString(), "0");
+  assert.ok(log.every((l) => l.method === "GET"));
 });
 
-test("HTTP sources via the CLI write/read round trip", () => {
-  const dir = tmpdir();
-  const w = writeDesc(dir, { sources: [{ url: `${base}/a.bin`, size: 36 }], entries: [{ key: "k", ranges: [{ source: 0, offset: 0, length: 3 }] }] });
-  assert.equal(w.status, 0, w.stderr);
-  // The CLI runs in a child process; the server must stay responsive, so use an async child.
-  return new Promise<void>((resolve, reject) => {
-    const qp = path.join(dir, "q.json");
-    fs.writeFileSync(qp, JSON.stringify([{ op: "get", key: "k" }]));
-    import("node:child_process").then(({ execFile }) => {
-      execFile(path.resolve(dir, "../../vzip"), ["read", w.out, qp], (err, stdout) => {
-        if (err) return reject(err);
-        try {
-          assert.deepEqual(JSON.parse(stdout).results, [{ ok: true, value: Buffer.from("012").toString("hex") }]);
-          resolve();
-        } catch (e) {
-          reject(e);
-        }
-      });
-    });
+const resolutionCases: Record<string, () => Source> = {
+  "size pin mismatch (206)": () => src.url(`${origin}/obj`, { size: 35n }),
+  "size pin mismatch (200)": () => src.url(`${origin}/ignore-range`, { size: 35n }),
+  "size pin with unknown total": () => src.url(`${origin}/star`, { size: 36n }),
+  "etag pin 412": () => src.url(`${origin}/obj`, { etag: '"v0"' }),
+  "etag pin, server ignores If-Match": () => src.url(`${origin}/ignores-preconditions`, { etag: ETAG }),
+  "etag pin, no ETag header": () => src.url(`${origin}/no-etag`, { etag: '""' }),
+  "etag pin vs weak response ETag": () => src.url(`${origin}/weak`, { etag: '"v1"' }),
+  "modified_not_after pin 412": () => src.url(`${origin}/obj`, { modifiedNotAfter: LM_SECS - 1n }),
+  "modified_not_after, server ignores If-Unmodified-Since": () => src.url(`${origin}/ignores-preconditions`, { modifiedNotAfter: LM_SECS }),
+  "modified_not_after, no Last-Modified": () => src.url(`${origin}/no-lm`, { modifiedNotAfter: LM_SECS }),
+  "modified_not_after, unparseable Last-Modified": () => src.url(`${origin}/bad-lm`, { modifiedNotAfter: LM_SECS }),
+  "modified_not_after outside years 1-9999": () => src.url(`${origin}/obj`, { modifiedNotAfter: 253402300800n }),
+  "returned range differs": () => src.url(`${origin}/shifted`),
+  "Content-Encoding gzip": () => src.url(`${origin}/gzip`),
+  "status 500": () => src.url(`${origin}/500`),
+  "status 404": () => src.url(`${origin}/404`),
+  "six redirects": () => src.url(`${origin}/redir/5`),
+  "redirect to file:": () => src.url(`${origin}/redir-file`),
+  "redirect without Location": () => src.url(`${origin}/redir-none`),
+  "connection refused": () => src.url("http://127.0.0.1:1/x"),
+};
+for (const [name, mk] of Object.entries(resolutionCases)) {
+  test(`HTTP resolution error: ${name}`, async () => {
+    await expectResolution(mk());
   });
+}
+test("HTTP resolution error: 416 (object shorter than range)", async () => {
+  await expectResolution(src.url(`${origin}/obj`), 40, 45);
 });
-
-test("IMF-fixdate formatting and bounds", () => {
-  assert.equal(imfFixdate(0n), "Thu, 01 Jan 1970 00:00:00 GMT");
-  assert.equal(imfFixdate(-62135596800n), "Mon, 01 Jan 0001 00:00:00 GMT");
-  assert.equal(imfFixdate(253402300799n), "Fri, 31 Dec 9999 23:59:59 GMT");
-  assert.equal(imfFixdate(-62135596801n), null);
-  assert.equal(imfFixdate(253402300800n), null);
+test("HTTP resolution error: 200 body shorter than range", async () => {
+  await expectResolution(src.url(`${origin}/ignore-range`), 30, 40);
 });
-
+test("HTTP resolution error: 206 truncated at end of object", async () => {
+  await expectResolution(src.url(`${origin}/obj`), 30, 40);
+});

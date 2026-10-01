@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Uri {
+pub struct UriRef {
     pub scheme: Option<String>,
     pub authority: Option<String>,
     pub path: String,
@@ -12,42 +12,14 @@ pub struct Uri {
     pub fragment: Option<String>,
 }
 
-impl Uri {
-    pub fn to_string(&self) -> String {
-        let mut s = String::new();
-        if let Some(sc) = &self.scheme {
-            s.push_str(sc);
-            s.push(':');
-        }
-        if let Some(a) = &self.authority {
-            s.push_str("//");
-            s.push_str(a);
-        }
-        s.push_str(&self.path);
-        if let Some(q) = &self.query {
-            s.push('?');
-            s.push_str(q);
-        }
-        if let Some(f) = &self.fragment {
-            s.push('#');
-            s.push_str(f);
-        }
-        s
-    }
-}
-
 fn is_unreserved(c: u8) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.' | b'_' | b'~')
 }
-
 fn is_sub_delim(c: u8) -> bool {
-    matches!(
-        c,
-        b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='
-    )
+    matches!(c, b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'=')
 }
 
-/// Checks that `s` consists of chars allowed by `allowed` or pct-encoded triplets.
+/// Check that `s` consists of `allowed` characters and well-formed pct-encodings.
 fn check_chars(s: &[u8], allowed: impl Fn(u8) -> bool) -> bool {
     let mut i = 0;
     while i < s.len() {
@@ -77,9 +49,7 @@ fn valid_scheme(s: &str) -> bool {
     let b = s.as_bytes();
     !b.is_empty()
         && b[0].is_ascii_alphabetic()
-        && b[1..]
-            .iter()
-            .all(|&c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.'))
+        && b.iter().all(|&c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.'))
 }
 
 fn valid_dec_octet(s: &str) -> bool {
@@ -101,240 +71,222 @@ fn valid_h16(s: &str) -> bool {
     !s.is_empty() && s.len() <= 4 && s.bytes().all(|c| c.is_ascii_hexdigit())
 }
 
-fn valid_ipv6(s: &str) -> bool {
-    // Split into head and tail around "::" (at most one).
-    let (head, tail, compressed) = match s.find("::") {
-        Some(i) => {
-            if s[i + 2..].contains("::") {
-                return false;
+/// Count of 16-bit pieces in a `:`-separated list (the last may be IPv4), or None.
+fn h16_list(s: &str, allow_v4_tail: bool) -> Option<usize> {
+    if s.is_empty() {
+        return Some(0);
+    }
+    let parts: Vec<&str> = s.split(':').collect();
+    let mut n = 0;
+    for (i, p) in parts.iter().enumerate() {
+        if i == parts.len() - 1 && allow_v4_tail && p.contains('.') {
+            if !valid_ipv4(p) {
+                return None;
             }
-            (&s[..i], &s[i + 2..], true)
-        }
-        None => (s, "", false),
-    };
-    let split = |x: &str| -> Option<Vec<String>> {
-        if x.is_empty() {
-            Some(vec![])
+            n += 2;
+        } else if valid_h16(p) {
+            n += 1;
         } else {
-            Some(x.split(':').map(|p| p.to_string()).collect())
-        }
-    };
-    let h = match split(head) {
-        Some(v) => v,
-        None => return false,
-    };
-    let t = match split(tail) {
-        Some(v) => v,
-        None => return false,
-    };
-    // The last group overall may be an IPv4 address (counts as 2 groups).
-    let mut groups: Vec<String> = h.clone();
-    groups.extend(t.clone());
-    let mut count = 0usize;
-    for (idx, g) in groups.iter().enumerate() {
-        let last = idx == groups.len() - 1;
-        if last && g.contains('.') {
-            // ls32 position as IPv4
-            if !valid_ipv4(g) {
-                return false;
-            }
-            // IPv4 must be in the tail if compressed, or the end if not
-            count += 2;
-        } else if valid_h16(g) {
-            count += 1;
-        } else {
-            return false;
+            return None;
         }
     }
-    if compressed {
-        count <= 7
+    Some(n)
+}
+
+fn valid_ipv6(s: &str) -> bool {
+    if let Some(idx) = s.find("::") {
+        let (head, tail) = (&s[..idx], &s[idx + 2..]);
+        if tail.contains("::") {
+            return false;
+        }
+        let h = match h16_list(head, false) {
+            Some(n) => n,
+            None => return false,
+        };
+        let t = match h16_list(tail, true) {
+            Some(n) => n,
+            None => return false,
+        };
+        h + t <= 7
     } else {
-        count == 8
+        h16_list(s, true) == Some(8)
     }
 }
 
 fn valid_ip_literal(s: &str) -> bool {
-    // s excludes brackets
-    if s.starts_with('v') || s.starts_with('V') {
+    // s excludes the brackets
+    let b = s.as_bytes();
+    if b.first().map(|c| *c == b'v' || *c == b'V').unwrap_or(false) {
         // IPvFuture = "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )
         let rest = &s[1..];
         let dot = match rest.find('.') {
             Some(d) => d,
             None => return false,
         };
-        let hex = &rest[..dot];
-        let tail = &rest[dot + 1..];
+        let (hex, tail) = (&rest[..dot], &rest[dot + 1..]);
         return !hex.is_empty()
             && hex.bytes().all(|c| c.is_ascii_hexdigit())
             && !tail.is_empty()
-            && tail
-                .bytes()
-                .all(|c| is_unreserved(c) || is_sub_delim(c) || c == b':');
+            && tail.bytes().all(|c| is_unreserved(c) || is_sub_delim(c) || c == b':');
     }
     valid_ipv6(s)
 }
 
-/// Splits an authority into (userinfo, host, port). Host includes brackets.
-pub fn split_authority(a: &str) -> Option<(Option<&str>, &str, Option<&str>)> {
-    let (userinfo, hostport) = match a.rfind('@') {
+fn valid_authority(a: &str) -> bool {
+    let (userinfo, hostport) = match a.find('@') {
         Some(i) => (Some(&a[..i]), &a[i + 1..]),
         None => (None, a),
-    };
-    if hostport.starts_with('[') {
-        let close = hostport.find(']')?;
-        let host = &hostport[..=close];
-        let rest = &hostport[close + 1..];
-        if rest.is_empty() {
-            Some((userinfo, host, None))
-        } else if let Some(p) = rest.strip_prefix(':') {
-            Some((userinfo, host, Some(p)))
-        } else {
-            None
-        }
-    } else {
-        match hostport.find(':') {
-            Some(i) => Some((userinfo, &hostport[..i], Some(&hostport[i + 1..]))),
-            None => Some((userinfo, hostport, None)),
-        }
-    }
-}
-
-fn valid_authority(a: &str) -> bool {
-    let (userinfo, host, port) = match split_authority(a) {
-        Some(x) => x,
-        None => return false,
     };
     if let Some(u) = userinfo {
         if !check_chars(u.as_bytes(), |c| is_unreserved(c) || is_sub_delim(c) || c == b':') {
             return false;
         }
     }
-    if let Some(p) = port {
-        if !p.bytes().all(|c| c.is_ascii_digit()) {
-            return false;
+    let (host_ok, port) = if hostport.starts_with('[') {
+        match hostport.find(']') {
+            Some(end) => {
+                let lit = &hostport[1..end];
+                let rest = &hostport[end + 1..];
+                let port = if rest.is_empty() {
+                    Some("")
+                } else if let Some(p) = rest.strip_prefix(':') {
+                    Some(p)
+                } else {
+                    None
+                };
+                match port {
+                    Some(p) => (valid_ip_literal(lit), p),
+                    None => return false,
+                }
+            }
+            None => return false,
         }
-    }
-    if host.starts_with('[') {
-        if !host.ends_with(']') {
-            return false;
-        }
-        valid_ip_literal(&host[1..host.len() - 1])
     } else {
-        // reg-name (IPv4address is a subset syntactically)
-        check_chars(host.as_bytes(), |c| is_unreserved(c) || is_sub_delim(c))
-    }
+        let (host, port) = match hostport.find(':') {
+            Some(i) => (&hostport[..i], &hostport[i + 1..]),
+            None => (hostport, ""),
+        };
+        (check_chars(host.as_bytes(), |c| is_unreserved(c) || is_sub_delim(c)), port)
+    };
+    host_ok && port.bytes().all(|c| c.is_ascii_digit())
 }
 
-/// Parses and validates a URI-reference (RFC 3986 §4.1). Returns None if `s`
-/// does not match the grammar exactly.
-pub fn parse_uri_reference(s: &str) -> Option<Uri> {
+/// Parse a string that must match RFC 3986 `URI-reference` exactly.
+pub fn parse_uri_reference(s: &str) -> Option<UriRef> {
     if !s.is_ascii() {
         return None;
     }
-    // Appendix B split.
+    // Scheme: a ':' before any '/', '?', '#'.
     let mut rest = s;
     let mut scheme = None;
-    if let Some(i) = rest.find(|c| c == ':' || c == '/' || c == '?' || c == '#') {
-        if rest.as_bytes()[i] == b':' && i > 0 {
-            let sc = &rest[..i];
-            if !valid_scheme(sc) {
-                return None;
+    if let Some(i) = s.find(|c| c == ':' || c == '/' || c == '?' || c == '#') {
+        if s.as_bytes()[i] == b':' {
+            let cand = &s[..i];
+            if valid_scheme(cand) {
+                scheme = Some(cand.to_string());
+                rest = &s[i + 1..];
             }
-            scheme = Some(sc.to_string());
-            rest = &rest[i + 1..];
+            // otherwise: relative-ref whose first segment contains ':' -> rejected below
         }
     }
-    let mut fragment = None;
-    if let Some(i) = rest.find('#') {
-        fragment = Some(rest[i + 1..].to_string());
-        rest = &rest[..i];
-    }
-    let mut query = None;
-    if let Some(i) = rest.find('?') {
-        query = Some(rest[i + 1..].to_string());
-        rest = &rest[..i];
-    }
-    let mut authority = None;
-    if let Some(r) = rest.strip_prefix("//") {
-        let end = r.find('/').unwrap_or(r.len());
-        authority = Some(r[..end].to_string());
-        rest = &r[end..];
-    }
-    let path = rest.to_string();
-
-    // Validate components.
-    if let Some(a) = &authority {
+    let (before_frag, fragment) = match rest.find('#') {
+        Some(i) => (&rest[..i], Some(&rest[i + 1..])),
+        None => (rest, None),
+    };
+    let (before_query, query) = match before_frag.find('?') {
+        Some(i) => (&before_frag[..i], Some(&before_frag[i + 1..])),
+        None => (before_frag, None),
+    };
+    let (authority, path) = if let Some(after) = before_query.strip_prefix("//") {
+        match after.find('/') {
+            Some(i) => (Some(&after[..i]), &after[i..]),
+            None => (Some(after), ""),
+        }
+    } else {
+        (None, before_query)
+    };
+    if let Some(a) = authority {
         if !valid_authority(a) {
             return None;
         }
     }
-    for seg in path.split('/') {
-        if !check_chars(seg.as_bytes(), is_pchar) {
-            return None;
-        }
+    if !check_chars(path.as_bytes(), |c| is_pchar(c) || c == b'/') {
+        return None;
     }
-    if scheme.is_none() && authority.is_none() {
-        // path-noscheme: first segment must not contain ':'
-        let first = path.split('/').next().unwrap_or("");
-        if first.contains(':') {
-            return None;
+    if authority.is_none() {
+        if path.starts_with("//") {
+            return None; // cannot happen (would be authority), kept for clarity
+        }
+        if scheme.is_none() {
+            // path-noscheme: first segment must not contain ':'
+            let first = path.split('/').next().unwrap_or("");
+            if first.contains(':') {
+                return None;
+            }
         }
     }
     let qf_ok = |x: &str| check_chars(x.as_bytes(), |c| is_pchar(c) || c == b'/' || c == b'?');
-    if let Some(q) = &query {
+    if let Some(q) = query {
         if !qf_ok(q) {
             return None;
         }
     }
-    if let Some(f) = &fragment {
+    if let Some(f) = fragment {
         if !qf_ok(f) {
             return None;
         }
     }
-    Some(Uri { scheme, authority, path, query, fragment })
+    Some(UriRef {
+        scheme,
+        authority: authority.map(|a| a.to_string()),
+        path: path.to_string(),
+        query: query.map(|q| q.to_string()),
+        fragment: fragment.map(|f| f.to_string()),
+    })
 }
 
-/// RFC 3986 §5.2.4.
+pub fn is_uri_reference(s: &str) -> bool {
+    parse_uri_reference(s).is_some()
+}
+
+/// RFC 3986 §5.2.4
 pub fn remove_dot_segments(input: &str) -> String {
-    let mut inp = input.to_string();
-    let mut out = String::new();
-    while !inp.is_empty() {
-        if inp.starts_with("../") {
-            inp.drain(..3);
-        } else if inp.starts_with("./") {
-            inp.drain(..2);
-        } else if inp.starts_with("/./") {
-            inp.replace_range(..3, "/");
-        } else if inp == "/." {
-            inp = "/".into();
-        } else if inp.starts_with("/../") {
-            inp.replace_range(..4, "/");
-            pop_last_segment(&mut out);
-        } else if inp == "/.." {
-            inp = "/".into();
-            pop_last_segment(&mut out);
-        } else if inp == "." || inp == ".." {
-            inp.clear();
+    let mut input = input.to_string();
+    let mut output = String::new();
+    while !input.is_empty() {
+        if input.starts_with("../") {
+            input.drain(..3);
+        } else if input.starts_with("./") {
+            input.drain(..2);
+        } else if input.starts_with("/./") {
+            input.replace_range(..3, "/");
+        } else if input == "/." {
+            input = "/".to_string();
+        } else if input.starts_with("/../") || input == "/.." {
+            if input == "/.." {
+                input = "/".to_string();
+            } else {
+                input.replace_range(..4, "/");
+            }
+            match output.rfind('/') {
+                Some(i) => output.truncate(i),
+                None => output.clear(),
+            }
+        } else if input == "." || input == ".." {
+            input.clear();
         } else {
-            let start = if inp.starts_with('/') { 1 } else { 0 };
-            let end = inp[start..].find('/').map(|i| i + start).unwrap_or(inp.len());
-            out.push_str(&inp[..end]);
-            inp.drain(..end);
+            let start = if input.starts_with('/') { 1 } else { 0 };
+            let end = input[start..].find('/').map(|i| i + start).unwrap_or(input.len());
+            output.push_str(&input[..end]);
+            input.drain(..end);
         }
     }
-    out
+    output
 }
 
-fn pop_last_segment(out: &mut String) {
-    match out.rfind('/') {
-        Some(i) => out.truncate(i),
-        None => out.clear(),
-    }
-}
-
-fn merge(base: &Uri, rel_path: &str) -> String {
+fn merge(base: &UriRef, rel_path: &str) -> String {
     if base.authority.is_some() && base.path.is_empty() {
-        format!("/{}", rel_path)
+        format!("/{rel_path}")
     } else {
         match base.path.rfind('/') {
             Some(i) => format!("{}{}", &base.path[..=i], rel_path),
@@ -343,8 +295,8 @@ fn merge(base: &Uri, rel_path: &str) -> String {
     }
 }
 
-/// Strict resolution, RFC 3986 §5.2.2.
-pub fn resolve(base: &Uri, r: &Uri) -> Uri {
+/// RFC 3986 §5.2.2, strict.
+pub fn resolve(base: &UriRef, r: &UriRef) -> UriRef {
     let (scheme, authority, path, query);
     if r.scheme.is_some() {
         scheme = r.scheme.clone();
@@ -372,33 +324,55 @@ pub fn resolve(base: &Uri, r: &Uri) -> Uri {
         }
         scheme = base.scheme.clone();
     }
-    Uri { scheme, authority, path, query, fragment: r.fragment.clone() }
+    UriRef { scheme, authority, path, query, fragment: r.fragment.clone() }
 }
 
-/// Percent-decodes `s` into bytes. `s` must already be syntactically valid.
-pub fn pct_decode(s: &str) -> Vec<u8> {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            let h = std::str::from_utf8(&b[i + 1..i + 3]).unwrap();
-            out.push(u8::from_str_radix(h, 16).unwrap());
-            i += 3;
-        } else {
-            out.push(b[i]);
-            i += 1;
+impl UriRef {
+    pub fn to_string(&self) -> String {
+        let mut s = String::new();
+        if let Some(sc) = &self.scheme {
+            s.push_str(sc);
+            s.push(':');
         }
+        if let Some(a) = &self.authority {
+            s.push_str("//");
+            s.push_str(a);
+        }
+        s.push_str(&self.path);
+        if let Some(q) = &self.query {
+            s.push('?');
+            s.push_str(q);
+        }
+        if let Some(f) = &self.fragment {
+            s.push('#');
+            s.push_str(f);
+        }
+        s
     }
-    out
+
+    pub fn scheme_lower(&self) -> Option<String> {
+        self.scheme.as_ref().map(|s| s.to_ascii_lowercase())
+    }
 }
 
-/// Maps a resolved `file:` URI to a local POSIX path (spec §6).
-pub fn file_uri_to_path(u: &Uri) -> Result<PathBuf, String> {
-    match &u.authority {
-        None => {}
-        Some(a) if a.is_empty() || a.eq_ignore_ascii_case("localhost") => {}
-        Some(a) => return Err(format!("file: URI has non-local authority {:?}", a)),
+fn hexval(c: u8) -> u8 {
+    match c {
+        b'0'..=b'9' => c - b'0',
+        b'a'..=b'f' => c - b'a' + 10,
+        _ => c - b'A' + 10,
+    }
+}
+
+/// Map a `file:` URI to a local path (spec §6). Errors are messages for a
+/// resolution error.
+pub fn file_uri_to_path(u: &UriRef) -> Result<PathBuf, String> {
+    if u.scheme_lower().as_deref() != Some("file") {
+        return Err("not a file: URI".into());
+    }
+    if let Some(a) = &u.authority {
+        if !(a.is_empty() || a.eq_ignore_ascii_case("localhost")) {
+            return Err(format!("file: URI has a non-local authority {a:?}"));
+        }
     }
     if !u.path.starts_with('/') {
         return Err("file: URI path is not absolute".into());
@@ -406,149 +380,134 @@ pub fn file_uri_to_path(u: &Uri) -> Result<PathBuf, String> {
     if u.query.is_some() {
         return Err("file: URI has a query component".into());
     }
-    let mut bytes = Vec::new();
-    for (i, seg) in u.path.split('/').enumerate() {
-        if i > 0 {
-            bytes.push(b'/');
+    let b = u.path.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            if i + 2 >= b.len() || !b[i + 1].is_ascii_hexdigit() || !b[i + 2].is_ascii_hexdigit() {
+                return Err("bad percent-encoding".into());
+            }
+            let v = hexval(b[i + 1]) * 16 + hexval(b[i + 2]);
+            if v == b'/' {
+                return Err("file: URI path contains an encoded '/'".into());
+            }
+            if v == 0 {
+                return Err("file: URI path contains a NUL byte".into());
+            }
+            out.push(v);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
         }
-        let d = pct_decode(seg);
-        if d.contains(&b'/') {
-            return Err("file: URI path contains an encoded '/'".into());
-        }
-        if d.contains(&0) {
-            return Err("file: URI path contains a NUL byte".into());
-        }
-        if d == b"." || d == b".." {
+    }
+    for seg in out.split(|&c| c == b'/') {
+        if seg == b"." || seg == b".." {
             return Err("file: URI path contains a dot segment after decoding".into());
         }
-        bytes.extend_from_slice(&d);
     }
     use std::os::unix::ffi::OsStringExt;
-    Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(out)))
 }
 
-/// Builds the base URI for an archive opened from a local path (spec §6).
-pub fn base_uri_for_path(p: &Path) -> std::io::Result<Uri> {
+/// Build the base URI of an archive opened from a local path (spec §6).
+pub fn base_uri_for_path(p: &Path) -> std::io::Result<String> {
     use std::os::unix::ffi::OsStrExt;
-    let raw = p.as_os_str().as_bytes();
-    let mut full: Vec<u8> = Vec::new();
-    if !raw.starts_with(b"/") {
-        let cwd = std::env::current_dir()?; // getcwd(3)
-        full.extend_from_slice(cwd.as_os_str().as_bytes());
-        full.push(b'/');
-    }
-    full.extend_from_slice(raw);
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(p)
+    };
+    let bytes = abs.as_os_str().as_bytes();
     let mut segs: Vec<&[u8]> = Vec::new();
-    for seg in full.split(|&c| c == b'/') {
-        match seg {
-            b"" | b"." => {}
-            b".." => {
-                segs.pop();
-            }
-            s => segs.push(s),
+    for seg in bytes.split(|&c| c == b'/') {
+        if seg.is_empty() || seg == b"." {
+            continue;
         }
+        if seg == b".." {
+            segs.pop();
+            continue;
+        }
+        segs.push(seg);
     }
-    let mut path = String::new();
+    let mut path = Vec::new();
     if segs.is_empty() {
-        path.push('/');
+        path.push(b'/');
     }
     for s in segs {
-        path.push('/');
-        for &c in s {
-            if is_unreserved(c) || is_sub_delim(c) || c == b':' || c == b'@' {
-                path.push(c as char);
-            } else {
-                path.push_str(&format!("%{:02X}", c));
-            }
+        path.push(b'/');
+        path.extend_from_slice(s);
+    }
+    let mut out = String::from("file://");
+    for &c in &path {
+        if is_unreserved(c) || is_sub_delim(c) || c == b':' || c == b'@' || c == b'/' {
+            out.push(c as char);
+        } else {
+            out.push_str(&format!("%{:02X}", c));
         }
     }
-    Ok(Uri {
-        scheme: Some("file".into()),
-        authority: Some(String::new()),
-        path,
-        query: None,
-        fragment: None,
-    })
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn r(base: &str, rel: &str) -> String {
-        let b = parse_uri_reference(base).unwrap();
-        let x = parse_uri_reference(rel).unwrap();
-        resolve(&b, &x).to_string()
+    #[test]
+    fn validation() {
+        for ok in [
+            "", "a", "a%20b.bin", "%C3%A9.bin", "#x", "?q", "//host/p", "http://h:80/p?q#f",
+            "file:///x", "file:/x", "../a/b", "http://[::1]:8080/", "http://[v1.x]/",
+            "http://u:p@h/", "x:", "a/b:c", "http://1.2.3.4/", "mailto:a@b",
+            "http://[1:2:3:4:5:6:7::]/", "http://[::ffff:1.2.3.4]/",
+        ] {
+            assert!(is_uri_reference(ok), "{ok}");
+        }
+        for bad in [
+            "a b", "é", "%zz", "%2", "a:b/c%", "1a:b", ":x", "http://h:8a/", "http://[::1/",
+            "http://[1:2:3:4:5:6:7:8::]/", "http://a@b@c/", "a#b#c", "http://h/^", "a\\b",
+            "http://[::1.2.3.04]/", "x[y]",
+        ] {
+            assert!(!is_uri_reference(bad), "{bad}");
+        }
     }
 
     #[test]
     fn rfc3986_examples() {
-        let b = "http://a/b/c/d;p?q";
+        let base = parse_uri_reference("http://a/b/c/d;p?q").unwrap();
         let cases = [
-            ("g:h", "g:h"),
-            ("g", "http://a/b/c/g"),
-            ("./g", "http://a/b/c/g"),
-            ("g/", "http://a/b/c/g/"),
-            ("/g", "http://a/g"),
-            ("//g", "http://g"),
-            ("?y", "http://a/b/c/d;p?y"),
-            ("g?y", "http://a/b/c/g?y"),
-            ("#s", "http://a/b/c/d;p?q#s"),
-            ("g#s", "http://a/b/c/g#s"),
-            (";x", "http://a/b/c/;x"),
-            ("", "http://a/b/c/d;p?q"),
-            (".", "http://a/b/c/"),
-            ("./", "http://a/b/c/"),
-            ("..", "http://a/b/"),
-            ("../g", "http://a/b/g"),
-            ("../..", "http://a/"),
-            ("../../g", "http://a/g"),
-            ("../../../g", "http://a/g"),
-            ("/./g", "http://a/g"),
-            ("/../g", "http://a/g"),
-            ("g.", "http://a/b/c/g."),
-            ("..g", "http://a/b/c/..g"),
-            ("./../g", "http://a/b/g"),
-            ("g/./h", "http://a/b/c/g/h"),
-            ("g/../h", "http://a/b/c/h"),
-            ("g;x=1/./y", "http://a/b/c/g;x=1/y"),
-            ("g?y/./x", "http://a/b/c/g?y/./x"),
+            ("g:h", "g:h"), ("g", "http://a/b/c/g"), ("./g", "http://a/b/c/g"),
+            ("g/", "http://a/b/c/g/"), ("/g", "http://a/g"), ("//g", "http://g"),
+            ("?y", "http://a/b/c/d;p?y"), ("g?y", "http://a/b/c/g?y"), ("#s", "http://a/b/c/d;p?q#s"),
+            ("g#s", "http://a/b/c/g#s"), (";x", "http://a/b/c/;x"), ("", "http://a/b/c/d;p?q"),
+            (".", "http://a/b/c/"), ("./", "http://a/b/c/"), ("..", "http://a/b/"),
+            ("../g", "http://a/b/g"), ("../..", "http://a/"), ("../../g", "http://a/g"),
+            ("../../../g", "http://a/g"), ("/./g", "http://a/g"), ("/../g", "http://a/g"),
+            ("g.", "http://a/b/c/g."), (".g", "http://a/b/c/.g"), ("g..", "http://a/b/c/g.."),
+            ("./../g", "http://a/b/g"), ("./g/.", "http://a/b/c/g/"), ("g/./h", "http://a/b/c/g/h"),
+            ("g/../h", "http://a/b/c/h"), ("g;x=1/./y", "http://a/b/c/g;x=1/y"),
             ("http:g", "http:g"),
         ];
-        for (rel, exp) in cases {
-            assert_eq!(r(b, rel), exp, "rel {}", rel);
-        }
-    }
-
-    #[test]
-    fn validation() {
-        for ok in ["a%20b.bin", "%C3%A9.bin", "http://[::1]:8080/x", "file:///x", "#x", "", "a/b?c#d",
-                   "http://[v1.x]/", "http://[1:2:3:4:5:6:7:8]/", "http://[::ffff:1.2.3.4]/", "x:"] {
-            assert!(parse_uri_reference(ok).is_some(), "{}", ok);
-        }
-        for bad in ["a b", "é", "%zz", "%2", "1a:b", ":x", "a:b c", "http://[::1/", "http://a b/",
-                    "http://[1:2:3:4:5:6:7:8:9]/", "http://h:80x/", "a#b#c", "http://[]/", "x{y}"] {
-            assert!(parse_uri_reference(bad).is_none(), "{}", bad);
+        for (r, want) in cases {
+            let got = resolve(&base, &parse_uri_reference(r).unwrap()).to_string();
+            assert_eq!(got, want, "{r}");
         }
     }
 
     #[test]
     fn file_mapping() {
-        let p = |s: &str| file_uri_to_path(&parse_uri_reference(s).unwrap());
-        assert_eq!(p("file:///a%20b").unwrap(), PathBuf::from("/a b"));
-        assert_eq!(p("file:/x").unwrap(), PathBuf::from("/x"));
-        assert_eq!(p("file://LOCALHOST/x#f").unwrap(), PathBuf::from("/x"));
-        assert!(p("file://host/x").is_err());
-        assert!(p("file:///x?").is_err());
-        assert!(p("file:///a%2Fb").is_err());
-        assert!(p("file:///a%00b").is_err());
-        assert!(p("file:///a/%2E%2E/b").is_err());
-        assert!(p("file:x").is_err());
-    }
-
-    #[test]
-    fn base_uri() {
-        let u = base_uri_for_path(Path::new("/data//./x/../my file.vzip")).unwrap();
-        assert_eq!(u.to_string(), "file:///data/my%20file.vzip");
+        let f = |s: &str| file_uri_to_path(&parse_uri_reference(s).unwrap());
+        assert_eq!(f("file:///a%20b").unwrap(), PathBuf::from("/a b"));
+        assert_eq!(f("file://LOCALHOST/a").unwrap(), PathBuf::from("/a"));
+        assert_eq!(f("FILE:/a#frag").unwrap(), PathBuf::from("/a"));
+        assert!(f("file://host/a").is_err());
+        assert!(f("file:///a?").is_err());
+        assert!(f("file:///a%2Fb").is_err());
+        assert!(f("file:///a%00b").is_err());
+        assert!(f("file:///a/%2E%2E/b").is_err());
+        assert!(f("file:a").is_err());
+        assert_eq!(base_uri_for_path(Path::new("/data/my file.vzip")).unwrap(), "file:///data/my%20file.vzip");
+        assert_eq!(base_uri_for_path(Path::new("/a//b/./c/../d%")).unwrap(), "file:///a/b/d%25");
     }
 }

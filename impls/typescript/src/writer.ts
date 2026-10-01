@@ -1,346 +1,260 @@
-// vzip writer (spec §3, §4, §7, §9).
+// vzip writer (spec §3, §4, §6, §7, §9).
+
 import * as fs from "node:fs";
 import * as zlib from "node:zlib";
-import { InputError } from "./errors.ts";
 import {
-  type CdIndex,
-  type Page,
-  type Pinned,
-  type Range,
-  type Source,
-  encodeCdIndex,
-  encodeConcat,
-  encodeRange,
-  encodeSourceTable,
-} from "./proto.ts";
-import { EXTRA_CONCAT, EXTRA_RANGE, INDEX_KEY, SOURCES_KEY, isStrongEtag } from "./reader.ts";
-import { isUriReference } from "./url.ts";
+  EXTRA_CONCAT, EXTRA_RANGE, INDEX_KEY, MAX_PAYLOAD, SOURCES_KEY, U64_MAX,
+  compareBytes, isFormatKey, isStrongEtag, isWellFormed, utf8,
+} from "./common.ts";
+import { encodeCdIndex, encodeConcat, encodeRange, encodeSourceTable, type Page, type Pinned, type Range, type Source } from "./proto.ts";
+import { parseUriReference } from "./uri.ts";
 
-const U64_MAX = (1n << 64n) - 1n;
-const U32_MAX = (1n << 32n) - 1n;
-const MAX_PAYLOAD = 65519;
+export class WriteError extends Error {}
 
-export type EntryInput =
-  | { key: string; bytes: Uint8Array; compress: boolean; pinned: boolean }
-  | { key: string; ranges: Range[] };
-
-export interface WriteInput {
-  pageSize: number | null;
-  mirror: boolean;
-  sources: Source[];
-  entries: EntryInput[];
-}
-
-interface Prepared {
+export type WriterEntry = {
   key: string;
-  name: Buffer;
-  method: number;
-  crc: number;
-  usize: number;
-  body: Uint8Array;
-  extraBlock: { id: number; data: Uint8Array } | null;
-  pinned: boolean;
-  lho: bigint;
-}
+  bytes?: Uint8Array; // bytes entry
+  ranges?: Range[]; // reference entry
+  compress?: boolean;
+  pinned?: boolean;
+};
 
-function crc32(b: Uint8Array): number {
-  return zlib.crc32(b) >>> 0;
-}
-
-function deflate(b: Uint8Array): Buffer {
-  return zlib.deflateRawSync(b);
-}
-
-/** Validate the writer input (spec §9.1). Throws InputError. */
-export function validate(inp: WriteInput): void {
-  const bad = (m: string) => {
-    throw new InputError(m);
-  };
-  const nsrc = inp.sources.length;
-  for (let i = 0; i < nsrc; i++) {
-    const s = inp.sources[i];
-    if (s.kind === null) bad(`source ${i} has no kind`);
-    const k = s.kind!;
-    const hasPin = s.size !== null || s.etag !== null || s.modifiedNotAfter !== null;
-    if (k.type === "url") {
-      if (k.value === "") bad(`source ${i}: url is empty`);
-      if (!isUriReference(k.value)) bad(`source ${i}: url ${JSON.stringify(k.value)} is not an RFC 3986 URI-reference`);
-    } else if (hasPin) bad(`source ${i}: pins are only allowed on url sources`);
-    if (k.type === "key" && !k.value.isWellFormed()) bad(`source ${i}: key is not valid Unicode`);
-    if (s.etag !== null && !isStrongEtag(s.etag)) bad(`source ${i}: etag ${JSON.stringify(s.etag)} is not a strong entity tag`);
-    if (s.size !== null && (s.size < 0n || s.size > U64_MAX)) bad(`source ${i}: size out of range`);
-    if (s.modifiedNotAfter !== null && (s.modifiedNotAfter < -(1n << 63n) || s.modifiedNotAfter >= 1n << 63n)) {
-      bad(`source ${i}: modified_not_after out of range`);
-    }
-  }
-  const keys = new Map<string, EntryInput>();
-  for (const e of inp.entries) {
-    if (e.key === "") bad("empty key");
-    if (!e.key.isWellFormed()) bad(`key ${JSON.stringify(e.key)} is not valid UTF-8`);
-    if (e.key === SOURCES_KEY || e.key === INDEX_KEY) bad(`key ${e.key} is reserved for a format entry`);
-    if (Buffer.byteLength(e.key, "utf8") > 65535) bad("key longer than 65535 bytes");
-    if (keys.has(e.key)) bad(`duplicate key ${JSON.stringify(e.key)}`);
-    keys.set(e.key, e);
-    if ("bytes" in e) {
-      if (e.pinned && inp.pageSize === null) bad(`entry ${JSON.stringify(e.key)} is pinned but there is no page index`);
-      if (e.bytes.length >= 0xffffffff) bad(`entry ${JSON.stringify(e.key)} is 4 GiB or larger`);
-    }
-  }
-  for (let i = 0; i < nsrc; i++) {
-    const k = inp.sources[i].kind!;
-    if (k.type === "key") {
-      const target = keys.get(k.value);
-      if (k.value === SOURCES_KEY || k.value === INDEX_KEY) bad(`source ${i}: key source names a format entry`);
-      if (target === undefined) bad(`source ${i}: key source names absent key ${JSON.stringify(k.value)}`);
-      if (!("bytes" in target!)) bad(`source ${i}: key source names a reference entry`);
-    }
-  }
-  for (const e of inp.entries) {
-    if (!("ranges" in e)) continue;
-    let total = 0n;
-    for (const r of e.ranges) {
-      if (r.data !== null) {
-        if (r.source !== 0 || r.offset !== 0n || r.length !== 0n) bad(`entry ${JSON.stringify(e.key)}: literal range with source fields`);
-        total += BigInt(r.data.length);
-      } else {
-        if (r.source < 0 || BigInt(r.source) > U32_MAX || r.source >= nsrc) {
-          bad(`entry ${JSON.stringify(e.key)}: source ${r.source} out of range (${nsrc} sources)`);
-        }
-        if (r.offset < 0n || r.length < 0n) bad(`entry ${JSON.stringify(e.key)}: negative offset or length`);
-        if (r.offset + r.length > U64_MAX) bad(`entry ${JSON.stringify(e.key)}: offset + length exceeds 2^64-1`);
-        total += r.length;
-      }
-    }
-    if (total > U64_MAX) bad(`entry ${JSON.stringify(e.key)}: reference size exceeds 2^64-1`);
-    const payload = e.ranges.length === 1 ? encodeRange(e.ranges[0]) : encodeConcat(e.ranges);
-    if (payload.length > MAX_PAYLOAD) bad(`entry ${JSON.stringify(e.key)}: reference payload is ${payload.length} bytes (max ${MAX_PAYLOAD})`);
-  }
-  if (inp.pageSize !== null && !(Number.isInteger(inp.pageSize) && inp.pageSize >= 1)) bad("page_size must be an integer >= 1");
-}
-
-function prepare(e: EntryInput, mirror: boolean): Prepared {
-  const name = Buffer.from(e.key, "utf8");
-  if ("bytes" in e) {
-    const body = e.compress ? deflate(e.bytes) : e.bytes;
-    if (body.length >= 0xffffffff) throw new InputError(`entry ${JSON.stringify(e.key)}: compressed size is 4 GiB or larger`);
-    return {
-      key: e.key,
-      name,
-      method: e.compress ? 8 : 0,
-      crc: crc32(e.bytes),
-      usize: e.bytes.length,
-      body,
-      extraBlock: null,
-      pinned: e.pinned,
-      lho: 0n,
-    };
-  }
-  const single = e.ranges.length === 1;
-  const payload = single ? encodeRange(e.ranges[0]) : encodeConcat(e.ranges);
-  const body = mirror ? payload : new Uint8Array(0);
-  return {
-    key: e.key,
-    name,
-    method: 0,
-    crc: crc32(body),
-    usize: body.length,
-    body,
-    extraBlock: { id: single ? EXTRA_RANGE : EXTRA_CONCAT, data: payload },
-    pinned: false,
-    lho: 0n,
-  };
-}
-
-function formatEntry(key: string, content: Uint8Array): Prepared {
-  const body = deflate(content);
-  return {
-    key,
-    name: Buffer.from(key, "utf8"),
-    method: 8,
-    crc: crc32(content),
-    usize: content.length,
-    body,
-    extraBlock: null,
-    pinned: false,
-    lho: 0n,
-  };
-}
+export type WriterInput = {
+  sources: Source[];
+  entries: WriterEntry[];
+  pageSize: number | null; // null: no page index
+  mirror: boolean;
+};
 
 const DOS_TIME = 0;
 const DOS_DATE = (0 << 9) | (1 << 5) | 1; // 1980-01-01
+const FLAG_UTF8 = 0x0800;
 
-function localHeader(p: Prepared, versionNeeded: number): Buffer {
-  const h = Buffer.alloc(30);
-  h.writeUInt32LE(0x04034b50, 0);
-  h.writeUInt16LE(versionNeeded, 4);
-  h.writeUInt16LE(0x0800, 6);
-  h.writeUInt16LE(p.method, 8);
-  h.writeUInt16LE(DOS_TIME, 10);
-  h.writeUInt16LE(DOS_DATE, 12);
-  h.writeUInt32LE(p.crc, 14);
-  h.writeUInt32LE(p.body.length, 18);
-  h.writeUInt32LE(p.usize, 22);
-  h.writeUInt16LE(p.name.length, 26);
-  h.writeUInt16LE(0, 28);
-  return Buffer.concat([h, p.name]);
+function le16(v: number): Buffer {
+  const b = Buffer.alloc(2);
+  b.writeUInt16LE(v);
+  return b;
+}
+function le32(v: number): Buffer {
+  const b = Buffer.alloc(4);
+  b.writeUInt32LE(v);
+  return b;
+}
+function le64(v: bigint): Buffer {
+  const b = Buffer.alloc(8);
+  b.writeBigUInt64LE(v);
+  return b;
+}
+
+type Prepared = {
+  key: string;
+  name: Uint8Array;
+  method: number;
+  body: Uint8Array;
+  usize: number;
+  crc: number;
+  refExtra: { id: number; payload: Uint8Array } | null;
+  pinned: boolean;
+  isFormat: boolean;
+  lho?: bigint;
+};
+
+function payloadFor(ranges: Range[]): { id: number; payload: Uint8Array } {
+  if (ranges.length === 1) return { id: EXTRA_RANGE, payload: encodeRange(ranges[0]) };
+  return { id: EXTRA_CONCAT, payload: encodeConcat(ranges) };
+}
+
+/** Validates the input (§9.1). Throws WriteError. */
+export function validate(input: WriterInput): void {
+  const W = (m: string): never => {
+    throw new WriteError(m);
+  };
+  const byKey = new Map<string, WriterEntry>();
+  for (const e of input.entries) {
+    if (e.key === "") W("empty key");
+    if (!isWellFormed(e.key)) W(`key ${JSON.stringify(e.key)} is not valid Unicode (cannot be UTF-8)`);
+    if (isFormatKey(e.key)) W(`key ${e.key} is reserved for the format entry`);
+    if (utf8(e.key).length > 65535) W(`key UTF-8 encoding longer than 65535 bytes`);
+    if (byKey.has(e.key)) W(`duplicate key ${JSON.stringify(e.key)}`);
+    if ((e.bytes === undefined) === (e.ranges === undefined)) W(`entry ${JSON.stringify(e.key)} must have exactly one of bytes and ranges`);
+    byKey.set(e.key, e);
+    if (e.ranges !== undefined) {
+      if (e.compress) W(`reference entry ${JSON.stringify(e.key)} cannot be compressed`);
+      if (e.pinned) W(`reference entry ${JSON.stringify(e.key)} cannot be pinned`);
+      let total = 0n;
+      for (const r of e.ranges) {
+        if (r.data !== null) {
+          if (r.source !== 0 || r.offset !== 0n || r.length !== 0n) W("literal range with source/offset/length");
+          total += BigInt(r.data.length);
+        } else {
+          if (r.source >= input.sources.length) W(`entry ${JSON.stringify(e.key)}: source ${r.source} out of range (${input.sources.length} sources)`);
+          if (r.offset < 0n || r.length < 0n) W("negative offset or length");
+          if (r.offset + r.length > U64_MAX) W(`entry ${JSON.stringify(e.key)}: range end exceeds 2^64-1`);
+          total += r.length;
+        }
+      }
+      if (total > U64_MAX) W(`entry ${JSON.stringify(e.key)}: total size exceeds 2^64-1`);
+      const { payload } = payloadFor(e.ranges);
+      if (payload.length > MAX_PAYLOAD) W(`entry ${JSON.stringify(e.key)}: reference payload of ${payload.length} bytes exceeds ${MAX_PAYLOAD}`);
+    } else {
+      if (e.bytes!.length >= 0xffffffff) W(`entry ${JSON.stringify(e.key)} too large`);
+      if (e.pinned && input.pageSize === null) W(`entry ${JSON.stringify(e.key)} is pinned but there is no page index`);
+    }
+  }
+  if (input.pageSize !== null && (!Number.isSafeInteger(input.pageSize) || input.pageSize < 1)) W("page_size must be an integer >= 1");
+  input.sources.forEach((s, i) => {
+    if (s.kind === "url") {
+      if (s.url === "") W(`source ${i}: empty url`);
+      if (parseUriReference(s.url!) === null) W(`source ${i}: '${s.url}' is not an RFC 3986 URI-reference`);
+    } else if (s.kind === "key") {
+      if (!isWellFormed(s.key!)) W(`source ${i}: key is not valid Unicode`);
+      if (isFormatKey(s.key!)) W(`source ${i}: key source names format entry ${s.key}`);
+      const t = byKey.get(s.key!);
+      if (t === undefined) W(`source ${i}: key source names absent key ${JSON.stringify(s.key)}`);
+      if (t!.bytes === undefined) W(`source ${i}: key source names reference entry ${JSON.stringify(s.key)}`);
+    } else if (s.kind !== "data") {
+      W(`source ${i}: no kind`);
+    }
+    if (s.kind !== "url" && (s.size !== null || s.etag !== null || s.modifiedNotAfter !== null)) W(`source ${i}: pins are only allowed on url sources`);
+    if (s.etag !== null && !isStrongEtag(s.etag)) W(`source ${i}: etag pin ${JSON.stringify(s.etag)} is not a strong entity tag`);
+    if (s.size !== null && (s.size < 0n || s.size > U64_MAX)) W(`source ${i}: size pin out of range`);
+    if (s.modifiedNotAfter !== null && (s.modifiedNotAfter < -(1n << 63n) || s.modifiedNotAfter >= 1n << 63n))
+      W(`source ${i}: modified_not_after out of range`);
+  });
+}
+
+function prepare(e: WriterEntry, mirror: boolean): Prepared {
+  const name = utf8(e.key);
+  if (e.ranges !== undefined) {
+    const ex = payloadFor(e.ranges);
+    const body = mirror ? ex.payload : new Uint8Array();
+    return { key: e.key, name, method: 0, body, usize: body.length, crc: zlib.crc32(body), refExtra: ex, pinned: false, isFormat: false };
+  }
+  const raw = e.bytes!;
+  const body = e.compress ? zlib.deflateRawSync(raw) : raw;
+  if (body.length >= 0xffffffff) throw new WriteError(`entry ${JSON.stringify(e.key)}: compressed size too large`);
+  return { key: e.key, name, method: e.compress ? 8 : 0, body, usize: raw.length, crc: zlib.crc32(raw), refExtra: null, pinned: !!e.pinned, isFormat: false };
+}
+
+function formatEntry(key: string, msg: Uint8Array): Prepared {
+  const body = zlib.deflateRawSync(msg);
+  return { key, name: utf8(key), method: 8, body, usize: msg.length, crc: zlib.crc32(msg), refExtra: null, pinned: false, isFormat: true };
+}
+
+function localHeader(p: Prepared): Buffer {
+  return Buffer.concat([
+    le32(0x04034b50), le16(20), le16(FLAG_UTF8), le16(p.method), le16(DOS_TIME), le16(DOS_DATE),
+    le32(p.crc), le32(p.body.length), le32(p.usize), le16(p.name.length), le16(0), p.name,
+  ]);
 }
 
 function cdRecord(p: Prepared): Buffer {
-  const blocks: Buffer[] = [];
-  const z64 = p.lho >= 0xffffffffn;
-  if (z64) {
-    const b = Buffer.alloc(12);
-    b.writeUInt16LE(0x0001, 0);
-    b.writeUInt16LE(8, 2);
-    b.writeBigUInt64LE(p.lho, 4);
-    blocks.push(b);
-  }
-  if (p.extraBlock) {
-    const hdr = Buffer.alloc(4);
-    hdr.writeUInt16LE(p.extraBlock.id, 0);
-    hdr.writeUInt16LE(p.extraBlock.data.length, 2);
-    blocks.push(hdr, Buffer.from(p.extraBlock.data));
-  }
-  const extra = Buffer.concat(blocks);
-  const h = Buffer.alloc(46);
-  h.writeUInt32LE(0x02014b50, 0);
-  h.writeUInt16LE(20, 4);
-  h.writeUInt16LE(z64 ? 45 : 20, 6);
-  h.writeUInt16LE(0x0800, 8);
-  h.writeUInt16LE(p.method, 10);
-  h.writeUInt16LE(DOS_TIME, 12);
-  h.writeUInt16LE(DOS_DATE, 14);
-  h.writeUInt32LE(p.crc, 16);
-  h.writeUInt32LE(p.body.length, 20);
-  h.writeUInt32LE(p.usize, 24);
-  h.writeUInt16LE(p.name.length, 28);
-  h.writeUInt16LE(extra.length, 30);
-  h.writeUInt16LE(0, 32);
-  h.writeUInt16LE(0, 34);
-  h.writeUInt16LE(0, 36);
-  h.writeUInt32LE(0, 38);
-  h.writeUInt32LE(z64 ? 0xffffffff : Number(p.lho), 42);
-  return Buffer.concat([h, p.name, extra]);
+  const lho = p.lho!;
+  const z64 = lho >= 0xffffffffn;
+  const extras: Buffer[] = [];
+  if (z64) extras.push(le16(0x0001), le16(8), le64(lho));
+  if (p.refExtra) extras.push(le16(p.refExtra.id), le16(p.refExtra.payload.length), Buffer.from(p.refExtra.payload));
+  const extra = Buffer.concat(extras);
+  if (extra.length > 65535) throw new WriteError(`${p.key}: extra field too long`);
+  return Buffer.concat([
+    le32(0x02014b50), le16(20), le16(z64 ? 45 : 20), le16(FLAG_UTF8), le16(p.method), le16(DOS_TIME), le16(DOS_DATE),
+    le32(p.crc), le32(p.body.length), le32(p.usize), le16(p.name.length), le16(extra.length), le16(0),
+    le16(0), le16(0), le32(0), le32(z64 ? 0xffffffff : Number(lho)), p.name, extra,
+  ]);
 }
 
-/** Build a vzip archive and write it to outPath. Throws InputError on invalid input (no file is created). */
-export function writeArchive(inp: WriteInput, outPath: string): void {
-  validate(inp);
-  const prepared = inp.entries.map((e) => prepare(e, inp.mirror));
-  const paged = inp.pageSize !== null;
-  const regular = prepared.filter((p) => !p.pinned);
-  const pinnedEntries = prepared.filter((p) => p.pinned).sort((x, y) => Buffer.compare(x.name, y.name));
-  const sourcesEntry = formatEntry(SOURCES_KEY, encodeSourceTable(inp.sources));
-
-  // Layout: [entries] [__vz__/sources] [pinned entries] [__vz__/index] [CD] [zip64 end] [EOCD+comment]
-  const chunks: Uint8Array[] = [];
+/** Builds the archive as a list of buffers. Validates first; throws WriteError. */
+export function build(input: WriterInput): Buffer[] {
+  validate(input);
+  const out: Buffer[] = [];
   let off = 0n;
+  const emit = (b: Uint8Array) => {
+    out.push(Buffer.from(b.buffer, b.byteOffset, b.byteLength));
+    off += BigInt(b.length);
+  };
   const place = (p: Prepared) => {
     p.lho = off;
-    const lh = localHeader(p, p.lho >= 0xffffffffn ? 45 : 20);
-    chunks.push(lh, p.body);
-    off += BigInt(lh.length + p.body.length);
+    emit(localHeader(p));
+    emit(p.body);
   };
-  for (const p of regular) place(p);
-  place(sourcesEntry);
-  for (const p of pinnedEntries) place(p);
 
-  const body = [...prepared].sort((x, y) => Buffer.compare(x.name, y.name));
+  const prepared = input.entries.map((e) => prepare(e, input.mirror));
+  for (const p of prepared) if (!p.pinned) place(p);
+  const sources = formatEntry(SOURCES_KEY, encodeSourceTable(input.sources));
+  place(sources);
+  const sourcesBodyOffset = sources.lho! + 30n + BigInt(sources.name.length);
+  for (const p of prepared) if (p.pinned) place(p);
+
+  const body = [...prepared].sort((a, b) => compareBytes(a.name, b.name));
   const bodyRecords = body.map(cdRecord);
 
-  let indexEntry: Prepared | null = null;
-  if (paged) {
+  let index: Prepared | null = null;
+  if (input.pageSize !== null) {
     const pages: Page[] = [];
     let cur: Page | null = null;
-    let pos = 0n;
-    for (let i = 0; i < body.length; i++) {
+    let cdOff = 0n;
+    body.forEach((p, i) => {
       const len = BigInt(bodyRecords[i].length);
-      if (cur === null || cur.length >= BigInt(inp.pageSize!)) {
-        cur = { firstKey: body[i].key, offset: pos, length: 0n };
+      if (cur === null || (cur.length > 0n && cur.length + len > BigInt(input.pageSize!))) {
+        cur = { firstKey: p.key, offset: cdOff, length: 0n };
         pages.push(cur);
       }
       cur.length += len;
-      pos += len;
-    }
-    const pinned: Pinned[] = pinnedEntries.map((p) => ({
-      key: p.key,
-      dataOffset: p.lho + 30n + BigInt(p.name.length),
-      size: BigInt(p.usize),
-      csize: BigInt(p.body.length),
-      method: p.method,
-    }));
-    const idx: CdIndex = { pages, pinned };
-    indexEntry = formatEntry(INDEX_KEY, encodeCdIndex(idx));
-    place(indexEntry);
+      cdOff += len;
+    });
+    const pinned: Pinned[] = body
+      .filter((p) => p.pinned)
+      .map((p) => ({
+        key: p.key,
+        dataOffset: p.lho! + 30n + BigInt(p.name.length),
+        size: BigInt(p.usize),
+        csize: BigInt(p.body.length),
+        method: p.method,
+      }));
+    index = formatEntry(INDEX_KEY, encodeCdIndex({ pages, pinned }));
+    place(index);
   }
 
   const cdOffset = off;
-  const cdParts = [...bodyRecords, cdRecord(sourcesEntry)];
-  if (indexEntry) cdParts.push(cdRecord(indexEntry));
-  const cd = Buffer.concat(cdParts);
-  chunks.push(cd);
-  off += BigInt(cd.length);
-  const cdSize = BigInt(cd.length);
-  const nEntries = cdParts.length;
+  for (const r of bodyRecords) emit(r);
+  emit(cdRecord(sources));
+  if (index) emit(cdRecord(index));
+  const cdSize = off - cdOffset;
+  const count = BigInt(body.length + 1 + (index ? 1 : 0));
 
-  const comment = Buffer.alloc(indexEntry ? 38 : 22);
-  comment.write("vzip/0", 0, "latin1");
-  comment.writeBigUInt64LE(sourcesEntry.lho + 30n + BigInt(sourcesEntry.name.length), 6);
-  comment.writeBigUInt64LE(BigInt(sourcesEntry.body.length), 14);
-  if (indexEntry) {
-    comment.writeBigUInt64LE(indexEntry.lho + 30n + BigInt(indexEntry.name.length), 22);
-    comment.writeBigUInt64LE(BigInt(indexEntry.body.length), 30);
-  }
-
-  const needZ64 = nEntries >= 0xffff || cdSize >= 0xffffffffn || cdOffset >= 0xffffffffn;
+  const needZ64 = count >= 0xffffn || cdSize >= 0xffffffffn || cdOffset >= 0xffffffffn;
   if (needZ64) {
-    const z = Buffer.alloc(56);
-    z.writeUInt32LE(0x06064b50, 0);
-    z.writeBigUInt64LE(44n, 4);
-    z.writeUInt16LE(45, 12);
-    z.writeUInt16LE(45, 14);
-    z.writeUInt32LE(0, 16);
-    z.writeUInt32LE(0, 20);
-    z.writeBigUInt64LE(BigInt(nEntries), 24);
-    z.writeBigUInt64LE(BigInt(nEntries), 32);
-    z.writeBigUInt64LE(cdSize, 40);
-    z.writeBigUInt64LE(cdOffset, 48);
-    const loc = Buffer.alloc(20);
-    loc.writeUInt32LE(0x07064b50, 0);
-    loc.writeUInt32LE(0, 4);
-    loc.writeBigUInt64LE(off, 8);
-    loc.writeUInt32LE(1, 16);
-    chunks.push(z, loc);
-    off += 76n;
+    const z64Off = off;
+    emit(Buffer.concat([
+      le32(0x06064b50), le64(44n), le16(45), le16(45), le32(0), le32(0), le64(count), le64(count), le64(cdSize), le64(cdOffset),
+    ]));
+    emit(Buffer.concat([le32(0x07064b50), le32(0), le64(z64Off), le32(1)]));
   }
-  const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0);
-  const n16 = nEntries >= 0xffff ? 0xffff : nEntries;
-  eocd.writeUInt16LE(n16, 8);
-  eocd.writeUInt16LE(n16, 10);
-  eocd.writeUInt32LE(cdSize >= 0xffffffffn ? 0xffffffff : Number(cdSize), 12);
-  eocd.writeUInt32LE(cdOffset >= 0xffffffffn ? 0xffffffff : Number(cdOffset), 16);
-  eocd.writeUInt16LE(comment.length, 20);
-  chunks.push(eocd, comment);
+  const comment: Buffer[] = [Buffer.from("vzip/0", "latin1"), le64(sourcesBodyOffset), le64(BigInt(sources.body.length))];
+  if (index) comment.push(le64(index.lho! + 30n + BigInt(index.name.length)), le64(BigInt(index.body.length)));
+  const c = Buffer.concat(comment);
+  const clamp16 = (v: bigint) => (v >= 0xffffn ? 0xffff : Number(v));
+  const clamp32 = (v: bigint) => (v >= 0xffffffffn ? 0xffffffff : Number(v));
+  emit(Buffer.concat([
+    le32(0x06054b50), le16(0), le16(0), le16(clamp16(count)), le16(clamp16(count)), le32(clamp32(cdSize)), le32(clamp32(cdOffset)),
+    le16(c.length), c,
+  ]));
+  return out;
+}
 
+/** Writes an archive to `outPath`. Nothing is created if validation fails. */
+export function writeArchive(input: WriterInput, outPath: string): void {
+  const chunks = build(input);
   const fd = fs.openSync(outPath, "wx");
   try {
-    for (const c of chunks) {
-      let w = 0;
-      while (w < c.length) w += fs.writeSync(fd, c, w, c.length - w);
+    for (const ch of chunks) {
+      let done = 0;
+      while (done < ch.length) done += fs.writeSync(fd, ch, done, ch.length - done);
     }
-    fs.closeSync(fd);
   } catch (e) {
-    try {
-      fs.closeSync(fd);
-    } catch {
-      /* ignore */
-    }
-    try {
-      fs.unlinkSync(outPath);
-    } catch {
-      /* ignore */
-    }
+    fs.closeSync(fd);
+    try { fs.unlinkSync(outPath); } catch { /* ignore */ }
     throw e;
   }
+  fs.closeSync(fd);
 }

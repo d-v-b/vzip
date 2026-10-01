@@ -1,10 +1,8 @@
 {
   "name": "vzip-ts",
-  "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "vzip format version 0 reader/writer and conformance CLI",
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --no-warnings --test test/"
   }
 }

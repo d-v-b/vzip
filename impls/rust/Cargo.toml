@@ -9,7 +9,7 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "vzip-cli"
-path = "src/main.rs"
+path = "src/bin/vzip-cli.rs"
 
 [dependencies]
 flate2 = "1"
@@ -17,4 +17,4 @@ crc32fast = "1"
 serde_json = "1"
 
 [profile.release]
-debug = false
+opt-level = 3

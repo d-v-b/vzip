@@ -291,7 +291,6 @@ conditional headers), `/noetag/` (no `ETag` or `Last-Modified`) and
 whenever a request carried `If-Match`, so `h/noetag_pinned` passed vacuously
 for every reader. It was fixed before the results above.
 
-Revision 6 has not been through a fresh round of agents.
 
 **Open issues** from round 5, deferred:
 - **HTTP response edge cases:**
@@ -315,3 +314,67 @@ Revision 6 has not been through a fresh round of agents.
   to pinned entries.
 - **HARNESS:** whether `list` requires `prefix`; `range` on operations other
   than `get`; duplicate JSON members.
+
+## Round 6 (spec r6)
+
+**Result:** all three fresh implementations passed every graded check,
+including the HTTP profile:
+- 5129/5129 read queries;
+- 11/11 write cases;
+- 32/32 rejections;
+- 20000/20000 cross-reads;
+- 2506/2506 HTTP checks.
+
+The divergence report was empty. All three implemented the r6 pin rules
+correctly from the spec alone, without being told about the flaw: pins stay
+closed when a server ignores conditional headers or sends no `ETag`, and
+redirects are followed up to 5, `http(s)` only.
+
+## Convergence (updated)
+
+| round | spec | passing everything | divergent queries | what the notes were about |
+|---|---|---|---|---|
+| 1 | r1 | 3/3 | 11 | "conforming readers can disagree"; one contradiction (planted) |
+| 2 | r2 | 3/3 | 0 | edges of the error model, base URI, check order |
+| 3 | r3 | 3/3 | 0 | deep edges; two real defects (zip64 locator, encoded dot segments) |
+| 4 | r4 | 3/3 | 0 | internal consistency; HTTP and ZIP64 corner cases |
+| 5 | r5 + HTTP | 3/3 | 0 | one design flaw: pins failed open over HTTP |
+| 6 | r6 + HTTP | 3/3 | 0 | details: HTTP-date formats, malformed 206s, `raw` of format entries |
+
+**Open issues** from round 6, deferred. Several were raised by all three
+agents, and none caused a divergence:
+
+- **Format entries in the raw view.** Does `raw("__vz__/sources")` read through
+  the comment or through the central directory record? All three chose the
+  comment. Codify that.
+- **What counts as a valid HTTP-date.** RFC 9110 requires accepting two
+  obsolete formats. In one of them (RFC 850) a two-digit year is resolved
+  against the reader's clock, so results can depend on when the reader runs.
+  Rust and TypeScript flagged this as their #1 or #3 issue. Proposal: accept
+  IMF-fixdate only, and treat anything else as uncheckable.
+- **ZIP64 blocks.** How to read one when size fields are also all ones, and
+  what to do with duplicate blocks when the offset isn't all ones.
+- **Missing keys on a broken page.** A missing key whose page can't be parsed:
+  `missing`, or an entry error? Rust chose entry error.
+- **Paged `list`.** Give the exact interval test for which pages
+  `list(prefix)` reads, with a worked example. All three asked for this.
+- **Oversized payloads.** A payload between 65520 and 65531 bytes fits in the
+  extra field but isn't classified; TypeScript accepts it.
+- **Unhandled HTTP cases:**
+  - a 206 whose body length or total is inconsistent, or which is multipart;
+  - a redirect without a `Location` header;
+  - a `Content-Encoding` list such as `identity, identity`;
+  - URLs with userinfo or an empty host;
+  - `localhost` with a port.
+- **Literal ranges.** One with an explicitly encoded zero `source`: is that
+  checked by value or by field presence? Python checks the value.
+- **Empty `key` source.** An empty `url` is an open error, but an empty `key`
+  isn't classified at open.
+- **Memory.** Accepting a 200 response means downloading the whole object, so
+  the limit needs guidance.
+- **HARNESS:**
+  - `get_raw` with a `range`;
+  - unknown members inside queries;
+  - `range: null`;
+  - the overflow rejections, which the CLI's JSON number limit makes
+    unreachable.

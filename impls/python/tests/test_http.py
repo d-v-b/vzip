@@ -1,169 +1,242 @@
-"""HTTP source resolution (spec §6.1, §6.2) against a local server."""
+"""HTTP source resolution (spec §6.1, §6.2) against a local test server."""
 
-import json
-import os
-import subprocess
-import tempfile
+import gzip
+import http.server
+import re
+import threading
 import unittest
 
-from helpers import ROOT, ObjectServer
-from vzip_impl import proto
-from vzip_impl.errors import ResolutionError
-from vzip_impl.reader import Archive, Request
-from vzip_impl.writer import WEntry, build_archive
+from helpers import TmpDir, build_raw, read_queries, ref_extra
 
-R = proto.Range
-S = proto.Source
-DATA = bytes(range(100))
+from vzip_impl import Archive, ResolutionError
+from vzip_impl.fetch import imf_fixdate, parse_http_date
+from vzip_impl.proto import encode_concat, encode_range, encode_source_table
+
+OBJ = bytes(range(256)) * 4  # 1024 bytes
 ETAG = '"v1"'
-MTIME = 1_700_000_000
+LAST_MOD = 1_700_000_000
 
 
-class HTTPBase(unittest.TestCase):
+class Handler(http.server.BaseHTTPRequestHandler):
+    log = []
+
+    def log_message(self, *a):
+        pass
+
+    def do_HEAD(self):
+        Handler.log.append(("HEAD", self.path, dict(self.headers)))
+        self.send_response(500)
+        self.end_headers()
+
+    def do_GET(self):
+        Handler.log.append(("GET", self.path, dict(self.headers)))
+        path = self.path
+        flags = set()
+        while True:
+            m = re.match(r"/(ignore-range|gzip|star|wrong-range|no-etag|weak-etag|no-lm|"
+                         r"bad-lm|ignore-cond|teapot|no-cr|rfc850)(/.*)", path)
+            if not m:
+                break
+            flags.add(m.group(1))
+            path = m.group(2)
+        m = re.match(r"/redir/(\d+)(/.*)", path)
+        if m:
+            n = int(m.group(1))
+            rest = m.group(2)
+            loc = (f"/redir/{n - 1}{rest}" if n > 1 else rest)
+            if n == 1 and "/to-ftp" in rest:
+                loc = "ftp://example.com/x"
+            if n % 2 == 0:  # alternate relative and absolute Locations
+                loc = f"http://127.0.0.1:{self.server.server_port}{loc}"
+            self.send_response(307 if n % 3 else 301)
+            self.send_header("Location", loc)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if not path.startswith("/obj"):
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if "teapot" in flags:
+            self.send_response(418)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if "ignore-cond" not in flags:
+            im = self.headers.get("If-Match")
+            if im is not None and im != ETAG:
+                return self._empty(412)
+            ius = self.headers.get("If-Unmodified-Since")
+            if ius is not None:
+                t = parse_http_date(ius)
+                if t is not None and LAST_MOD > t:
+                    return self._empty(412)
+        rng = self.headers.get("Range")
+        m = re.match(r"bytes=(\d+)-(\d+)$", rng or "")
+        hdrs = {}
+        if "no-etag" not in flags:
+            hdrs["ETag"] = 'W/"v1"' if "weak-etag" in flags else ETAG
+        if "no-lm" not in flags:
+            if "bad-lm" in flags:
+                hdrs["Last-Modified"] = "garbage"
+            elif "rfc850" in flags:
+                hdrs["Last-Modified"] = "Tuesday, 14-Nov-23 22:13:20 GMT"
+            else:
+                hdrs["Last-Modified"] = imf_fixdate(LAST_MOD)
+        if m and "ignore-range" not in flags:
+            a, b = int(m.group(1)), int(m.group(2))
+            if a >= len(OBJ):
+                hdrs["Content-Range"] = f"bytes */{len(OBJ)}"
+                return self._empty(416, hdrs)
+            b = min(b, len(OBJ) - 1)
+            if "wrong-range" in flags:
+                a += 1
+            body = OBJ[a:b + 1]
+            total = "*" if "star" in flags else str(len(OBJ))
+            if "no-cr" not in flags:
+                hdrs["Content-Range"] = f"bytes {a}-{b}/{total}"
+            status = 206
+        else:
+            body = OBJ
+            status = 200
+        if "gzip" in flags:
+            body = gzip.compress(body)
+            hdrs["Content-Encoding"] = "gzip"
+        self.send_response(status)
+        for k, v in hdrs.items():
+            self.send_header(k, v)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _empty(self, status, hdrs=None):
+        self.send_response(status)
+        for k, v in (hdrs or {}).items():
+            self.send_header(k, v)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+
+class TestHTTP(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.srv = ObjectServer().__enter__()
-        cls.srv.objects["obj"] = (DATA, ETAG, MTIME)
-        cls.srv.objects["noetag"] = (DATA, None, None)
-        cls.srv.objects["dir/x y.bin"] = (b"spacey", None, None)
+        cls.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        cls.port = cls.srv.server_port
+        cls.th = threading.Thread(target=cls.srv.serve_forever, daemon=True)
+        cls.th.start()
+        cls.base = f"http://127.0.0.1:{cls.port}"
 
     @classmethod
     def tearDownClass(cls):
-        cls.srv.__exit__()
+        cls.srv.shutdown()
+        cls.srv.server_close()
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.srv.log.clear()
+        self.td = TmpDir()
+        Handler.log.clear()
+        self.archives = []
 
     def tearDown(self):
-        self.tmp.cleanup()
+        for a in self.archives:
+            a.close()
+        self.td.cleanup()
 
-    def arch(self, src: S, ranges, base_uri=None):
-        data = build_archive([WEntry("r", ranges=ranges)], [src], None)
-        path = os.path.join(self.tmp.name, "a.vzip")
-        with open(path, "wb") as f:
-            f.write(data)
-        ar = Archive(path, base_uri=base_uri)
-        self.addCleanup(ar.close)
-        return ar
+    def arch(self, url, off=10, ln=20, base_uri=None, **pins):
+        src = {"url": url}
+        src.update(pins)
+        pl = encode_concat([{"data": b"<"}, {"source": 0, "offset": off, "length": ln}])
+        data = build_raw([{"name": b"r", "body": pl, "extra": ref_extra(pl, False)}],
+                         sources_raw=encode_source_table([src]))
+        path = self.td.write(f"a{len(self.archives)}.vzip", data)
+        a = Archive(path, base_uri=base_uri)
+        self.archives.append(a)
+        return a
 
-    def get(self, src, ranges, req=Request()):
-        return self.arch(src, ranges).get("r", req)
-
-
-class TestHTTPSuccess(HTTPBase):
-    def test_reads(self):
-        u = self.srv.url
-        cases = [
-            (S("url", u("plain/obj")), [R(0, 10, 5)], DATA[10:15]),
-            (S("url", u("plain/obj"), size=100, etag=ETAG, modified_not_after=MTIME), [R(0, 0, 100)], DATA),
-            (S("url", u("plain/obj"), modified_not_after=MTIME + 1), [R(0, 99, 1)], DATA[99:]),
-            (S("url", u("full/obj"), size=100), [R(0, 3, 4)], DATA[3:7]),
-            (S("url", u("star/obj")), [R(0, 3, 4)], DATA[3:7]),
-            (S("url", u("redir3/plain/obj"), size=100), [R(0, 1, 2)], DATA[1:3]),
-            (S("url", u("plain/dir/x%20y.bin")), [R(0, 0, 6)], b"spacey"),
-            (S("url", u("plain/obj")), [R(0, 0, 3), R(data=b"-"), R(0, 50, 2)], DATA[0:3] + b"-" + DATA[50:52]),
+    def test_successful_reads(self):
+        want = b"<" + OBJ[10:30]
+        ok = [
+            (self.base + "/obj", {}),
+            (self.base + "/obj", {"size": 1024, "etag": ETAG,
+                                  "modified_not_after": LAST_MOD}),
+            (self.base + "/ignore-range/obj", {"size": 1024, "etag": ETAG}),
+            (self.base + "/redir/5/obj", {"size": 1024}),
+            (self.base + "/redir/2/ignore-range/obj", {}),
+            (self.base + "/star/obj", {"etag": ETAG}),
+            (self.base + "/rfc850/obj", {"modified_not_after": LAST_MOD}),
+            ("HTTP://127.0.0.1:%d/obj#frag" % self.port, {}),
         ]
-        for src, ranges, want in cases:
-            with self.subTest(src=src):
-                self.assertEqual(self.get(src, ranges), want)
+        for url, pins in ok:
+            with self.subTest(url, **{k: str(v) for k, v in pins.items()}):
+                Handler.log.clear()
+                self.assertEqual(self.arch(url, **pins).get("r"), want)
+                for method, _path, hdrs in Handler.log:
+                    self.assertEqual(method, "GET")
+                    self.assertEqual(hdrs.get("Range"), "bytes=10-29")
+                    self.assertEqual(hdrs.get("Accept-Encoding"), "identity")
+                    if "etag" in pins:
+                        self.assertEqual(hdrs.get("If-Match"), ETAG)
+                    if "modified_not_after" in pins:
+                        self.assertEqual(hdrs.get("If-Unmodified-Since"),
+                                         "Tue, 14 Nov 2023 22:13:20 GMT")
+        # relative URL against an http base URI
+        a = self.arch("obj", base_uri=self.base + "/dir/../x.vzip")
+        self.assertEqual(a.get("r"), want)
+        # window inside the reference maps to an inner byte range
+        Handler.log.clear()
+        self.assertEqual(self.arch(self.base + "/obj").get("r", ("range", 3, 5)),
+                         OBJ[12:14])
+        self.assertEqual(Handler.log[0][2]["Range"], "bytes=12-13")
+        # no request at all when only the literal is requested
+        Handler.log.clear()
+        self.assertEqual(self.arch(self.base + "/teapot/obj").get("r", ("range", 0, 1)), b"<")
+        self.assertEqual(Handler.log, [])
 
-    def test_request_shape(self):
-        self.get(S("url", self.srv.url("plain/obj"), etag=ETAG, modified_not_after=MTIME), [R(0, 10, 5)])
-        self.assertEqual(len(self.srv.log), 1)
-        method, path, hdrs = self.srv.log[0]
-        self.assertEqual((method, path), ("GET", "/plain/obj"))
-        self.assertEqual(hdrs["Range"], "bytes=10-14")
-        self.assertEqual(hdrs["Accept-Encoding"], "identity")
-        self.assertEqual(hdrs["If-Match"], ETAG)
-        self.assertEqual(hdrs["If-Unmodified-Since"], "Tue, 14 Nov 2023 22:13:20 GMT")
+    def test_each_http_resolution_error(self):
+        bad = {
+            "404": ("/nope", {}),
+            "other_status": ("/teapot/obj", {}),
+            "gzip_encoding": ("/gzip/obj", {}),
+            "wrong_range": ("/wrong-range/obj", {}),
+            "no_content_range": ("/no-cr/obj", {}),
+            "416": ("/obj", {"off": 5000}),
+            "short_object_206": ("/obj", {"off": 1000, "ln": 100}),
+            "short_object_200": ("/ignore-range/obj", {"off": 1000, "ln": 100}),
+            "size_pin_206": ("/obj", {"size": 1023}),
+            "size_pin_200": ("/ignore-range/obj", {"size": 1025}),
+            "size_pin_star": ("/star/obj", {"size": 1024}),
+            "etag_412": ("/obj", {"etag": '"other"'}),
+            "etag_ignored_by_server": ("/ignore-cond/obj", {"etag": '"other"'}),
+            "etag_missing": ("/no-etag/obj", {"etag": ETAG}),
+            "etag_weak_response": ("/ignore-cond/weak-etag/obj", {"etag": ETAG}),
+            "mtime_412": ("/obj", {"modified_not_after": LAST_MOD - 1}),
+            "mtime_ignored_by_server": ("/ignore-cond/obj", {"modified_not_after": LAST_MOD - 1}),
+            "mtime_no_header": ("/no-lm/obj", {"modified_not_after": LAST_MOD}),
+            "mtime_bad_header": ("/bad-lm/obj", {"modified_not_after": LAST_MOD}),
+            "mtime_unsendable": ("/obj", {"modified_not_after": -62135596801}),
+            "six_redirects": ("/redir/6/obj", {}),
+            "redirect_to_ftp": ("/redir/1/to-ftp", {}),
+        }
+        for name, (path, kw) in bad.items():
+            with self.subTest(name):
+                off = kw.pop("off", 10)
+                ln = kw.pop("ln", 20)
+                a = self.arch(self.base + path, off=off, ln=ln, **kw)
+                with self.assertRaises(ResolutionError):
+                    a.get("r")
+        with self.assertRaises(ResolutionError):  # connection refused
+            srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+            port = srv.server_port
+            srv.server_close()
+            self.arch(f"http://127.0.0.1:{port}/obj").get("r")
 
-    def test_only_window_requested(self):
-        ar = self.arch(S("url", self.srv.url("plain/obj")), [R(0, 0, 10), R(0, 20, 10)])
-        self.assertEqual(ar.get("r", Request("range", 12, 15)), DATA[22:25])
-        self.assertEqual([h["Range"] for _, _, h in self.srv.log], ["bytes=22-24"])
-        self.srv.log.clear()
-        self.assertEqual(ar.get("r", Request("suffix", 0)), b"")
-        self.assertEqual(self.srv.log, [])
-
-    def test_relative_url_against_http_base(self):
-        ar = self.arch(S("url", "obj"), [R(0, 0, 2)], base_uri=self.srv.url("plain/archive.vzip"))
-        self.assertEqual(ar.get("r"), DATA[:2])
-
-    def test_cli(self):
-        d = self.tmp.name
-        desc = {"sources": [{"url": self.srv.url("plain/obj"), "size": 100, "etag": ETAG}],
-                "entries": [{"key": "a", "ranges": [{"source": 0, "offset": 5, "length": 2}]},
-                            {"key": "b", "ranges": [{"source": 0, "offset": 99, "length": 2}]}]}
-        dp, out, qp = (os.path.join(d, x) for x in ("d.json", "o.vzip", "q.json"))
-        with open(dp, "w") as f:
-            json.dump(desc, f)
-        with open(qp, "w") as f:
-            json.dump([{"op": "get", "key": "a"}, {"op": "get", "key": "b"}], f)
-        cli = os.path.join(ROOT, "vzip")
-        self.assertEqual(subprocess.run([cli, "write", dp, out]).returncode, 0)
-        r = subprocess.run([cli, "read", out, qp], capture_output=True)
-        res = json.loads(r.stdout)["results"]
-        self.assertEqual(res[0], {"ok": True, "value": DATA[5:7].hex()})
-        self.assertEqual(res[1]["class"], "resolution")
-
-
-class TestHTTPErrors(HTTPBase):
-    def bad(self, src, ranges=(R(0, 0, 4),)):
-        with self.assertRaises(ResolutionError):
-            self.get(src, list(ranges))
-
-    def test_404(self):
-        self.bad(S("url", self.srv.url("plain/none")))
-
-    def test_500(self):
-        self.bad(S("url", self.srv.url("status500/obj")))
-
-    def test_412_etag(self):
-        self.bad(S("url", self.srv.url("plain/obj"), etag='"v2"'))
-
-    def test_412_etag_no_etag(self):
-        self.bad(S("url", self.srv.url("plain/noetag"), etag='"v1"'))
-
-    def test_412_modified(self):
-        self.bad(S("url", self.srv.url("plain/obj"), modified_not_after=MTIME - 1))
-
-    def test_416(self):
-        self.bad(S("url", self.srv.url("plain/obj")), [R(0, 200, 1)])
-
-    def test_size_pin_206(self):
-        self.bad(S("url", self.srv.url("plain/obj"), size=99))
-
-    def test_size_pin_200(self):
-        self.bad(S("url", self.srv.url("full/obj"), size=101))
-
-    def test_size_pin_star(self):
-        self.bad(S("url", self.srv.url("star/obj"), size=100))
-
-    def test_short_200(self):
-        self.bad(S("url", self.srv.url("full/obj")), [R(0, 98, 4)])
-
-    def test_clamped_range(self):
-        self.bad(S("url", self.srv.url("clamp/obj")), [R(0, 98, 4)])
-
-    def test_content_encoding(self):
-        self.bad(S("url", self.srv.url("gzip/obj")))
-
-    def test_too_many_redirects(self):
-        self.bad(S("url", self.srv.url("redir6/plain/obj")))
-
-    def test_connection_refused(self):
-        self.bad(S("url", "http://127.0.0.1:1/x"))
-
-    def test_mtime_out_of_range(self):
-        self.bad(S("url", self.srv.url("plain/obj"), modified_not_after=-62135596801))
-
-    def test_mtime_year_10000(self):
-        self.bad(S("url", self.srv.url("plain/obj"), modified_not_after=253402300800))
-
-    def test_no_head_requests(self):
-        self.bad(S("url", self.srv.url("plain/obj"), size=1))
-        self.assertTrue(all(m == "GET" for m, _, _ in self.srv.log))
+    def test_unreachable_url_does_not_block_open(self):
+        path = self.td.write("u.vzip", build_raw(
+            [{"name": b"k", "body": b"v"}],
+            sources_raw=encode_source_table([{"url": "http://127.0.0.1:1/x"}])))
+        res = read_queries(self.td, path, [{"op": "get", "key": "k"}])
+        self.assertEqual(res["results"][0]["value"], "76")
+        self.assertEqual(Handler.log, [])
 
 
 if __name__ == "__main__":

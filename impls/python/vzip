@@ -1,2 +1,2 @@
 #!/bin/sh
-exec uv run --no-project --quiet --python 3.12 python "$(dirname "$0")/vzip_impl/cli.py" "$@"
+exec uv run --no-project --python 3.12 python "$(dirname "$0")/vzip_impl/cli.py" "$@"

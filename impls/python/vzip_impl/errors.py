@@ -1,8 +1,12 @@
-"""Error classes of spec §8.4."""
+"""Error classes (spec §8.4)."""
 
 
 class VzipError(Exception):
     cls = "unknown"
+
+    def __init__(self, message):
+        super().__init__(message)
+        self.message = message
 
 
 class ArchiveError(VzipError):
@@ -27,3 +31,7 @@ class ResolutionError(VzipError):
 
 class RequestError(VzipError):
     cls = "request"
+
+
+class WriteError(Exception):
+    """The writer's input is invalid (spec §9.1)."""

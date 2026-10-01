@@ -1,648 +1,216 @@
 """vzip reader (spec §3, §4, §7, §8)."""
 
-from __future__ import annotations
-
 import os
-import stat
 import struct
 import zlib
-from dataclasses import dataclass
 
-from . import proto
-from .errors import ArchiveError, BodyError, EntryError, PayloadError, RequestError, ResolutionError, VzipError
-from .fetch import is_strong_etag, read_url_source
-from .uri import file_base_uri
-
-U64_MAX = proto.U64_MAX
+from . import proto, uri
+from .errors import (ArchiveError, BodyError, EntryError, PayloadError, RequestError,
+                     ResolutionError)
+from .fetch import Pins, read_url
 
 PREFIX = b"__vz__/"
 SOURCES_KEY = b"__vz__/sources"
 INDEX_KEY = b"__vz__/index"
 FORMAT_KEYS = (SOURCES_KEY, INDEX_KEY)
+EOCD_SIG = 0x06054B50
+CDR_SIG = 0x02014B50
+Z64_EOCD_SIG = 0x06064B50
+Z64_LOC_SIG = 0x07064B50
+REF_IDS = (0x7A76, 0x7A77)
+U64_MAX = (1 << 64) - 1
 
-SIG_EOCD = 0x06054B50
-SIG_Z64_EOCD = 0x06064B50
-SIG_Z64_LOC = 0x07064B50
-SIG_CDR = 0x02014B50
-
-EXTRA_RANGE = 0x7A76
-EXTRA_CONCAT = 0x7A77
-EXTRA_ZIP64 = 0x0001
-
-# Resource limit (spec §10): the largest value window or inflated body a single
-# request may materialise.  Exceeding it is a request error.
+# Resource limits (spec §10). A request whose window, or a DEFLATE body that
+# must be inflated for it, exceeds this many bytes fails with a request error.
 MAX_REQUEST_BYTES = 1 << 30
+# Format entries larger than this when inflated make opening fail.
+MAX_FORMAT_ENTRY_BYTES = 256 << 20
 
 
-def is_hidden(key: bytes) -> bool:
-    return key.startswith(PREFIX)
+def _inflate_clean(data, limit):
+    """Inflate a raw DEFLATE body; return bytes or raise ValueError.
+
+    The body must be one complete stream ending exactly at its end.
+    `limit`: maximum output size; output beyond it raises OverflowError.
+    """
+    d = zlib.decompressobj(-15)
+    try:
+        out = d.decompress(data, limit + 1)
+    except zlib.error as e:
+        raise ValueError(f"invalid DEFLATE data: {e}") from None
+    if len(out) > limit:
+        raise OverflowError("inflated size exceeds limit")
+    if not d.eof:
+        raise ValueError("DEFLATE stream is incomplete")
+    if d.unused_data or d.unconsumed_tail:
+        raise ValueError("bytes follow the end of the DEFLATE stream")
+    return out
 
 
-# ------------------------------------------------------------------ requests
+class FileBlob:
+    def __init__(self, path):
+        try:
+            self.f = open(path, "rb")
+            st = os.fstat(self.f.fileno())
+        except OSError as e:
+            raise ArchiveError(f"cannot open archive: {e}") from None
+        self.size = st.st_size
+
+    def read(self, off, n):
+        if off < 0 or off + n > self.size:
+            raise ValueError("read outside the file")
+        try:
+            data = os.pread(self.f.fileno(), n, off)
+        except OSError as e:
+            raise ValueError(f"read error: {e}") from None
+        if len(data) != n:
+            raise ValueError("short read")
+        return data
+
+    def close(self):
+        self.f.close()
 
 
-@dataclass(frozen=True)
-class Request:
-    kind: str = "whole"  # whole | range | offset | suffix
-    a: int = 0
-    b: int = 0
+class Record:
+    """A central directory record, analysed lazily for entry errors."""
 
-    def check(self) -> None:
-        if self.kind == "range" and self.a > self.b:
-            raise RequestError(f"range start {self.a} > end {self.b}")
-        if any(v < 0 for v in (self.a, self.b)):
-            raise RequestError("negative request bound")
+    __slots__ = ("name", "flags", "method", "crc", "csize", "usize", "lho", "extra",
+                 "_analysed", "error", "kind", "ref_id", "payload", "body_offset")
 
-    def window(self, n: int) -> tuple[int, int]:
-        if self.kind == "whole":
-            return 0, n
-        if self.kind == "range":
-            return min(self.a, n), min(self.b, n)
-        if self.kind == "offset":
-            return min(self.a, n), n
-        if self.kind == "suffix":
-            return max(n - self.a, 0), n
-        raise AssertionError(self.kind)
+    def __init__(self, name, flags, method, crc, csize, usize, lho, extra):
+        self.name = name
+        self.flags = flags
+        self.method = method
+        self.crc = crc
+        self.csize = csize
+        self.usize = usize
+        self.lho = lho
+        self.extra = extra
+        self._analysed = False
+        self.error = None
+
+    def analyse(self):
+        if self._analysed:
+            return
+        self._analysed = True
+        blocks = []
+        ex = self.extra
+        pos = 0
+        while pos < len(ex):
+            if pos + 4 > len(ex):
+                self.error = "extra field does not parse"
+                return
+            hid, n = struct.unpack_from("<HH", ex, pos)
+            if pos + 4 + n > len(ex):
+                self.error = "extra field does not parse"
+                return
+            blocks.append((hid, ex[pos + 4:pos + 4 + n]))
+            pos += 4 + n
+        refs = [b for b in blocks if b[0] in REF_IDS]
+        if len(refs) > 1:
+            self.error = "more than one reference block"
+            return
+        if self.method not in (0, 8):
+            self.error = f"unsupported compression method {self.method}"
+            return
+        if self.flags & 1:
+            self.error = "entry is encrypted"
+            return
+        if refs:
+            if self.method != 0:
+                self.error = "reference entry uses DEFLATE"
+                return
+            self.kind = "reference"
+            self.ref_id, self.payload = refs[0]
+        else:
+            self.kind = "bytes"
+            self.ref_id = self.payload = None
+        lho = self.lho
+        if lho == 0xFFFFFFFF:
+            z = [b for b in blocks if b[0] == 0x0001]
+            if not z:
+                self.error = "local header offset 0xFFFFFFFF without a ZIP64 extra block"
+                return
+            if len(z) > 1:
+                self.error = "more than one ZIP64 extra block"
+                return
+            data = z[0][1]
+            vals = []
+            need = [self.usize == 0xFFFFFFFF, self.csize == 0xFFFFFFFF, True]
+            if len(data) < 8 * sum(need):
+                self.error = "ZIP64 extra block too short"
+                return
+            p = 0
+            for i, nd in enumerate(need):
+                if nd:
+                    vals.append((i, struct.unpack_from("<Q", data, p)[0]))
+                    p += 8
+            for i, v in vals:
+                if i == 0:
+                    self.usize = v
+                elif i == 1:
+                    self.csize = v
+                else:
+                    lho = v
+        self.body_offset = lho + 30 + len(self.name)
 
 
-WHOLE = Request()
+class PinnedEntry:
+    """A `bytes` entry described by the page index (spec §7.1)."""
+
+    def __init__(self, name, body_offset, usize, csize, method):
+        self.name = name
+        self.body_offset = body_offset
+        self.usize = usize
+        self.csize = csize
+        self.method = method
+        self.kind = "bytes"
+        self.error = None
+
+    def analyse(self):
+        pass
 
 
-# ------------------------------------------------------------------ central directory records
+def _parse_records(buf, strict_names=False):
+    """Parse a sequence of central directory records that exactly fills buf.
 
-
-class CDParseError(Exception):
-    pass
-
-
-@dataclass
-class Entry:
-    """What a lookup finds for a key."""
-    name: bytes
-    kind: str | None = None  # 'bytes' | 'reference'
-    method: int = 0
-    csize: int = 0
-    usize: int | None = 0  # None: not known (format entries located through the comment)
-    body_offset: int = 0
-    payload_id: int = 0
-    payload: bytes = b""
-    entry_error: str | None = None
-    is_format: bool = False
-
-
-def parse_records(buf: bytes) -> list[tuple[bytes, bytes]]:
-    """Split a byte string into central directory records.
-
-    Returns (fixed_header_and_fields, name) tuples; raises CDParseError unless buf is
-    exactly a sequence of whole records with correct signatures.
+    Returns a list of (name_bytes, Record). Records whose name is empty or
+    not valid UTF-8 are dropped.  Raises ValueError if it cannot be parsed.
     """
     out = []
     pos = 0
-    end = len(buf)
-    while pos < end:
-        if end - pos < 46:
-            raise CDParseError(f"truncated central directory record at {pos}")
-        sig, = struct.unpack_from("<I", buf, pos)
-        if sig != SIG_CDR:
-            raise CDParseError(f"bad central directory signature at {pos}")
-        nlen, xlen, clen = struct.unpack_from("<HHH", buf, pos + 28)
-        rec_end = pos + 46 + nlen + xlen + clen
-        if rec_end > end:
-            raise CDParseError(f"central directory record at {pos} overruns the directory")
-        out.append(bytes(buf[pos:rec_end]))
-        pos = rec_end
+    n = len(buf)
+    while pos < n:
+        if pos + 46 > n:
+            raise ValueError("truncated central directory record")
+        (sig, _vm, _vn, flags, method, _t, _d, crc, csize, usize, nlen, xlen, clen,
+         _disk, _ia, _ea, lho) = struct.unpack_from("<IHHHHHHIIIHHHHHII", buf, pos)
+        if sig != CDR_SIG:
+            raise ValueError(f"bad central directory signature at +{pos}")
+        end = pos + 46 + nlen + xlen + clen
+        if end > n:
+            raise ValueError("central directory record overruns its container")
+        name = bytes(buf[pos + 46:pos + 46 + nlen])
+        extra = bytes(buf[pos + 46 + nlen:pos + 46 + nlen + xlen])
+        pos = end
+        if not name:
+            continue
+        try:
+            name.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        out.append((name, Record(name, flags, method, crc, csize, usize, lho, extra)))
     return out
 
 
-def analyse_record(rec: bytes) -> Entry:
-    (_sig, _made, _need, flags, method, _t, _d, _crc, csize, usize, nlen, xlen, _clen,
-     _disk, _iattr, _eattr, loff) = struct.unpack_from("<IHHHHHHIIIHHHHHII", rec, 0)
-    name = rec[46:46 + nlen]
-    extra = rec[46 + nlen:46 + nlen + xlen]
-    e = Entry(name=name, method=method, csize=csize, usize=usize)
-
-    blocks = []
-    pos = 0
-    ok = True
-    while pos < len(extra):
-        if len(extra) - pos < 4:
-            ok = False
-            break
-        hid, dsz = struct.unpack_from("<HH", extra, pos)
-        if pos + 4 + dsz > len(extra):
-            ok = False
-            break
-        blocks.append((hid, extra[pos + 4:pos + 4 + dsz]))
-        pos += 4 + dsz
-    if not ok:
-        e.entry_error = "extra field does not parse"
-        return e
-    refs = [(h, d) for h, d in blocks if h in (EXTRA_RANGE, EXTRA_CONCAT)]
-    if len(refs) > 1:
-        e.entry_error = "more than one reference block"
-        return e
-    if refs:
-        e.kind = "reference"
-        e.payload_id, e.payload = refs[0]
-    else:
-        e.kind = "bytes"
-    if method not in (0, 8):
-        e.entry_error = f"unsupported compression method {method}"
-        return e
-    if flags & 1:
-        e.entry_error = "entry is encrypted"
-        return e
-    if e.kind == "reference" and method == 8:
-        e.entry_error = "reference entry uses method 8"
-        return e
-
-    # ZIP64 extended information: values for the all-ones fields, in APPNOTE order.
-    needed = [f for f, v in (("usize", usize), ("csize", csize), ("loff", loff)) if v == 0xFFFFFFFF]
-    if needed:
-        z = [d for h, d in blocks if h == EXTRA_ZIP64]
-        if len(z) != 1:
-            e.entry_error = ("missing ZIP64 extra block" if not z else "more than one ZIP64 extra block")
-            return e
-        if len(z[0]) < 8 * len(needed):
-            e.entry_error = "ZIP64 extra block too short"
-            return e
-        vals = {}
-        for i, f in enumerate(needed):
-            vals[f] = struct.unpack_from("<Q", z[0], 8 * i)[0]
-        usize = vals.get("usize", usize)
-        csize = vals.get("csize", csize)
-        loff = vals.get("loff", loff)
-        e.usize, e.csize = usize, csize
-    e.body_offset = loff + 30 + nlen
-    return e
-
-
-def record_name(rec: bytes) -> bytes:
-    nlen, = struct.unpack_from("<H", rec, 28)
-    return rec[46:46 + nlen]
-
-
-def valid_key_name(name: bytes) -> bool:
-    if not name:
-        return False
-    try:
-        name.decode("utf-8", errors="strict")
-    except UnicodeDecodeError:
-        return False
-    return True
-
-
-# ------------------------------------------------------------------ DEFLATE
-
-
-class InflateError(Exception):
-    pass
-
-
-def inflate_clean(body: bytes, expect: int | None = None) -> bytes:
-    """Inflate a raw DEFLATE body that must be exactly one complete stream (spec §8.1)."""
-    limit = MAX_REQUEST_BYTES
-    if expect is not None and expect > limit:
-        raise RequestError(f"entry inflates to {expect} bytes, above the {limit}-byte limit")
-    d = zlib.decompressobj(-15)
-    try:
-        out = d.decompress(body, limit + 1)
-    except zlib.error as e:
-        raise InflateError(f"invalid DEFLATE data: {e}") from None
-    if len(out) > limit:
-        raise RequestError(f"entry inflates to more than {limit} bytes")
-    if not d.eof:
-        raise InflateError("DEFLATE stream is incomplete")
-    if d.unused_data or d.unconsumed_tail:
-        raise InflateError("bytes follow the end of the DEFLATE stream")
-    if expect is not None and len(out) != expect:
-        raise InflateError(f"inflated to {len(out)} bytes, record says {expect}")
-    return out
-
-
-# ------------------------------------------------------------------ the archive
-
-
-class Archive:
-    def __init__(self, path, base_uri: str | None = None):
-        self.path = path
-        try:
-            self._fd = os.open(path, os.O_RDONLY)
-        except OSError as e:
-            raise ArchiveError(f"cannot open {path!r}: {e}") from None
-        try:
-            st = os.fstat(self._fd)
-            if not stat.S_ISREG(st.st_mode):
-                raise ArchiveError(f"{path!r} is not a regular file")
-            self.size = st.st_size
-            self.base_uri = base_uri if base_uri is not None else file_base_uri(path)
-            self._open()
-        except BaseException:
-            os.close(self._fd)
-            self._fd = -1
-            raise
-        self._value_cache: dict[bytes, bytes] = {}
-
-    def close(self) -> None:
-        if self._fd >= 0:
-            os.close(self._fd)
-            self._fd = -1
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        self.close()
-
-    def _read(self, off: int, n: int) -> bytes:
-        if off < 0 or n < 0 or off + n > self.size:
-            raise ValueError("read outside file")
-        out = bytearray()
-        while len(out) < n:
-            chunk = os.pread(self._fd, n - len(out), off + len(out))
-            if not chunk:
-                raise OSError("unexpected end of file")
-            out += chunk
-        return bytes(out)
-
-    # ---------------------------------------------------------------- open (§8.1)
-
-    def _find_eocd(self) -> tuple[int, bytes]:
-        size = self.size
-        if size >= 60:
-            rec = self._read(size - 60, 60)
-            sig, = struct.unpack_from("<I", rec, 0)
-            clen, = struct.unpack_from("<H", rec, 20)
-            if sig == SIG_EOCD and clen == 38:
-                return size - 60, rec
-        if size >= 44:
-            rec = self._read(size - 44, 44)
-            sig, = struct.unpack_from("<I", rec, 0)
-            clen, = struct.unpack_from("<H", rec, 20)
-            if sig == SIG_EOCD and clen == 22:
-                return size - 44, rec
-        raise ArchiveError("not a vzip archive: no end of central directory record with a vzip comment")
-
-    def _open(self) -> None:
-        try:
-            self._open_inner()
-        except ArchiveError:
-            raise
-        except OSError as e:
-            raise ArchiveError(f"I/O error: {e}") from None
-
-    def _open_inner(self) -> None:
-        eocd_off, eocd = self._find_eocd()
-        comment = eocd[22:]
-        if not comment.startswith(b"vzip/"):
-            raise ArchiveError("not a vzip archive: comment does not start with 'vzip/'")
-        if comment[:6] != b"vzip/0":
-            raise ArchiveError(f"unsupported vzip format version {comment[5:6]!r}")
-        (_sig, _disk, _cddisk, n_disk, n_total, cd_size, cd_off, _clen) = struct.unpack_from(
-            "<IHHHHIIH", eocd, 0)
-        if n_disk == 0xFFFF or n_total == 0xFFFF or cd_size == 0xFFFFFFFF or cd_off == 0xFFFFFFFF:
-            if eocd_off < 20:
-                raise ArchiveError("zip64 locator missing")
-            loc = self._read(eocd_off - 20, 20)
-            lsig, _ldisk, z64_off, _ndisks = struct.unpack("<IIQI", loc)
-            if lsig != SIG_Z64_LOC:
-                raise ArchiveError("zip64 end of central directory locator missing")
-            if z64_off > self.size or self.size - z64_off < 56:
-                raise ArchiveError("zip64 end of central directory record lies outside the file")
-            z = self._read(z64_off, 56)
-            zsig, zsize = struct.unpack_from("<IQ", z, 0)
-            if zsig != SIG_Z64_EOCD:
-                raise ArchiveError("bad zip64 end of central directory signature")
-            if zsize != 44:
-                raise ArchiveError(f"zip64 end of central directory size field is {zsize}, not 44")
-            n_disk, n_total, cd_size, cd_off = struct.unpack_from("<QQQQ", z, 24)
-        if cd_off > self.size or cd_size > self.size - cd_off:
-            raise ArchiveError("central directory lies outside the file")
-        self.cd_off, self.cd_size = cd_off, cd_size
-
-        so, ss = struct.unpack_from("<QQ", comment, 6)
-        self.sources_loc = (so, ss)
-        self.paged = len(comment) == 38
-        self.index_loc = struct.unpack_from("<QQ", comment, 22) if self.paged else None
-
-        # format entries
-        sources_raw = self._inflate_format(so, ss, "__vz__/sources")
-        try:
-            self.sources = proto.decode_source_table(sources_raw)
-        except proto.Malformed as e:
-            raise ArchiveError(f"source table is malformed: {e}") from None
-        for i, s in enumerate(self.sources):
-            if s.kind is None:
-                raise ArchiveError(f"source {i} has no kind")
-            if s.kind == "url" and s.value == "":
-                raise ArchiveError(f"source {i} has an empty url")
-            if s.kind != "url" and s.has_pins():
-                raise ArchiveError(f"source {i} is a {s.kind} source with pins")
-            if s.etag is not None and not is_strong_etag(s.etag):
-                raise ArchiveError(f"source {i} has an etag pin that is not a strong entity tag")
-
-        self.records: dict[bytes, bytes] | None = None
-        self.pages: list[proto.Page] = []
-        self.pinned: dict[bytes, proto.Pinned] = {}
-        self._page_cache: dict[int, object] = {}
-        if self.paged:
-            io, isz = self.index_loc
-            index_raw = self._inflate_format(io, isz, "__vz__/index")
-            self._load_index(index_raw)
-        else:
-            try:
-                recs = parse_records(self._read(cd_off, cd_size))
-            except CDParseError as e:
-                raise ArchiveError(f"central directory does not parse: {e}") from None
-            self.records = {}
-            for rec in recs:
-                name = record_name(rec)
-                if name == INDEX_KEY:
-                    raise ArchiveError("archive without a page index has an __vz__/index entry")
-                if not valid_key_name(name):
-                    continue
-                self.records.setdefault(name, rec)
-
-    def _inflate_format(self, off: int, size: int, what: str) -> bytes:
-        if off > self.size or size > self.size - off:
-            raise ArchiveError(f"{what} body lies outside the file")
-        try:
-            return inflate_clean(self._read(off, size))
-        except (InflateError, RequestError) as e:
-            raise ArchiveError(f"{what} does not inflate cleanly: {e}") from None
-
-    def _load_index(self, raw: bytes) -> None:
-        try:
-            idx = proto.decode_cd_index(raw)
-        except proto.Malformed as e:
-            raise ArchiveError(f"page index is malformed: {e}") from None
-        expect = 0
-        prev = None
-        for i, p in enumerate(idx.pages):
-            fk = p.first_key.encode("utf-8")
-            if p.length == 0:
-                raise ArchiveError(f"page index is malformed: page {i} has length 0")
-            if p.offset != expect:
-                raise ArchiveError(f"page index is malformed: page {i} is not contiguous")
-            if p.offset + p.length > self.cd_size:
-                raise ArchiveError(f"page index is malformed: page {i} lies outside the central directory")
-            if not fk:
-                raise ArchiveError(f"page index is malformed: page {i} has an empty first_key")
-            if prev is not None and not fk > prev:
-                raise ArchiveError("page index is malformed: first_key values do not strictly increase")
-            prev = fk
-            expect = p.offset + p.length
-        for p in idx.pinned:
-            k = p.key.encode("utf-8")
-            if not k:
-                raise ArchiveError("page index is malformed: empty pinned key")
-            if k in self.pinned:
-                raise ArchiveError(f"page index is malformed: pinned key {p.key!r} listed twice")
-            if k in FORMAT_KEYS:
-                raise ArchiveError(f"page index is malformed: pinned key {p.key!r} is a format entry")
-            if p.method not in (0, 8):
-                raise ArchiveError(f"page index is malformed: pinned method {p.method}")
-            if p.data_offset > self.size or p.csize > self.size - p.data_offset:
-                raise ArchiveError(f"page index is malformed: pinned body of {p.key!r} lies outside the file")
-            self.pinned[k] = p
-        self.pages = idx.pages
-        self._page_keys = [p.first_key.encode("utf-8") for p in idx.pages]
-
-    # ---------------------------------------------------------------- lookup (§7.2)
-
-    def _page_records(self, i: int) -> dict[bytes, bytes]:
-        cached = self._page_cache.get(i)
-        if cached is None:
-            p = self.pages[i]
-            try:
-                recs = parse_records(self._read(self.cd_off + p.offset, p.length))
-                cached = {}
-                for rec in recs:
-                    name = record_name(rec)
-                    if valid_key_name(name):
-                        cached.setdefault(name, rec)
-            except CDParseError as e:
-                cached = EntryError(f"page {i} cannot be parsed: {e}")
-            self._page_cache[i] = cached
-        if isinstance(cached, EntryError):
-            raise EntryError(str(cached))
-        return cached
-
-    def _page_for(self, k: bytes) -> int | None:
-        lo, hi = 0, len(self._page_keys)
-        while lo < hi:  # last page with first_key <= k
-            mid = (lo + hi) // 2
-            if self._page_keys[mid] <= k:
-                lo = mid + 1
-            else:
-                hi = mid
-        return lo - 1 if lo > 0 else None
-
-    def _lookup(self, k: bytes) -> Entry | None:
-        """Find the entry for key k (any key, hidden or not). Raises EntryError for page errors.
-
-        The returned Entry may carry an entry_error; callers decide when to raise it.
-        """
-        if k == SOURCES_KEY:
-            so, ss = self.sources_loc
-            return Entry(name=k, kind="bytes", method=8, csize=ss, usize=None, body_offset=so, is_format=True)
-        if k == INDEX_KEY:
-            if not self.paged:
-                return None
-            io, isz = self.index_loc
-            return Entry(name=k, kind="bytes", method=8, csize=isz, usize=None, body_offset=io, is_format=True)
-        if self.paged:
-            p = self.pinned.get(k)
-            if p is not None:
-                return Entry(name=k, kind="bytes", method=p.method, csize=p.csize, usize=p.size,
-                             body_offset=p.data_offset)
-            i = self._page_for(k)
-            if i is None:
-                return None
-            rec = self._page_records(i).get(k)
-        else:
-            rec = self.records.get(k)
-        if rec is None:
-            return None
-        return analyse_record(rec)
-
-    def _lookup_checked(self, k: bytes) -> Entry | None:
-        e = self._lookup(k)
-        if e is not None and e.entry_error:
-            raise EntryError(f"{k.decode('utf-8', 'replace')!r}: {e.entry_error}")
-        return e
-
-    # ---------------------------------------------------------------- bodies
-
-    def _check_body_bounds(self, e: Entry) -> None:
-        if e.body_offset > self.size or e.csize > self.size - e.body_offset:
-            raise BodyError("entry body lies outside the file")
-
-    def _body_value(self, e: Entry, window_fn) -> bytes:
-        """Return a window of the entry's (inflated) body. window_fn(n) -> (a, b)."""
-        self._check_body_bounds(e)
-        if e.method == 8:
-            cached = self._value_cache.get(e.name) if not e.is_format else None
-            if cached is None:
-                try:
-                    cached = inflate_clean(self._read(e.body_offset, e.csize), e.usize)
-                except InflateError as ex:
-                    raise BodyError(str(ex)) from None
-                if not e.is_format:
-                    self._value_cache[e.name] = cached
-            a, b = window_fn(len(cached))
-            return cached[a:b]
-        if e.usize is not None and e.csize != e.usize:
-            raise BodyError(f"STORED entry has compressed size {e.csize} != uncompressed size {e.usize}")
-        a, b = window_fn(e.csize)
-        if b - a > MAX_REQUEST_BYTES:
-            raise RequestError("request exceeds the reader's memory limit")
-        return self._read(e.body_offset + a, b - a)
-
-    # ---------------------------------------------------------------- operations (§8.2)
-
-    def classify(self, key: str | bytes) -> str:
-        k = _kb(key)
-        if is_hidden(k):
-            return "missing"
-        e = self._lookup_checked(k)
-        return "missing" if e is None else e.kind
-
-    def get(self, key: str | bytes, request: Request = WHOLE) -> bytes | None:
-        request.check()
-        k = _kb(key)
-        if is_hidden(k):
-            return None
-        e = self._lookup_checked(k)
-        if e is None:
-            return None
-        if e.kind == "bytes":
-            return self._body_value(e, request.window)
-        return self._get_reference(e, request)
-
-    def raw(self, key: str | bytes) -> bytes | None:
-        k = _kb(key)
-        e = self._lookup_checked(k)
-        if e is None:
-            return None
-        return self._body_value(e, lambda n: (0, n))
-
-    def list(self, prefix: str | bytes = "") -> list[str]:
-        p = _kb(prefix)
-        out: set[bytes] = set()
-        if not self.paged:
-            out = {k for k in self.records if k.startswith(p) and not is_hidden(k)}
-        else:
-            out = {k for k in self.pinned if k.startswith(p) and not is_hidden(k)}
-            upper = _prefix_upper(p)
-            n = len(self.pages)
-            for i in range(n):
-                lo = self._page_keys[i]
-                hi = self._page_keys[i + 1] if i + 1 < n else None
-                # does [lo, hi) contain a key starting with p, i.e. intersect [p, upper)?
-                start = max(lo, p)
-                stop_candidates = [x for x in (hi, upper) if x is not None]
-                if stop_candidates and not start < min(stop_candidates):
-                    continue
-                recs = self._page_records(i)
-                for k in recs:
-                    if not k.startswith(p) or is_hidden(k):
-                        continue
-                    if k < lo or (hi is not None and k >= hi):
-                        continue  # lookup would not find it in this page
-                    if k in FORMAT_KEYS:
-                        continue
-                    out.add(k)
-        return [k.decode("utf-8") for k in sorted(out)]
-
-    # ---------------------------------------------------------------- references (§8.3)
-
-    def _decode_payload(self, e: Entry) -> list[proto.Range]:
-        try:
-            if e.payload_id == EXTRA_RANGE:
-                parts = [proto.decode_range(e.payload)]
-            else:
-                parts = proto.decode_concat(e.payload)
-        except proto.Malformed as ex:
-            raise PayloadError(f"reference payload is malformed: {ex}") from None
-        total = 0
-        nsrc = len(self.sources)
-        for i, r in enumerate(parts):
-            if r.data is not None:
-                if r.source or r.offset or r.length:
-                    raise PayloadError(f"part {i}: literal range with non-zero source/offset/length")
-            else:
-                if r.source >= nsrc:
-                    raise PayloadError(f"part {i}: source {r.source} out of range ({nsrc} sources)")
-                if r.offset + r.length > U64_MAX:
-                    raise PayloadError(f"part {i}: offset + length exceeds 2^64-1")
-            total += r.size
-        if total > U64_MAX:
-            raise PayloadError("reference size exceeds 2^64-1")
-        return parts
-
-    def _get_reference(self, e: Entry, request: Request) -> bytes:
-        parts = self._decode_payload(e)
-        n = sum(r.size for r in parts)
-        a, b = request.window(n)
-        if b - a > MAX_REQUEST_BYTES:
-            raise RequestError("request exceeds the reader's memory limit")
-        out = bytearray()
-        pos = 0
-        for r in parts:
-            rs, re_ = pos, pos + r.size
-            pos = re_
-            lo, hi = max(rs, a), min(re_, b)
-            if lo >= hi:
-                continue
-            i, j = lo - rs, hi - rs
-            if r.data is not None:
-                out += r.data[i:j]
-            else:
-                out += self._read_source(r.source, r.offset + i, r.offset + j)
-        return bytes(out)
-
-    def _read_source(self, idx: int, start: int, end: int) -> bytes:
-        s = self.sources[idx]
-        if s.kind == "data":
-            if end > len(s.value):
-                raise ResolutionError(f"data source {idx} has {len(s.value)} bytes, range needs {end}")
-            return s.value[start:end]
-        if s.kind == "url":
-            return read_url_source(self.base_uri, s, start, end)
-        # key source
-        k = s.value.encode("utf-8")
-        if k in FORMAT_KEYS:
-            raise ResolutionError(f"key source {idx} names a format entry")
-        try:
-            e = self._lookup_checked(k)
-            if e is None:
-                raise ResolutionError(f"key source {idx} names missing key {s.value!r}")
-            if e.kind != "bytes":
-                raise ResolutionError(f"key source {idx} names reference entry {s.value!r}")
-            short = []
-
-            def win(n):
-                if end > n:
-                    short.append(n)
-                    return 0, 0
-                return start, end
-            data = self._body_value(e, win)
-            if short:
-                raise ResolutionError(f"key source {idx} value has {short[0]} bytes, range needs {end}")
-            return data
-        except (EntryError, BodyError) as ex:
-            raise ResolutionError(f"key source {idx} ({s.value!r}): {ex}") from None
-
-
-def _kb(key) -> bytes:
+def _utf8(key):
     if isinstance(key, bytes):
         return key
-    return key.encode("utf-8", errors="surrogatepass")
+    return key.encode("utf-8", "surrogatepass")
 
 
-def _prefix_upper(p: bytes) -> bytes | None:
-    """Smallest byte string greater than every string with prefix p (None: unbounded)."""
+def _prefix_upper(p):
+    """Smallest byte string greater than every string that starts with p, or None."""
     b = bytearray(p)
     while b and b[-1] == 0xFF:
         b.pop()
@@ -652,5 +220,447 @@ def _prefix_upper(p: bytes) -> bytes | None:
     return bytes(b)
 
 
-def open_archive(path, base_uri: str | None = None) -> Archive:
-    return Archive(path, base_uri)
+class Archive:
+    def __init__(self, path=None, base_uri=None, allowed_url_prefixes=None):
+        """Open the archive at local `path`.
+
+        allowed_url_prefixes: optional list of resolved-URL string prefixes that
+        sources may name; default None means unrestricted (spec §10).
+        """
+        self.blob = FileBlob(path)
+        self.base_uri = base_uri or uri.base_uri_for_path(path)
+        self.base = uri.parse(self.base_uri)
+        self.allowed = allowed_url_prefixes
+        try:
+            self._open()
+        except (ValueError, struct.error) as e:
+            self.blob.close()
+            raise ArchiveError(str(e)) from None
+        except BaseException:
+            self.blob.close()
+            raise
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    # ------------------------------------------------------------- open
+
+    def _open(self):
+        blob = self.blob
+        size = blob.size
+        eocd = None
+        if size >= 60:
+            tail = blob.read(size - 60, 60)
+            if struct.unpack_from("<I", tail, 0)[0] == EOCD_SIG and \
+                    struct.unpack_from("<H", tail, 20)[0] == 38:
+                eocd = size - 60
+        if eocd is None and size >= 44:
+            tail = blob.read(size - 44, 44)
+            if struct.unpack_from("<I", tail, 0)[0] == EOCD_SIG and \
+                    struct.unpack_from("<H", tail, 20)[0] == 22:
+                eocd = size - 44
+        if eocd is None:
+            raise ArchiveError("not a vzip archive: no end of central directory record "
+                               "with a vzip comment")
+        rec = blob.read(eocd, size - eocd)
+        comment = rec[22:]
+        if not comment.startswith(b"vzip/"):
+            raise ArchiveError("not a vzip archive: comment does not start with vzip/")
+        if comment[5:6] != b"0":
+            raise ArchiveError(f"unsupported vzip version {comment[5:6]!r}")
+        (_d1, _d2, n_disk, n_total, cd_size, cd_off) = struct.unpack_from("<HHHHII", rec, 4)
+        if n_disk == 0xFFFF or n_total == 0xFFFF or cd_size == 0xFFFFFFFF or \
+                cd_off == 0xFFFFFFFF:
+            if eocd < 20:
+                raise ArchiveError("zip64 locator missing")
+            loc = blob.read(eocd - 20, 20)
+            sig, _disk, z64_off, _ndisks = struct.unpack("<IIQI", loc)
+            if sig != Z64_LOC_SIG:
+                raise ArchiveError("zip64 end of central directory locator missing")
+            if z64_off + 56 > size:
+                raise ArchiveError("zip64 end of central directory record outside the file")
+            z = blob.read(z64_off, 56)
+            zsig, zsize = struct.unpack_from("<IQ", z, 0)
+            if zsig != Z64_EOCD_SIG:
+                raise ArchiveError("bad zip64 end of central directory signature")
+            if zsize != 44:
+                raise ArchiveError(f"zip64 end of central directory size field is {zsize}")
+            n_disk, n_total, cd_size, cd_off = struct.unpack_from("<QQQQ", z, 24)
+        if cd_off + cd_size > size:
+            raise ArchiveError("central directory lies outside the file")
+        self.cd_off, self.cd_size = cd_off, cd_size
+
+        # format entries
+        self.paged = len(comment) == 38
+        s_off, s_size = struct.unpack_from("<QQ", comment, 6)
+        self.sources_loc = (s_off, s_size)
+        sources_raw = self._read_format_entry(s_off, s_size, "__vz__/sources")
+        self.format_raw = {SOURCES_KEY: sources_raw}
+        self._load_sources(sources_raw)
+        self.pinned = {}
+        self.pages = []
+        self.page_cache = {}
+        self.records = None
+        if self.paged:
+            i_off, i_size = struct.unpack_from("<QQ", comment, 22)
+            index_raw = self._read_format_entry(i_off, i_size, "__vz__/index")
+            self.format_raw[INDEX_KEY] = index_raw
+            self._load_index(index_raw)
+        else:
+            try:
+                recs = _parse_records(blob.read(cd_off, cd_size))
+            except ValueError as e:
+                raise ArchiveError(f"central directory does not parse: {e}") from None
+            self.records = {}
+            for name, r in recs:
+                if name == INDEX_KEY:
+                    raise ArchiveError("__vz__/index entry in an archive without a page index")
+                self.records.setdefault(name, r)  # duplicates: first wins (unspecified)
+
+    def _read_format_entry(self, off, csize, what):
+        if off + csize > self.blob.size:
+            raise ArchiveError(f"{what} body lies outside the file")
+        try:
+            return _inflate_clean(self.blob.read(off, csize), MAX_FORMAT_ENTRY_BYTES)
+        except OverflowError:
+            raise ArchiveError(f"{what} exceeds the reader's size limit") from None
+        except ValueError as e:
+            raise ArchiveError(f"{what} does not inflate cleanly: {e}") from None
+
+    def _load_sources(self, raw):
+        try:
+            table = proto.decode(raw, proto.SOURCE_TABLE)
+        except proto.ProtoError as e:
+            raise ArchiveError(f"source table is malformed: {e}") from None
+        self.sources = []
+        for i, s in enumerate(table["sources"]):
+            kinds = [k for k in ("url", "key", "data") if k in s]
+            if not kinds:
+                raise ArchiveError(f"source {i} has no kind")
+            kind = kinds[0]
+            pins = Pins(s.get("size"), s.get("etag"), s.get("modified_not_after"))
+            has_pin = any(k in s for k in ("size", "etag", "modified_not_after"))
+            if kind == "url" and s["url"] == "":
+                raise ArchiveError(f"source {i} has an empty url")
+            if kind != "url" and has_pin:
+                raise ArchiveError(f"source {i}: pin on a {kind} source")
+            if pins.etag is not None and not is_strong_etag(pins.etag):
+                raise ArchiveError(f"source {i}: etag pin is not a strong entity tag")
+            self.sources.append((kind, s[kind], pins))
+
+    def _load_index(self, raw):
+        try:
+            idx = proto.decode(raw, proto.CD_INDEX)
+        except proto.ProtoError as e:
+            raise ArchiveError(f"page index is malformed: {e}") from None
+        expect = 0
+        prev = None
+        for i, p in enumerate(idx["pages"]):
+            fk = p.get("first_key", "").encode("utf-8")
+            off, ln = p.get("offset", 0), p.get("length", 0)
+            if ln == 0:
+                raise ArchiveError(f"page {i} has length 0")
+            if off + ln > self.cd_size:
+                raise ArchiveError(f"page {i} lies outside the central directory")
+            if off != expect:
+                raise ArchiveError(f"page {i} is not contiguous")
+            if not fk:
+                raise ArchiveError(f"page {i} has an empty first_key")
+            if prev is not None and not fk > prev:
+                raise ArchiveError(f"page {i}: first_key values do not strictly increase")
+            prev = fk
+            expect = off + ln
+            self.pages.append((fk, off, ln))
+        for p in idx["pinned"]:
+            k = p.get("key", "").encode("utf-8")
+            if not k:
+                raise ArchiveError("pinned key is empty")
+            if k in self.pinned:
+                raise ArchiveError(f"pinned key {k!r} listed twice")
+            if k in FORMAT_KEYS:
+                raise ArchiveError("pinned key is a format entry")
+            method = p.get("method", 0)
+            if method not in (0, 8):
+                raise ArchiveError(f"pinned method {method}")
+            d_off, csize = p.get("data_offset", 0), p.get("csize", 0)
+            if d_off + csize > self.blob.size:
+                raise ArchiveError(f"pinned body of {k!r} lies outside the file")
+            self.pinned[k] = PinnedEntry(k, d_off, p.get("size", 0), csize, method)
+
+    # ------------------------------------------------------------ lookup
+
+    def _page_records(self, i):
+        """Records of page i as a dict; raise EntryError if it cannot be parsed."""
+        if i in self.page_cache:
+            res = self.page_cache[i]
+        else:
+            _fk, off, ln = self.pages[i]
+            try:
+                recs = _parse_records(self.blob.read(self.cd_off + off, ln))
+                d = {}
+                for name, r in recs:
+                    d.setdefault(name, r)
+                res = d
+            except (ValueError, struct.error) as e:
+                res = str(e)
+            self.page_cache[i] = res
+        if isinstance(res, str):
+            raise EntryError(f"page {i} cannot be parsed: {res}")
+        return res
+
+    def _page_for(self, k):
+        lo, hi = 0, len(self.pages)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if self.pages[mid][0] <= k:
+                lo = mid + 1
+            else:
+                hi = mid
+        return lo - 1
+
+    def _lookup(self, k):
+        """Return the Record / PinnedEntry for key bytes k, or None. Format
+        entries are handled by callers. Raises EntryError."""
+        if not self.paged:
+            r = self.records.get(k)
+        elif k in self.pinned:
+            r = self.pinned[k]
+        else:
+            i = self._page_for(k)
+            if i < 0:
+                return None
+            r = self._page_records(i).get(k)
+        if r is None:
+            return None
+        r.analyse()
+        if r.error:
+            raise EntryError(r.error)
+        return r
+
+    # ------------------------------------------------------------ bodies
+
+    def _check_body_bounds(self, r):
+        if r.body_offset + r.csize > self.blob.size:
+            raise BodyError("entry body lies outside the file")
+
+    def _body_value(self, r, start=None, end=None):
+        """Value of a bytes entry (or raw body). Window [start, end) of the value
+        (None = whole). Raises BodyError."""
+        self._check_body_bounds(r)
+        if r.method == 8:
+            if r.usize > MAX_REQUEST_BYTES:
+                raise RequestError("entry exceeds the reader's inflate limit")
+            data = self.blob.read(r.body_offset, r.csize)
+            try:
+                out = _inflate_clean(data, r.usize)
+            except OverflowError:
+                raise BodyError("DEFLATE body inflates to more than its uncompressed size") \
+                    from None
+            except ValueError as e:
+                raise BodyError(str(e)) from None
+            if len(out) != r.usize:
+                raise BodyError("DEFLATE body inflates to the wrong size")
+            if start is None:
+                return out
+            return out[start:end]
+        if r.csize != r.usize:
+            raise BodyError("STORED entry's compressed and uncompressed sizes differ")
+        if start is None:
+            start, end = 0, r.usize
+        start = min(start, r.usize)
+        end = min(end, r.usize)
+        if end - start > MAX_REQUEST_BYTES:
+            raise RequestError("request exceeds the reader's size limit")
+        return self.blob.read(r.body_offset + start, end - start) if end > start else b""
+
+    # ------------------------------------------------------------ operations
+
+    def classify(self, key):
+        k = _utf8(key)
+        if k.startswith(PREFIX):
+            return "missing"
+        r = self._lookup(k)
+        return "missing" if r is None else r.kind
+
+    def raw(self, key):
+        k = _utf8(key)
+        if k in self.format_raw:
+            return self.format_raw[k]
+        r = self._lookup(k)
+        if r is None:
+            return None
+        return self._body_value(r)
+
+    def get(self, key, request=("whole",)):
+        k = _utf8(key)
+        _check_request(request)
+        if k.startswith(PREFIX):
+            return None
+        r = self._lookup(k)
+        if r is None:
+            return None
+        if r.kind == "bytes":
+            self._check_body_bounds(r)
+            if r.method == 0:
+                n = r.usize
+                if r.csize != r.usize:
+                    raise BodyError("STORED entry's compressed and uncompressed sizes differ")
+                a, b = _window(request, n)
+                return self._body_value(r, a, b)
+            n = r.usize
+            a, b = _window(request, n)
+            return self._body_value(r, a, b)
+        return self._resolve(r, request)
+
+    def list(self, prefix=""):
+        p = _utf8(prefix)
+        found = set()
+        if not self.paged:
+            for name in self.records:
+                if name.startswith(p) and not name.startswith(PREFIX):
+                    found.add(name)
+        else:
+            for name in self.pinned:
+                if name.startswith(p) and not name.startswith(PREFIX):
+                    found.add(name)
+            up = _prefix_upper(p)
+            for i, (lo, _off, _ln) in enumerate(self.pages):
+                hi = self.pages[i + 1][0] if i + 1 < len(self.pages) else None
+                hit = (lo <= p and (hi is None or p < hi)) or \
+                      (lo.startswith(p))
+                if up is not None and lo >= up:
+                    hit = False
+                if not hit:
+                    continue
+                for name in self._page_records(i):
+                    if name < lo or (hi is not None and name >= hi):
+                        continue  # lookup would not find it in this page
+                    if name.startswith(p) and not name.startswith(PREFIX):
+                        found.add(name)
+        return sorted(found)
+
+    # ------------------------------------------------------------ references
+
+    def _decode_payload(self, r):
+        try:
+            if r.ref_id == 0x7A76:
+                parts = [proto.decode(r.payload, proto.RANGE)]
+            else:
+                parts = proto.decode(r.payload, proto.CONCAT)["parts"]
+        except proto.ProtoError as e:
+            raise PayloadError(f"malformed reference payload: {e}") from None
+        out = []
+        total = 0
+        for i, p in enumerate(parts):
+            src, off, ln = p.get("source", 0), p.get("offset", 0), p.get("length", 0)
+            if "data" in p:
+                if src or off or ln:
+                    raise PayloadError(f"range {i}: literal range with source/offset/length")
+                out.append(("lit", p["data"], len(p["data"])))
+                total += len(p["data"])
+            else:
+                if src >= len(self.sources):
+                    raise PayloadError(f"range {i}: source {src} out of bounds")
+                if off + ln > U64_MAX:
+                    raise PayloadError(f"range {i}: offset + length exceeds 2^64-1")
+                out.append(("src", (src, off), ln))
+                total += ln
+        if total > U64_MAX:
+            raise PayloadError("reference size exceeds 2^64-1")
+        return out, total
+
+    def _resolve(self, r, request):
+        parts, n = self._decode_payload(r)
+        a, b = _window(request, n)
+        if b - a > MAX_REQUEST_BYTES:
+            raise RequestError("request exceeds the reader's size limit")
+        out = []
+        pos = 0
+        for kind, val, size in parts:
+            lo, hi = max(a, pos), min(b, pos + size)
+            if lo < hi:
+                i, j = lo - pos, hi - pos
+                if kind == "lit":
+                    out.append(val[i:j])
+                else:
+                    src, off = val
+                    out.append(self._read_source(src, off + i, off + j))
+            pos += size
+        return b"".join(out)
+
+    def _read_source(self, idx, start, end):
+        kind, val, pins = self.sources[idx]
+        if kind == "data":
+            if len(val) < end:
+                raise ResolutionError(f"data source {idx} is {len(val)} bytes, need {end}")
+            return val[start:end]
+        if kind == "key":
+            k = val.encode("utf-8")
+            if k in FORMAT_KEYS:
+                raise ResolutionError(f"source {idx} names a format entry")
+            try:
+                r = self._lookup(k)
+            except EntryError as e:
+                raise ResolutionError(f"source key {val!r} has an entry error: {e}") from None
+            if r is None:
+                raise ResolutionError(f"source key {val!r} is missing")
+            if r.kind != "bytes":
+                raise ResolutionError(f"source key {val!r} is a reference")
+            try:
+                self._check_body_bounds(r)
+                if r.method == 0 and r.csize != r.usize:
+                    raise BodyError("STORED sizes differ")
+                if r.usize < end:
+                    raise ResolutionError(f"source key {val!r} is {r.usize} bytes, need {end}")
+                return self._body_value(r, start, end)
+            except BodyError as e:
+                raise ResolutionError(f"source key {val!r} has a body error: {e}") from None
+        # url
+        try:
+            ref = uri.parse(val)
+        except uri.URIError as e:
+            raise ResolutionError(f"source {idx} url is not a valid URI reference: {e}") \
+                from None
+        target = uri.resolve(self.base, ref)
+        if self.allowed is not None:
+            s = str(target)
+            if not any(s.startswith(p) for p in self.allowed):
+                raise ResolutionError(f"URL {s} is not in an allowed prefix")
+        return read_url(target, start, end, pins)
+
+    def close(self):
+        self.blob.close()
+
+
+def is_strong_etag(s):
+    if len(s) < 2 or s[0] != '"' or s[-1] != '"':
+        return False
+    return all(0x21 <= ord(c) <= 0x7E and c != '"' for c in s[1:-1])
+
+
+def _check_request(req):
+    if req[0] == "range":
+        _, s, e = req
+        if s < 0 or e < 0:
+            raise RequestError("negative range bound")
+        if s > e:
+            raise RequestError("range start > end")
+    elif req[0] in ("offset", "suffix"):
+        if req[1] < 0:
+            raise RequestError("negative request value")
+
+
+def _window(req, n):
+    t = req[0]
+    if t == "whole":
+        return 0, n
+    if t == "range":
+        return min(req[1], n), min(req[2], n)
+    if t == "offset":
+        return min(req[1], n), n
+    if t == "suffix":
+        return max(n - req[1], 0), n
+    raise ValueError(t)

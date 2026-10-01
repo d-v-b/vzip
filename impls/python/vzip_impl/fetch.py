@@ -1,192 +1,239 @@
-"""Reading byte ranges of url sources (spec §6, §6.1, §6.2)."""
+"""Reading byte ranges of external objects named by URL (spec §6, §6.1, §6.2)."""
 
-from __future__ import annotations
-
+import datetime
 import http.client
 import os
 import re
-import ssl
 import stat
 
+from . import uri
 from .errors import ResolutionError
-from .proto import Source
-from .uri import URI, FileURIError, file_uri_to_path, is_uri_reference, resolve, split_uri
 
 MAX_REDIRECTS = 5
 HTTP_TIMEOUT = 30
 
-_ETAG_RE = re.compile(r'"[\x21\x23-\x7e]*"')
-
-
-def is_strong_etag(s: str) -> bool:
-    return bool(_ETAG_RE.fullmatch(s))
-
-
 _DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_LONG_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+_EPOCH = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
 
 
-def imf_fixdate(t: int) -> str:
-    """Format seconds since the epoch as an IMF-fixdate; ResolutionError outside years 1-9999."""
-    import datetime
+def imf_fixdate(seconds):
+    """Format integer epoch seconds as an IMF-fixdate; None if not representable."""
     try:
-        dt = datetime.datetime(1970, 1, 1) + datetime.timedelta(seconds=t)
+        dt = _EPOCH + datetime.timedelta(seconds=seconds)
     except OverflowError:
-        raise ResolutionError(f"modified_not_after {t} is outside years 1-9999") from None
-    return (f"{_DAYS[dt.weekday()]}, {dt.day:02d} {_MONTHS[dt.month - 1]} {dt.year:04d} "
-            f"{dt.hour:02d}:{dt.minute:02d}:{dt.second:02d} GMT")
+        return None
+    return "%s, %02d %s %04d %02d:%02d:%02d GMT" % (
+        _DAYS[dt.weekday()], dt.day, _MONTHS[dt.month - 1], dt.year,
+        dt.hour, dt.minute, dt.second)
 
 
-def read_url_source(base_uri: str, src: Source, start: int, end: int) -> bytes:
-    """Return bytes [start, end) of the object named by a url source, checking all pins."""
-    ref = src.value
-    if not is_uri_reference(ref):
-        raise ResolutionError(f"source url {ref!r} is not a valid URI reference")
-    target = resolve(base_uri, ref)
-    scheme = (target.scheme or "").lower()
-    if scheme == "file":
-        return _read_file(target, src, start, end)
-    if scheme in ("http", "https"):
-        return _read_http(target, src, start, end)
-    raise ResolutionError(f"unsupported URL scheme {target.scheme!r}")
+_MON = "(" + "|".join(_MONTHS) + ")"
+_IMF_RE = re.compile(r"(?:%s), (\d\d) %s (\d{4}) (\d\d):(\d\d):(\d\d) GMT\Z"
+                     % ("|".join(_DAYS), _MON))
+_RFC850_RE = re.compile(r"(?:%s), (\d\d)-%s-(\d\d) (\d\d):(\d\d):(\d\d) GMT\Z"
+                        % ("|".join(_LONG_DAYS), _MON))
+_ASCTIME_RE = re.compile(r"(?:%s) %s ( \d|\d\d) (\d\d):(\d\d):(\d\d) (\d{4})\Z"
+                         % ("|".join(_DAYS), _MON))
 
 
-# ------------------------------------------------------------------------- file:
-
-
-def _read_file(target: URI, src: Source, start: int, end: int) -> bytes:
+def parse_http_date(s, now_year=None):
+    """Parse an HTTP-date (RFC 9110 §5.6.7) to epoch seconds, or None."""
+    s = s.strip()
+    m = _IMF_RE.match(s)
+    if m:
+        day, mon, year, hh, mm, ss = m.groups()
+    else:
+        m = _RFC850_RE.match(s)
+        if m:
+            day, mon, yy, hh, mm, ss = m.groups()
+            if now_year is None:
+                now_year = datetime.datetime.now(datetime.timezone.utc).year
+            year = (now_year // 100) * 100 + int(yy)
+            if year > now_year + 50:
+                year -= 100
+        else:
+            m = _ASCTIME_RE.match(s)
+            if not m:
+                return None
+            mon, day, hh, mm, ss, year = m.groups()
     try:
-        path = file_uri_to_path(target)
-    except FileURIError as e:
-        raise ResolutionError(str(e)) from None
-    if src.etag is not None:
-        raise ResolutionError("an etag pin cannot be checked for a file: URL")
+        dt = datetime.datetime(int(year), _MONTHS.index(mon) + 1, int(day), int(hh),
+                               int(mm), int(ss), tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return None
+    return int((dt - _EPOCH).total_seconds())
+
+
+class Pins:
+    def __init__(self, size=None, etag=None, modified_not_after=None):
+        self.size = size
+        self.etag = etag
+        self.modified_not_after = modified_not_after
+
+
+# ------------------------------------------------------------------ file:
+
+def read_file(path_bytes, start, end, pins):
     try:
-        with open(path, "rb") as f:
-            st = os.fstat(f.fileno())
-            if not stat.S_ISREG(st.st_mode):
-                raise ResolutionError(f"{os.fsdecode(path)!r} is not a regular file")
-            if src.size is not None and st.st_size != src.size:
-                raise ResolutionError(f"size pin failed: file has {st.st_size} bytes, pin says {src.size}")
-            if src.modified_not_after is not None:
-                mtime = st.st_mtime_ns // 1_000_000_000  # floor, also for negative times
-                if mtime > src.modified_not_after:
-                    raise ResolutionError(
-                        f"modified_not_after pin failed: mtime {mtime} > {src.modified_not_after}")
-            if end > st.st_size:
-                raise ResolutionError(f"file has {st.st_size} bytes, range needs {end}")
-            f.seek(start)
-            data = f.read(end - start)
+        fd = os.open(path_bytes, os.O_RDONLY)
     except OSError as e:
-        raise ResolutionError(f"cannot read {os.fsdecode(path)!r}: {e}") from None
-    if len(data) != end - start:
-        raise ResolutionError("short read from file")
-    return data
+        raise ResolutionError(f"cannot open {os.fsdecode(path_bytes)}: {e.strerror}") from None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ResolutionError(f"{os.fsdecode(path_bytes)} is not a regular file")
+        if pins.etag is not None:
+            raise ResolutionError("an etag pin cannot be checked for a file: URL")
+        if pins.size is not None and st.st_size != pins.size:
+            raise ResolutionError(f"size pin failed: file is {st.st_size} bytes, pin {pins.size}")
+        if pins.modified_not_after is not None:
+            mtime = st.st_mtime_ns // 1_000_000_000
+            if mtime > pins.modified_not_after:
+                raise ResolutionError(
+                    f"modified_not_after pin failed: mtime {mtime} > {pins.modified_not_after}")
+        if st.st_size < end:
+            raise ResolutionError(f"source is {st.st_size} bytes, need {end}")
+        data = os.pread(fd, end - start, start)
+        if len(data) != end - start:
+            raise ResolutionError("short read")
+        return data
+    except OSError as e:
+        raise ResolutionError(f"read error: {e}") from None
+    finally:
+        os.close(fd)
 
 
-# ------------------------------------------------------------------------- http(s):
+# ------------------------------------------------------------------ http:
 
-_CR_RE = re.compile(r"bytes\s+(\d+)-(\d+)/(\d+|\*)\s*$")
+_CR_RE = re.compile(r"bytes (\d+)-(\d+)/(\d+|\*)\Z", re.IGNORECASE)
 
 
-def _host_port(authority: str, scheme: str) -> tuple[str, int]:
-    hostport = authority.rsplit("@", 1)[-1]
-    default = 443 if scheme == "https" else 80
-    if hostport.startswith("["):
-        close = hostport.index("]")
-        host = hostport[1:close]
-        rest = hostport[close + 1:]
-        port = int(rest[1:]) if rest.startswith(":") and rest[1:] else default
-    elif ":" in hostport:
-        host, p = hostport.split(":", 1)
-        port = int(p) if p else default
+def _http_once(u, headers):
+    scheme = u.scheme.lower()
+    _userinfo, host, port = uri.split_authority(u.authority or "")
+    if host.startswith("["):
+        host = host[1:-1]
     else:
-        host, port = hostport, default
-    return host, port
-
-
-def _read_http(target: URI, src: Source, start: int, end: int) -> bytes:
-    if src.modified_not_after is not None:
-        ius = imf_fixdate(src.modified_not_after)
+        host = bytes(uri._pct_decode(host)).decode("utf-8", "replace")
+    if not host:
+        raise ResolutionError("HTTP URL has no host")
+    port = int(port) if port else (443 if scheme == "https" else 80)
+    target = u.path or "/"
+    if u.query is not None:
+        target += "?" + u.query
+    if scheme == "https":
+        conn = http.client.HTTPSConnection(host, port, timeout=HTTP_TIMEOUT)
     else:
-        ius = None
-    url = target
-    for _hop in range(MAX_REDIRECTS + 1):
-        scheme = (url.scheme or "").lower()
-        if scheme not in ("http", "https"):
-            raise ResolutionError(f"redirect to unsupported scheme {url.scheme!r}")
-        if not url.authority:
-            raise ResolutionError("HTTP URL has no host")
-        host, port = _host_port(url.authority, scheme)
-        path = url.path or "/"
-        if url.query is not None:
-            path += "?" + url.query
-        headers = {
-            "Range": f"bytes={start}-{end - 1}",
-            "Accept-Encoding": "identity",
-        }
-        if src.etag is not None:
-            headers["If-Match"] = src.etag
-        if ius is not None:
-            headers["If-Unmodified-Since"] = ius
+        conn = http.client.HTTPConnection(host, port, timeout=HTTP_TIMEOUT)
+    try:
+        conn.request("GET", target, headers=headers)
+        resp = conn.getresponse()
+        status = resp.status
+        hdrs = resp.headers
+        body = resp.read() if status in (200, 206) else b""
+        resp.close()
+        return status, hdrs, body
+    finally:
+        conn.close()
+
+
+def read_http(u, start, end, pins):
+    """GET bytes [start, end) of the object at URIRef u (http/https)."""
+    headers = {"Range": f"bytes={start}-{end - 1}", "Accept-Encoding": "identity"}
+    if pins.etag is not None:
+        headers["If-Match"] = pins.etag
+    if pins.modified_not_after is not None:
+        d = imf_fixdate(pins.modified_not_after)
+        if d is None:
+            raise ResolutionError("modified_not_after pin is outside years 1-9999")
+        headers["If-Unmodified-Since"] = d
+    redirects = 0
+    while True:
         try:
-            if scheme == "https":
-                conn = http.client.HTTPSConnection(host, port, timeout=HTTP_TIMEOUT,
-                                                   context=ssl.create_default_context())
-            else:
-                conn = http.client.HTTPConnection(host, port, timeout=HTTP_TIMEOUT)
-            try:
-                conn.request("GET", path, headers=headers)
-                resp = conn.getresponse()
-                status = resp.status
-                if status in (301, 302, 303, 307, 308):
-                    loc = resp.getheader("Location")
-                    resp.read()
-                    if not loc:
-                        raise ResolutionError(f"HTTP {status} without Location")
-                    url = resolve(str(URI(url.scheme, url.authority, url.path, url.query, None)), loc)
-                    continue
-                return _handle_response(resp, src, start, end)
-            finally:
-                conn.close()
-        except ResolutionError:
-            raise
+            status, hdrs, body = _http_once(u, headers)
         except (OSError, http.client.HTTPException, ValueError) as e:
-            raise ResolutionError(f"HTTP request failed: {e}") from None
-    raise ResolutionError("too many redirects")
-
-
-def _handle_response(resp, src: Source, start: int, end: int) -> bytes:
-    status = resp.status
-    ce = resp.getheader("Content-Encoding")
-    if ce is not None and ce.strip().lower() not in ("identity", ""):
-        raise ResolutionError(f"unexpected Content-Encoding {ce!r}")
+            raise ResolutionError(f"HTTP request to {u} failed: {e}") from None
+        if status in (301, 302, 303, 307, 308):
+            redirects += 1
+            if redirects > MAX_REDIRECTS:
+                raise ResolutionError("too many redirects")
+            loc = hdrs.get("Location")
+            if loc is None:
+                raise ResolutionError("redirect without Location")
+            try:
+                target = uri.resolve(u, uri.parse(loc.strip()))
+            except uri.URIError as e:
+                raise ResolutionError(f"invalid redirect Location: {e}") from None
+            if target.scheme.lower() not in ("http", "https"):
+                raise ResolutionError(f"redirect to unsupported scheme {target.scheme}")
+            u = target
+            continue
+        break
     if status == 412:
         raise ResolutionError("HTTP 412: a pin failed")
     if status == 416:
-        raise ResolutionError("HTTP 416: object shorter than requested range")
+        raise ResolutionError("HTTP 416: object shorter than the requested range")
+    if status not in (200, 206):
+        raise ResolutionError(f"HTTP status {status}")
+    ce = hdrs.get_all("Content-Encoding") or []
+    for v in ce:
+        for tok in v.split(","):
+            if tok.strip().lower() not in ("identity", ""):
+                raise ResolutionError(f"Content-Encoding {v!r}")
     if status == 206:
-        cr = resp.getheader("Content-Range")
-        m = _CR_RE.fullmatch(cr.strip()) if cr else None
-        if m is None:
-            raise ResolutionError(f"206 response with unusable Content-Range {cr!r}")
-        a, z, total = int(m.group(1)), int(m.group(2)), m.group(3)
-        if a != start or z != end - 1:
-            raise ResolutionError(f"server returned bytes {a}-{z}, requested {start}-{end - 1}")
-        if src.size is not None:
-            if total == "*":
-                raise ResolutionError("size pin cannot be checked: server did not report the size")
-            if int(total) != src.size:
-                raise ResolutionError(f"size pin failed: object has {total} bytes, pin says {src.size}")
-        body = resp.read()
+        cr = hdrs.get("Content-Range")
+        m = _CR_RE.match(cr.strip()) if cr else None
+        if not m:
+            raise ResolutionError(f"206 without a usable Content-Range: {cr!r}")
+        first, last, total = int(m.group(1)), int(m.group(2)), m.group(3)
+        if first != start or last != end - 1:
+            raise ResolutionError(f"server returned range {first}-{last}, wanted {start}-{end - 1}")
         if len(body) != end - start:
             raise ResolutionError("206 body length does not match Content-Range")
-        return body
-    if status == 200:
-        body = resp.read()
-        if src.size is not None and len(body) != src.size:
-            raise ResolutionError(f"size pin failed: object has {len(body)} bytes, pin says {src.size}")
+        size = None if total == "*" else int(total)
+        if size is not None and size <= last:
+            raise ResolutionError("Content-Range total smaller than the returned range")
+        data = body
+    else:
+        size = len(body)
+        data = None
+    # Pin checks against the final response
+    if pins.size is not None:
+        if size is None:
+            raise ResolutionError("size pin cannot be checked: object size unknown")
+        if size != pins.size:
+            raise ResolutionError(f"size pin failed: object is {size} bytes, pin {pins.size}")
+    if pins.etag is not None:
+        et = hdrs.get("ETag")
+        if et is None:
+            raise ResolutionError("etag pin cannot be checked: no ETag header")
+        if et.strip() != pins.etag:
+            raise ResolutionError(f"etag pin failed: {et.strip()} != {pins.etag}")
+    if pins.modified_not_after is not None:
+        lm = hdrs.get("Last-Modified")
+        t = parse_http_date(lm) if lm is not None else None
+        if t is None:
+            raise ResolutionError("modified_not_after pin cannot be checked: bad Last-Modified")
+        if t > pins.modified_not_after:
+            raise ResolutionError("modified_not_after pin failed")
+    if data is None:
         if len(body) < end:
-            raise ResolutionError(f"object has {len(body)} bytes, range needs {end}")
-        return body[start:end]
-    raise ResolutionError(f"unexpected HTTP status {status}")
+            raise ResolutionError(f"object is {len(body)} bytes, need {end}")
+        data = body[start:end]
+    return data
+
+
+def read_url(resolved, start, end, pins):
+    """Read [start, end) of the object named by a resolved URIRef."""
+    scheme = (resolved.scheme or "").lower()
+    if scheme == "file":
+        try:
+            path = uri.file_uri_to_path(resolved)
+        except uri.URIError as e:
+            raise ResolutionError(str(e)) from None
+        return read_file(path, start, end, pins)
+    if scheme in ("http", "https"):
+        return read_http(resolved, start, end, pins)
+    raise ResolutionError(f"unsupported URL scheme {resolved.scheme!r}")
