@@ -1,0 +1,18 @@
+Raise the quality-layer limit of hayro-jpeg2000 0.4.0 from 32 to 255.
+
+JPEG 2000 allows up to 65535 layers, and TIFFs written by JJ2000 (e.g. the
+IDR OME-TIFFs this decoder was added for) use 33. The decoder stores the
+layer count in a `u8` and keeps layers in a `Vec`, so nothing else depends
+on the limit; decoded tiles match OpenJPEG exactly.
+
+--- a/src/j2c/codestream.rs
++++ b/src/j2c/codestream.rs
+@@ -9,7 +9,7 @@
+ use crate::error::{MarkerError, Result, ValidationError, bail, err};
+ use crate::reader::BitReader;
+ 
+-const MAX_LAYER_COUNT: u8 = 32;
++const MAX_LAYER_COUNT: u8 = 255;
+ const MAX_RESOLUTION_COUNT: u8 = 32;
+ const MAX_PRECINCT_EXPONENT: u8 = 31;
+ 

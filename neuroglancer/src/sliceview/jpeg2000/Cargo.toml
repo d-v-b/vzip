@@ -1,0 +1,21 @@
+[package]
+name = "jpeg2000-wasm"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hayro-jpeg2000 = { version = "=0.4.0", default-features = false, features = ["std", "simd"] }
+
+# `build.sh` downloads hayro-jpeg2000 0.4.0 into `vendor/` and applies
+# `hayro-jpeg2000-layers.patch`.
+[patch.crates-io]
+hayro-jpeg2000 = { path = "vendor/hayro-jpeg2000" }
+
+[profile.release]
+lto = true
+opt-level = 3
+codegen-units = 1
+panic = "abort"

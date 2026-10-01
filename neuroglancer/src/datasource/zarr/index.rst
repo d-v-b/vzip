@@ -94,8 +94,13 @@ Supported codecs:
 - blosc
 - bytes
 - gzip
+- imagecodecs_jpeg2k (decoding of 8- and 16-bit integer JPEG 2000 codestreams
+  and JP2 files; a chunk's shape must end in ``[height, width]``, or
+  ``[height, width, components]`` for multi-component images, with all other
+  dimensions 1)
 - sharding_indexed
 - transpose
+- zlib
 - zstd
 
 Auto detection
