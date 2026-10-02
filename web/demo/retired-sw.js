@@ -7,7 +7,8 @@
 //
 // The demo site (d-v-b/vzip-demo) serves it at /vzip-demo/vzip-sw.js: the
 // site's first deploy put the TIFF-to-Zarr demo, and its worker, at the root,
-// before the demo moved to tiff-to-zarr/.
+// before the demo moved to tiff-to-zarr/. It is also served at tiff-to-zarr/vzip-sw.js,
+// for the workers installed there before the demo moved to image-to-zarr/.
 
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => {

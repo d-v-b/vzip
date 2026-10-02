@@ -1,6 +1,6 @@
 // Checks the demo in a browser that already has a service worker with a
 // broader scope, as left by the demo site's first deploy, which served the
-// demo (and its worker) at the site root before it moved to tiff-to-zarr/.
+// demo (and its worker) at the site root before it moved to tiff-to-zarr/ (now image-to-zarr/).
 //
 // The server mimics the GitHub Pages layout:
 //   /vzip-demo/              the first deploy's demo and worker (vzip-sw.js),
@@ -8,7 +8,7 @@
 //                            web/demo/retired-sw.js; with "upgrade", the old
 //                            worker is installed first and then replaced by
 //                            the retired one, as on the live site
-//   /vzip-demo/tiff-to-zarr/ the current demo (web/dist)
+//   /vzip-demo/image-to-zarr/ the current demo (web/dist)
 //   /data/fixture.tif        a TIFF fixture
 //
 // Usage (after `node web/build.mjs`):
@@ -30,8 +30,8 @@ const server = http.createServer((req, res) => {
   let file;
   if (url.pathname === "/data/fixture.tif") {
     file = path.join(here, "../test/fixtures/rgb_planar_jpeg2000_bigtiff_be.ome.tif");
-  } else if (url.pathname.startsWith("/vzip-demo/tiff-to-zarr/")) {
-    file = path.join(dist, url.pathname.slice("/vzip-demo/tiff-to-zarr/".length) || "index.html");
+  } else if (url.pathname.startsWith("/vzip-demo/image-to-zarr/")) {
+    file = path.join(dist, url.pathname.slice("/vzip-demo/image-to-zarr/".length) || "index.html");
   } else if (url.pathname === "/vzip-demo/vzip-sw.js" && retired) {
     file = path.join(here, "retired-sw.js");
   } else if (url.pathname.startsWith("/vzip-demo/")) {
@@ -92,7 +92,7 @@ if (mode === "upgrade") {
 
 // 2. The current demo, opened in the same browser.
 const tiff = `${base}/data/fixture.tif`;
-await page.goto(`${base}/vzip-demo/tiff-to-zarr/?url=${encodeURIComponent(tiff)}`);
+await page.goto(`${base}/vzip-demo/image-to-zarr/?url=${encodeURIComponent(tiff)}`);
 await page.waitForFunction(
   () => /Ready|error|\d{3}:|not answered/i.test(document.querySelector("#status")?.textContent ?? ""),
   null,
@@ -105,7 +105,7 @@ console.log("result shown:", ok);
 console.log("controller:", await page.evaluate(() => navigator.serviceWorker.controller?.scriptURL));
 
 // 3. Clicking the example (here: submitting another URL) records it in the page URL.
-await page.goto(`${base}/vzip-demo/tiff-to-zarr/`);
+await page.goto(`${base}/vzip-demo/image-to-zarr/`);
 await page.fill("#url", tiff);
 await page.click("button[type=submit]");
 await page.waitForSelector("#result:not([hidden])", { timeout: 30000 });

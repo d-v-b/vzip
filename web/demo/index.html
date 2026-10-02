@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TIFF and ND2 to Zarr in the browser</title>
-<meta name="description" content="Paste the URL of a remote (OME-)TIFF or Nikon ND2 file: a service worker virtualizes it into a vzip archive in the browser and serves it as plain Zarr, opened here in Neuroglancer.">
+<title>Image files to Zarr in the browser</title>
+<meta name="description" content="Paste the URL of a remote image file (OME-)TIFF or Nikon ND2, detected from its first bytes: a service worker virtualizes it into a vzip archive in the browser and serves it as plain Zarr, opened here in Neuroglancer.">
 <style>
   :root {
     --bg: #fafaf8; --fg: #1d1d1b; --muted: #6b6b66; --line: #deddd8;
@@ -42,14 +42,15 @@
 </head>
 <body>
 <main>
-  <h1>TIFF and ND2 to Zarr in the browser</h1>
-  <p class="lede">Paste the URL of a tiled TIFF or OME-TIFF, a Nikon ND2 file, or a .vzip archive. A
+  <h1>Image files to Zarr in the browser</h1>
+  <p class="lede">Paste the URL of an image file or a .vzip archive. Tiled TIFF and OME-TIFF and
+    Nikon ND2 files are supported; the format is detected from the file's first bytes. A
     service worker reads the file's structure with a few range requests, writes a vzip archive in
     memory (by <a href="https://github.com/d-v-b/vzip/blob/main/VIRTUALIZE.md">VIRTUALIZE.md</a>), and
     serves it as plain Zarr at a local URL that any Zarr viewer on this site can open. Pixel data is
     read from the original file only when a viewer asks for it.</p>
   <form id="form">
-    <input id="url" type="url" required aria-label="TIFF or vzip URL">
+    <input id="url" type="url" required aria-label="image file or vzip URL">
     <button type="submit">Virtualize</button>
   </form>
   <div class="examples">Examples: <a href="#" id="example">IDR idr0096, mouse bone marrow (OME-TIFF, 487 MB, JPEG 2000)</a>
