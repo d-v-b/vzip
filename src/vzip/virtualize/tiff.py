@@ -16,6 +16,10 @@ FORMATS = {1: "B", 6: "b", 7: "B", 3: "H", 8: "h", 4: "I", 13: "I", 9: "i", 16: 
            11: "f", 12: "d"}
 JPEG2000 = {33003, 33004, 33005, 34712}
 MAX_IFDS = 100000
+MAX_PLANES = 100000
+MAX_SAFE = 2**53 - 1
+INTEGER_TYPES = {1, 3, 4, 13, 16, 18}
+SCALARS = {256, 257, 259, 277, 284, 317, 322, 323}
 
 
 class Ifd:
@@ -67,14 +71,14 @@ def read_tiff(read: Reader, size: int):
         return list(struct.unpack(e + FORMATS[typ] * n, data[: SIZES[typ] * n]))
 
     def read_ifd(offset: int):
+        if offset < (16 if big else 8):
+            raise Rejected(f"IFD offset {offset} is inside the header")
         if offset in seen:
-            raise Rejected(f"IFD cycle at {offset}")
+            raise Rejected(f"IFD offset {offset} read twice")
         if len(seen) >= MAX_IFDS:
             raise Rejected("too many IFDs")
         seen.add(offset)
         count = struct.unpack(e + ("Q" if big else "H"), read(offset, count_size))[0]
-        if count > 1 << 16:
-            raise Rejected(f"IFD with {count} entries")
         body = read(offset + count_size, count * entry_size + field_size)
         tags, types = {}, {}
         for i in range(count):
@@ -82,9 +86,11 @@ def read_tiff(read: Reader, size: int):
             tag, typ = struct.unpack(e + "HH", body[at : at + 4])
             if tag not in TAGS or tag in tags:
                 continue  # unused, or a duplicate (the first is used)
-            if typ not in SIZES:
-                raise Rejected(f"tag {tag} has unknown type {typ}")
+            if typ not in (SIZES if tag == 270 else INTEGER_TYPES):
+                raise Rejected(f"tag {tag} has field type {typ}")
             n = struct.unpack(e + ("Q" if big else "I"), body[at + 4 : at + 4 + (8 if big else 4)])[0]
+            if tag in SCALARS and n == 0:
+                raise Rejected(f"tag {tag} has no value")
             vat = at + 4 + (8 if big else 4)
             if n * SIZES[typ] <= field_size:
                 tags[tag] = values(body[vat : vat + n * SIZES[typ]], typ, n)
@@ -109,42 +115,55 @@ def read_tiff(read: Reader, size: int):
 
 # ---- OME-XML (§3.2)
 
-SKIP = re.compile(r"<!--.*?-->|<!\[CDATA\[.*?\]\]>|<\?.*?\?>|<![^>]*>", re.S)
-TAG = re.compile(r"<(/?)(?:[\w.-]+:)?([\w.-]+)((?:\s+[^\s=/>]+\s*=\s*(?:\"[^\"]*\"|'[^']*'))*)\s*(/?)>")
-ATTR = re.compile(r"([^\s=/>]+)\s*=\s*(?:\"([^\"]*)\"|'([^']*)')")
+WS = "[ \t\r\n]"
+NAME = "[A-Za-z0-9_.-]+"
+ATTR = rf"""([^ \t\r\n=/>"'<]+){WS}*={WS}*(?:"([^"]*)"|'([^']*)')"""
+SKIP = r"<!--.*?(?:-->|\Z)|<!\[CDATA\[.*?(?:\]\]>|\Z)|<\?.*?(?:\?>|\Z)|<!.*?(?:>|\Z)"
+TAG = rf"""<(?P<close>/?)(?:{NAME}:)?(?P<name>{NAME})(?P<attrs>(?:{WS}+[^ \t\r\n=/>"'<]+{WS}*={WS}*(?:"[^"]*"|'[^']*'))*){WS}*(?P<self>/?)>"""
+SCAN = re.compile(rf"(?P<skip>{SKIP})|(?P<tag>{TAG})|<", re.S)
+ATTRS = re.compile(ATTR)
 REFS = re.compile(r"&(?:#x([0-9a-fA-F]+)|#([0-9]+)|(lt|gt|amp|quot|apos));")
 DECIMAL = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
 
 
 def _decode(v: str) -> str:
     def ref(m):
-        if m[1]:
-            return chr(int(m[1], 16))
-        if m[2]:
-            return chr(int(m[2]))
-        return {"lt": "<", "gt": ">", "amp": "&", "quot": '"', "apos": "'"}[m[3]]
+        if m[3]:
+            return {"lt": "<", "gt": ">", "amp": "&", "quot": '"', "apos": "'"}[m[3]]
+        c = int(m[1], 16) if m[1] else int(m[2])
+        if c == 0 or 0xD800 <= c <= 0xDFFF or c > 0x10FFFF:
+            return m[0]
+        return chr(c)
     return REFS.sub(ref, v)
 
 
-def _tags(xml: str):
-    """(position, closing, local name, attributes, self-closing) for every tag of `xml`."""
-    text = SKIP.sub(lambda m: " " * len(m.group(0)), xml)
-    for m in TAG.finditer(text):
-        attrs = {a[1]: _decode(a[2] if a[2] is not None else a[3]) for a in ATTR.finditer(m[3])}
-        yield m.start(), m.end(), m[1] == "/", m[2], attrs, m[4] == "/"
+def scan(xml: str):
+    """The tags of `xml` in order, as (start, end, closing, local name,
+    attributes, self-closing), and the spans of skipped sections (§3.2)."""
+    tags, skipped = [], []
+    for m in SCAN.finditer(xml):
+        if m["skip"] is not None:
+            skipped.append(m.span())
+        elif m["tag"] is not None:
+            attrs: dict = {}
+            for a in ATTRS.finditer(m["attrs"]):
+                attrs.setdefault(a[1], _decode(a[2] if a[2] is not None else a[3]))  # first wins
+            tags.append((m.start(), m.end(), m["close"] == "/", m["name"], attrs, m["self"] == "/"))
+    return tags, skipped
 
 
 def is_ome(xml: str) -> bool:
-    return any(not closing and name == "OME" for _, _, closing, name, _, _ in _tags(xml))
+    return any(not closing and name == "OME" for _, _, closing, name, _, _ in scan(xml)[0])
 
 
 def parse_ome(xml: str):
     """(image name, Pixels attributes, TiffData list) of the first image (§3.2)."""
-    tags = list(_tags(xml))
+    tags, skipped = scan(xml)
     image = next((t for t in tags if not t[2] and t[3] == "Image"), None)
+    name = image[4].get("Name") if image else None
     pi = next((i for i, t in enumerate(tags) if not t[2] and t[3] == "Pixels"), None)
     if pi is None:
-        return (image[4].get("Name") if image else None), {}, []
+        return name, {}, []
     pixels = tags[pi]
     inside = []
     if not pixels[5]:
@@ -152,6 +171,17 @@ def parse_ome(xml: str):
             if t[2] and t[3] == "Pixels":
                 break
             inside.append(t)
+
+    def text(start: int, end: int) -> str:
+        pieces, pos = [], start
+        for a, b in skipped:
+            if b <= start or a >= end:
+                continue
+            pieces.append(xml[pos:a])
+            pos = b
+        pieces.append(xml[pos:end])
+        return _decode("".join(pieces)).strip(" \t\r\n")
+
     tiff_data = []
     for i, t in enumerate(inside):
         if t[2] or t[3] != "TiffData":
@@ -160,27 +190,27 @@ def parse_ome(xml: str):
         if not t[5]:
             for j in range(i + 1, len(inside)):
                 u = inside[j]
-                if u[2] and u[3] == "TiffData":
-                    break
+                if u[3] == "TiffData":
+                    break  # its end tag, or the next TiffData
                 if not u[2] and u[3] == "UUID":
-                    fname = u[4].get("FileName")
-                    text = ""
-                    if not u[5]:
-                        k = j + 1
-                        end = inside[k][0] if k < len(inside) else len(xml)
-                        text = _decode(SKIP.sub("", xml[u[1] : end])).strip()
-                    td["uuid"] = fname if fname is not None else text
+                    file_name = u[4].get("FileName")
+                    if file_name is not None:
+                        td["uuid"] = file_name
+                    elif u[5]:
+                        td["uuid"] = ""
+                    else:
+                        td["uuid"] = text(u[1], tags[tags.index(u) + 1][0] if tags.index(u) + 1 < len(tags) else len(xml))
                     break
         tiff_data.append(td)
-    return (image[4].get("Name") if image else None), pixels[4], tiff_data
+    return name, pixels[4], tiff_data
 
 
 def _int(attrs: dict, key: str, default: int, minimum: int = 0) -> int:
     v = attrs.get(key)
     if v is None:
         return default
-    s = v.strip()
-    if not s.isdigit() or not s.isascii():
+    s = v.strip(" \t\r\n")
+    if not re.fullmatch(r"[0-9]+", s) or int(s) > MAX_SAFE:
         raise Rejected(f"{key}={v!r} is not an integer")
     if int(s) < minimum:
         raise Rejected(f"{key}={v!r} is less than {minimum}")
@@ -199,12 +229,14 @@ def _physical(attrs: dict, d: str):
 
 def fmt(ifd: Ifd):
     bits = ifd.nums(258)
-    if any(b != bits[0] for b in bits):
-        raise Rejected("samples of different sizes")
+    if not bits or any(b != bits[0] for b in bits) or bits[0] < 1:
+        raise Rejected("BitsPerSample values are missing, differ or are 0")
     formats = ifd.tags.get(339, [1])
-    if any(f != formats[0] for f in formats):
-        raise Rejected("samples of different SampleFormats")
+    if not formats or any(f != formats[0] for f in formats):
+        raise Rejected("SampleFormat values are missing or differ")
     spp = ifd.num(277, 1)
+    if spp < 1:
+        raise Rejected("SamplesPerPixel is 0")
     planar = ifd.num(284, 1) if spp > 1 else 1
     if planar not in (1, 2):
         raise Rejected(f"PlanarConfiguration {planar}")
@@ -215,7 +247,20 @@ def tiled(ifd: Ifd) -> bool:
     return 322 in ifd.tags and 324 in ifd.tags
 
 
+def check_size(ifd: Ifd) -> None:
+    """The size checks of §3.1, for planes, levels and level-scan candidates."""
+    if ifd.num(256) < 1 or ifd.num(257) < 1:
+        raise Rejected(f"the image at {ifd.offset} is empty")
+    if tiled(ifd):
+        ifd.nums(325)
+        if ifd.num(322) < 1 or ifd.num(323) < 1:
+            raise Rejected(f"the image at {ifd.offset} has an empty tile size")
+
+
 def level(ifds: list[Ifd]) -> dict:
+    for i in ifds:
+        check_size(i)
+        fmt(i)
     for i in ifds:
         if not tiled(i):
             raise Rejected(f"only tiled TIFFs are supported; the image at {i.offset} is stored in strips")
@@ -267,6 +312,8 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
     def plane(t, c, z):
         return (t * plane_c + c) * size_z + z
 
+    if size_t * plane_c * size_z > MAX_PLANES:
+        raise Rejected(f"{size_t * plane_c * size_z} planes is more than {MAX_PLANES}")
     plane_ifd = [-1] * (size_t * plane_c * size_z)
     if ome is None:
         plane_ifd[0] = 0
@@ -314,6 +361,7 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
                 prev = levels[-1]
                 if not (tiled(ifd) and 258 in ifd.tags):
                     continue
+                check_size(ifd)
                 if fmt(ifd) == fmt(ifd0) and ifd.num(256) < prev["w"] and ifd.num(257) < prev["h"]:
                     levels.append(level([ifd]))
     for lv in levels:

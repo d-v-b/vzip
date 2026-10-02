@@ -22,25 +22,43 @@ interface XmlTag {
   selfClosing: boolean;
 }
 
-const SKIP = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<![^>]*>/g;
-const TAG = /<(\/?)(?:[\w.-]+:)?([\w.-]+)((?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)>/g;
-const ATTR = /([^\s=/>]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+const WS = "[ \\t\\r\\n]";
+const NAME = "[A-Za-z0-9_.-]+";
+const ANAME = `[^ \\t\\r\\n=/>"'<]+`;
+const SKIP = "<!--[^]*?(?:-->|$)|<!\\[CDATA\\[[^]*?(?:\\]\\]>|$)|<\\?[^]*?(?:\\?>|$)|<![^]*?(?:>|$)";
+const TAG = `<(/?)(?:${NAME}:)?(${NAME})((?:${WS}+${ANAME}${WS}*=${WS}*(?:"[^"]*"|'[^']*'))*)${WS}*(/?)>`;
+const SCAN = new RegExp(`(${SKIP})|(${TAG})|<`, "g"); // no "m" flag: "$" is the end of X
+const ATTR = new RegExp(`(${ANAME})${WS}*=${WS}*(?:"([^"]*)"|'([^']*)')`, "g");
 const DECIMAL = /^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$/;
+const NAMED: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
 
 function decodeXml(s: string): string {
-  return s.replace(/&(?:#x([0-9a-fA-F]+)|#([0-9]+)|(lt|gt|amp|quot|apos));/g, (_, hex, dec, named) =>
-    hex ? String.fromCodePoint(parseInt(hex, 16))
-      : dec ? String.fromCodePoint(Number(dec))
-      : ({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" } as Record<string, string>)[named]);
+  return s.replace(/&(?:#x([0-9a-fA-F]+)|#([0-9]+)|(lt|gt|amp|quot|apos));/g, (ref, hex, dec, named) => {
+    if (named) return NAMED[named];
+    const c = hex ? parseInt(hex, 16) : Number(dec);
+    if (c === 0 || (c >= 0xd800 && c <= 0xdfff) || c > 0x10ffff) return ref;
+    return String.fromCodePoint(c);
+  });
 }
 
-function xmlTags(xml: string): XmlTag[] {
-  const text = xml.replace(SKIP, (m) => " ".repeat(m.length));
-  return [...text.matchAll(TAG)].map((m) => {
-    const attrs: Record<string, string> = {};
-    for (const a of m[3].matchAll(ATTR)) attrs[a[1]] = decodeXml(a[2] ?? a[3]);
-    return { start: m.index!, end: m.index! + m[0].length, closing: m[1] === "/", name: m[2], attrs, selfClosing: m[4] === "/" };
-  });
+/** The tags of `xml` in order, and the spans of its skipped sections (§3.2). */
+function scan(xml: string): { tags: XmlTag[]; skipped: [number, number][] } {
+  const tags: XmlTag[] = [];
+  const skipped: [number, number][] = [];
+  for (const m of xml.matchAll(SCAN)) {
+    const start = m.index!;
+    const end = start + m[0].length;
+    if (m[1] !== undefined) {
+      skipped.push([start, end]);
+    } else if (m[2] !== undefined) {
+      const attrs: Record<string, string> = {};
+      for (const a of m[5].matchAll(ATTR)) {
+        if (!Object.hasOwn(attrs, a[1])) attrs[a[1]] = decodeXml(a[2] ?? a[3]); // first wins
+      }
+      tags.push({ start, end, closing: m[3] === "/", name: m[4], attrs, selfClosing: m[6] === "/" });
+    }
+  }
+  return { tags, skipped };
 }
 
 interface TiffData {
@@ -55,7 +73,7 @@ interface Ome {
 }
 
 export function parseOme(xml: string): Ome | undefined {
-  const tags = xmlTags(xml);
+  const { tags, skipped } = scan(xml);
   if (!tags.some((t) => !t.closing && t.name === "OME")) return undefined;
   const image = tags.find((t) => !t.closing && t.name === "Image");
   const pi = tags.findIndex((t) => !t.closing && t.name === "Pixels");
@@ -68,6 +86,17 @@ export function parseOme(xml: string): Ome | undefined {
       inside.push(t);
     }
   }
+  // The characters of `xml` in [start, end), without skipped sections.
+  const text = (start: number, end: number) => {
+    let out = "";
+    let pos = start;
+    for (const [a, b] of skipped) {
+      if (b <= start || a >= end) continue;
+      out += xml.slice(pos, a);
+      pos = b;
+    }
+    return decodeXml(out + xml.slice(pos, end)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+  };
   const tiffData: TiffData[] = [];
   inside.forEach((t, i) => {
     if (t.closing || t.name !== "TiffData") return;
@@ -75,14 +104,14 @@ export function parseOme(xml: string): Ome | undefined {
     if (!t.selfClosing) {
       for (let j = i + 1; j < inside.length; j++) {
         const u = inside[j];
-        if (u.closing && u.name === "TiffData") break;
+        if (u.name === "TiffData") break; // its end tag, or the next TiffData
         if (!u.closing && u.name === "UUID") {
-          let text = "";
-          if (!u.selfClosing) {
-            const end = j + 1 < inside.length ? inside[j + 1].start : xml.length;
-            text = decodeXml(xml.slice(u.end, end).replace(SKIP, "")).trim();
+          if (u.attrs.FileName !== undefined) td.uuid = u.attrs.FileName;
+          else if (u.selfClosing) td.uuid = "";
+          else {
+            const next = tags[tags.indexOf(u) + 1];
+            td.uuid = text(u.end, next === undefined ? xml.length : next.start);
           }
-          td.uuid = u.attrs.FileName ?? text;
           break;
         }
       }
@@ -95,10 +124,10 @@ export function parseOme(xml: string): Ome | undefined {
 function intAttr(attrs: Record<string, string>, key: string, fallback: number, minimum = 0): number {
   const v = attrs[key];
   if (v === undefined) return fallback;
-  const s = v.trim();
+  const s = v.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
   if (!/^[0-9]+$/.test(s)) reject(`${key}="${v}" is not an integer`);
   const n = Number(s);
-  if (!Number.isSafeInteger(n)) reject(`${key}="${v}" is too large`);
+  if (!Number.isSafeInteger(n)) reject(`${key}="${v}" is not an integer`);
   if (n < minimum) reject(`${key}="${v}" is less than ${minimum}`);
   return n;
 }
@@ -129,10 +158,15 @@ interface Level {
 
 function format(ifd: Ifd) {
   const bits = nums(ifd, Tag.BitsPerSample);
-  if (bits.some((b) => b !== bits[0])) reject("samples of different sizes");
+  if (bits.length === 0 || bits.some((b) => b !== bits[0]) || bits[0] < 1) {
+    reject("BitsPerSample values are missing, differ or are 0");
+  }
   const formats = (ifd.tags.get(Tag.SampleFormat) as number[] | undefined) ?? [1];
-  if (formats.some((f) => f !== formats[0])) reject("samples of different SampleFormats");
+  if (formats.length === 0 || formats.some((f) => f !== formats[0])) {
+    reject("SampleFormat values are missing or differ");
+  }
   const spp = num(ifd, Tag.SamplesPerPixel, 1);
+  if (spp < 1) reject("SamplesPerPixel is 0");
   const planar = spp > 1 ? num(ifd, Tag.PlanarConfiguration, 1) : 1;
   if (planar !== 1 && planar !== 2) reject(`PlanarConfiguration ${planar}`);
   return {
@@ -148,7 +182,22 @@ function format(ifd: Ifd) {
 const sameFormat = (a: Ifd, b: Ifd) => JSON.stringify(format(a)) === JSON.stringify(format(b));
 const tiled = (ifd: Ifd) => ifd.tags.has(Tag.TileWidth) && ifd.tags.has(Tag.TileOffsets);
 
+/** The size checks of §3.1, for planes, levels and level-scan candidates. */
+function checkSize(ifd: Ifd) {
+  if (num(ifd, Tag.ImageWidth) < 1 || num(ifd, Tag.ImageLength) < 1) reject(`the image at ${ifd.offset} is empty`);
+  if (tiled(ifd)) {
+    nums(ifd, Tag.TileByteCounts);
+    if (num(ifd, Tag.TileWidth) < 1 || num(ifd, Tag.TileLength) < 1) {
+      reject(`the image at ${ifd.offset} has an empty tile size`);
+    }
+  }
+}
+
 function level(ifds: Ifd[]): Level {
+  for (const i of ifds) {
+    checkSize(i);
+    format(i);
+  }
   const [first] = ifds;
   const stripped = ifds.find((i) => !tiled(i));
   if (stripped !== undefined) {
@@ -233,6 +282,7 @@ export async function virtualizeTiff(
   }
   const planeC = f.spp > 1 ? 1 : sizeC;
   const plane = (t: number, c: number, z: number) => (t * planeC + c) * sizeZ + z;
+  if (sizeT * planeC * sizeZ > 100000) reject(`${sizeT * planeC * sizeZ} planes is more than 100000`);
   const planeIfd = new Array<number>(sizeT * planeC * sizeZ).fill(-1);
   if (ome === undefined) {
     planeIfd[0] = 0;
@@ -278,6 +328,7 @@ export async function virtualizeTiff(
       for (const ifd of tiff.ifds.slice(1)) {
         const prev = levels[levels.length - 1];
         if (!tiled(ifd) || !ifd.tags.has(Tag.BitsPerSample)) continue;
+        checkSize(ifd);
         if (sameFormat(ifd, ifd0) && num(ifd, Tag.ImageWidth) < prev.width && num(ifd, Tag.ImageLength) < prev.height) {
           levels.push(level([ifd]));
         }

@@ -1,9 +1,14 @@
 // Nikon's "lite variant" (LV) metadata encoding (VIRTUALIZE.md §4.2).
 //
 // Objects are Maps, which keep each name at the position of its first
-// appearance (plain objects would move integer-like names first).
+// appearance (plain objects would move integer-like names first). Scalars
+// keep their record type, which decides how they may be used.
 
-export type LV = boolean | number | string | LV[] | LVObject;
+export interface Scalar {
+  type: number;
+  value: boolean | number | string;
+}
+export type LV = Scalar | LV[] | LVObject;
 export type LVObject = Map<string, LV>;
 
 export class LVError extends Error {}
@@ -53,25 +58,28 @@ function records(r: Reader, end: number, count?: number): [string, LV][] {
     };
     let value: LV;
     switch (type) {
-      case 1: value = r.bytes[take(1)] !== 0; break;
-      case 2: value = r.view.getInt32(take(4), true); break;
-      case 3: value = r.view.getUint32(take(4), true); break;
-      case 4: value = Number(r.view.getBigInt64(take(8), true)); break;
-      case 5: case 7: value = Number(r.view.getBigUint64(take(8), true)); break;
-      case 6: value = r.view.getFloat64(take(8), true); break;
+      // 64-bit integers beyond 2^53 lose precision here; they are rejected
+      // wherever an integer is needed (§4.2), so the exact value never matters.
+      case 1: value = { type, value: r.bytes[take(1)] !== 0 }; break;
+      case 2: value = { type, value: r.view.getInt32(take(4), true) }; break;
+      case 3: value = { type, value: r.view.getUint32(take(4), true) }; break;
+      case 4: value = { type, value: Number(r.view.getBigInt64(take(8), true)) }; break;
+      case 5: case 7: value = { type, value: Number(r.view.getBigUint64(take(8), true)) }; break;
+      case 6: value = { type, value: r.view.getFloat64(take(8), true) }; break;
       case 8: {
         const from = r.pos;
         for (;;) {
           const at = take(2);
           if (r.view.getUint16(at, true) === 0) break;
         }
-        value = utf16.decode(r.bytes.subarray(from, r.pos - 2));
+        value = { type, value: utf16.decode(r.bytes.subarray(from, r.pos - 2)) };
         break;
       }
       case 9: {
         const n = Number(r.view.getBigUint64(take(8), true));
         const at = take(n);
-        value = Array.from(r.bytes.subarray(at, at + n));
+        // A byte counts as a value of type 3.
+        value = Array.from(r.bytes.subarray(at, at + n), (b): LV => ({ type: 3, value: b }));
         break;
       }
       case 11: {
@@ -109,22 +117,4 @@ export async function decodeLV(data: Uint8Array): Promise<LVObject> {
   }
   const r = new Reader(data);
   return new Map(records(r, data.length));
-}
-
-/** The member at a slash-separated path, or undefined. */
-export function at(value: LV | undefined, path: string): LV | undefined {
-  let v: LV | undefined = value;
-  for (const part of path.split("/")) {
-    if (v instanceof Map) v = v.get(part);
-    else if (Array.isArray(v) && /^\d+$/.test(part)) v = v[Number(part)];
-    else return undefined;
-  }
-  return v;
-}
-
-/** The members of an object or list, in order. */
-export function members(value: LV | undefined): LV[] {
-  if (Array.isArray(value)) return value;
-  if (value instanceof Map) return [...value.values()];
-  return [];
 }

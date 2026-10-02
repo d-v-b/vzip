@@ -17,8 +17,8 @@ from pathlib import Path
 OUT = Path(__file__).parent / "fixtures"
 
 SHORT, LONG, ASCII, UNDEFINED = 3, 4, 2, 7
-SIZE = {1: 1, 2: 1, 3: 2, 4: 4, 7: 1}
-PACK = {1: "B", 2: "B", 3: "H", 4: "I", 7: "B"}
+SIZE = {1: 1, 2: 1, 3: 2, 4: 4, 7: 1, 8: 2, 13: 4, 16: 8, 99: 1}
+PACK = {1: "B", 2: "B", 3: "H", 4: "I", 7: "B", 8: "h", 13: "I", 16: "Q", 99: "B"}
 
 
 class Tiff:
@@ -39,6 +39,9 @@ class Tiff:
         A value is a list of ints, or bytes for ASCII/UNDEFINED."""
         packed = []
         for tag, typ, value in entries:
+            if isinstance(value, tuple):  # ("at", count, offset): a value stored anywhere
+                packed.append(struct.pack("<HHII", tag, typ, value[1], value[2]))
+                continue
             raw = bytes(value) if isinstance(value, (bytes, bytearray)) else struct.pack(
                 f"<{len(value)}{PACK[typ]}", *value)
             count = len(raw) // SIZE[typ]
@@ -74,10 +77,10 @@ def image(t: Tiff, width=64, height=64, tile=32, *, spp=1, extra=(), description
         entries.append((270, description[0], description[1]))
     entries += [(277, SHORT, [spp]), (322, SHORT, [tile]), (323, SHORT, [tile]),
                 (324, LONG, offsets), (325, LONG, [size] * len(offsets))]
-    entries += list(extra)
+    entries = [e for e in entries if e[0] not in skip] + list(extra)
     if subifds is not None:
         entries.append((330, LONG, subifds))
-    entries = sorted((e for e in entries if e[0] not in skip), key=lambda e: e[0])
+    entries = sorted(entries, key=lambda e: e[0])
     return t.ifd(entries)
 
 
@@ -142,6 +145,29 @@ def main() -> None:
     t.chain([image(t, spp=3, extra=[(284, SHORT, [1])], subifds=[sub])])
     t.write("edge_rgb_subifd.tif")
 
+    # Revision 3: the tag scan is one pass, so a "<!--" inside an attribute
+    # value is text; the first of duplicate attributes wins; references to
+    # U+0000 and surrogates stay as written.
+    planes("edge_xml_scan.tif", (
+        '<OME><Image Name="a <!-- b &#0; &#xD800; &#x1F600;" Name="second">'
+        '<Pixels\tSizeZ="2" SizeZ="5" DimensionOrder="XYZCT"><TiffData/></Pixels></Image></OME>').encode() + b"\0", 2)
+    # A self-closing Pixels has no TiffData (the second image's are not its).
+    planes("edge_ome_self_closing_pixels.tif", (
+        '<OME><Image Name="one"><Pixels SizeZ="1"/></Image>'
+        '<Image Name="two"><Pixels SizeZ="2"><TiffData IFD="5"/></Pixels></Image></OME>').encode() + b"\0", 1)
+    # UUID texts are compared after removing comments and surrounding whitespace.
+    planes("edge_ome_uuid_text.tif", ome(tz, '<TiffData><UUID> urn:uuid:1 </UUID></TiffData>'
+                                             '<TiffData FirstZ="1" IFD="1"><UUID>urn:<!-- x -->uuid:1</UUID></TiffData>'), 2)
+    # LONG8 and IFD field types in a classic TIFF; a tag outside the table
+    # with an unknown field type is ignored.
+    t = Tiff()
+    sub = image(t, 32, 32)
+    offsets = [t.blob(bytes([i]) * 1024) for i in range(4)]
+    t.chain([t.ifd([(256, 16, struct.pack("<Q", 64)), (257, SHORT, [64]), (258, SHORT, [8]), (305, 99, b"xxxx"),
+                    (322, SHORT, [32]), (323, SHORT, [32]), (324, LONG, offsets), (325, LONG, [1024] * 4),
+                    (330, 13, [sub])])])
+    t.write("edge_field_types.tif")
+
     # Rejected.
     planes("edge_reject_multifile.tif", ome(tz, '<TiffData><UUID FileName="a.tif">urn:uuid:1</UUID></TiffData>'
                                                 '<TiffData FirstZ="1"><UUID FileName="b.tif">urn:uuid:2</UUID></TiffData>'), 2)
@@ -174,6 +200,28 @@ def main() -> None:
     big = bytearray((OUT / "rgb_planar_jpeg2000_bigtiff_be.ome.tif").read_bytes())
     big[6:8] = b"\0\1"
     (OUT / "edge_reject_bigtiff_reserved.tif").write_bytes(bytes(big))
+    # Revision 3 rejections.
+    single("edge_reject_signed_width.tif", skip={256}, extra=[(256, 8, [64])])
+    single("edge_reject_scalar_count0.tif", skip={259}, extra=[(259, SHORT, [])])
+    single("edge_reject_zero_tile.tif", tile_offsets=[8], extra=[(322, SHORT, [0])], skip={322})
+    # A main-chain IFD that is not a plane still has its tags checked.
+    t = Tiff()
+    t.chain([image(t, description=(ASCII, ome('SizeZ="1"'))), image(t, skip={259}, extra=[(259, 99, b"\0\0")])])
+    t.write("edge_reject_unused_ifd_type.tif")
+    t = Tiff()
+    t.chain([image(t, description=(ASCII, ome('SizeZ="1"'))), image(t, skip={324}, extra=[(324, LONG, ("at", 4, 10**6))])])
+    t.write("edge_reject_unused_value_outside.tif")
+    # Two IFDs share a SubIFD.
+    t = Tiff()
+    shared = image(t, 32, 32)
+    t.chain([image(t, subifds=[shared]), image(t, subifds=[shared])])
+    t.write("edge_reject_shared_subifd.tif")
+    # A level-scan candidate with PlanarConfiguration 3.
+    t = Tiff()
+    t.chain([image(t), image(t, 32, 32, spp=3, extra=[(284, SHORT, [3])])])
+    t.write("edge_reject_candidate_planar3.tif")
+    planes("edge_reject_nbsp_size.tif", ome('SizeZ="\u00a02"'), 2)
+    planes("edge_reject_plane_limit.tif", ome('SizeT="100001"'), 1)
     for p in sorted(OUT.glob("edge_*.tif")):
         print(p.name, p.stat().st_size)
 

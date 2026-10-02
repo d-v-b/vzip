@@ -9,7 +9,19 @@ from vzip.virtualize.common import Rejected
 
 
 class LVList(list):
-    """A level whose records all have empty names."""
+    """A level whose records all have empty names, or a byte array."""
+
+
+class Scalar(tuple):
+    """A scalar value with its LV record type: (type, value)."""
+
+    @property
+    def type(self) -> int:
+        return self[0]
+
+    @property
+    def value(self):
+        return self[1]
 
 
 def _records(data: bytes, pos: int, end: int, count: int | None):
@@ -36,17 +48,10 @@ def _records(data: bytes, pos: int, end: int, count: int | None):
             return v
 
         if typ == 1:
-            value = take(1)[0] != 0
-        elif typ == 2:
-            value = struct.unpack("<i", take(4))[0]
-        elif typ == 3:
-            value = struct.unpack("<I", take(4))[0]
-        elif typ == 4:
-            value = struct.unpack("<q", take(8))[0]
-        elif typ in (5, 7):
-            value = struct.unpack("<Q", take(8))[0]
-        elif typ == 6:
-            value = struct.unpack("<d", take(8))[0]
+            value = Scalar((1, take(1)[0] != 0))
+        elif typ in (2, 3, 4, 5, 6, 7):
+            fmt = {2: "<i", 3: "<I", 4: "<q", 5: "<Q", 6: "<d", 7: "<Q"}[typ]
+            value = Scalar((typ, struct.unpack(fmt, take(4 if typ in (2, 3) else 8))[0]))
         elif typ == 8:
             units = bytearray()
             while True:
@@ -54,10 +59,10 @@ def _records(data: bytes, pos: int, end: int, count: int | None):
                 if u == b"\0\0":
                     break
                 units += u
-            value = units.decode("utf-16-le", "replace")
+            value = Scalar((8, units.decode("utf-16-le", "replace")))
         elif typ == 9:
             n = struct.unpack("<Q", take(8))[0]
-            value = LVList(take(n))
+            value = LVList(Scalar((3, b)) for b in take(n))  # a byte counts as type 3
         elif typ == 11:
             c, length = struct.unpack("<IQ", take(12))
             level_end = start + length
@@ -81,7 +86,8 @@ def _records(data: bytes, pos: int, end: int, count: int | None):
 
 
 def decode_lv(data: bytes) -> dict:
-    """A chunk's LV structure, as a dict (objects) / LVList (lists) tree."""
+    """A chunk's LV structure: a tree of dicts (objects), LVLists (lists) and
+    Scalars. The top level is always an object."""
     if len(data) >= 1 and data[0] == 76:
         if len(data) < 12:
             raise Rejected("truncated compressed LV record")

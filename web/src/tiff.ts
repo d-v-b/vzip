@@ -8,7 +8,6 @@ export class TiffError extends Error {}
 export type ByteReader = (offset: number, length: number) => Promise<Uint8Array>;
 
 export const Tag = {
-  NewSubfileType: 254,
   ImageWidth: 256,
   ImageLength: 257,
   BitsPerSample: 258,
@@ -26,6 +25,11 @@ export const Tag = {
 } as const;
 
 const WANTED = new Set<number>(Object.values(Tag));
+
+// Tags with one used value (VIRTUALIZE.md §3.1); the others are arrays.
+const SCALARS = new Set<number>([256, 257, 259, 277, 284, 317, 322, 323]);
+// Field types allowed for every tag but ImageDescription: unsigned integers.
+const INTEGER_TYPES = new Set([1, 3, 4, 13, 16, 18]);
 
 // Byte size of each field type (TIFF 6.0, BigTIFF).
 const TYPE_SIZE: Record<number, number> = {
@@ -146,13 +150,13 @@ export async function readTiff(read: ByteReader, fileSize: number): Promise<Tiff
   const seen = new Set<number>();
 
   async function readIfd(offset: number): Promise<{ ifd: Ifd; next: number }> {
-    if (seen.has(offset)) throw new TiffError(`IFD cycle at ${offset}`);
+    if (offset < (bigTiff ? 16 : 8)) throw new TiffError(`IFD offset ${offset} is inside the header`);
+    if (seen.has(offset)) throw new TiffError(`IFD offset ${offset} read twice`);
     if (seen.size >= 100000) throw new TiffError("too many IFDs");
     seen.add(offset);
     const cbytes = await read(offset, countSize);
     const cview = new DataView(cbytes.buffer, cbytes.byteOffset, cbytes.byteLength);
     const count = bigTiff ? u64(cview, 0, le) : cview.getUint16(0, le);
-    if (count > 1 << 16) throw new TiffError(`IFD with ${count} entries`);
     const body = await read(offset + countSize, count * entrySize + fieldSize);
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
     const tags = new Map<number, number[] | Uint8Array>();
@@ -165,7 +169,10 @@ export async function readTiff(read: ByteReader, fileSize: number): Promise<Tiff
       const type = view.getUint16(at + 2, le);
       const n = bigTiff ? u64(view, at + 4, le) : view.getUint32(at + 4, le);
       const size = TYPE_SIZE[type];
-      if (size === undefined) throw new TiffError(`tag ${tag} has unknown type ${type}`);
+      if (tag === Tag.ImageDescription ? size === undefined : !INTEGER_TYPES.has(type)) {
+        throw new TiffError(`tag ${tag} has field type ${type}`);
+      }
+      if (SCALARS.has(tag) && n === 0) throw new TiffError(`tag ${tag} has no value`);
       const valueAt = at + 4 + (bigTiff ? 8 : 4);
       if (n * size <= fieldSize) {
         types.set(tag, type);

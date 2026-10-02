@@ -101,3 +101,70 @@ New synthetic inputs exercise these rules: `web/test/tiff_edge_fixtures.py`
 (`edge_*.tif`) and the `nd2_edge_*` and new `nd2_reject_*` files of
 `web/test/nd2_fixtures.py`. Both maintained implementations agree on all 70
 synthetic files and on the 240-input corpus.
+
+## Round 2 (revision 2)
+
+**Result.** Fresh agents implemented revision 2. All five implementations
+(the two maintained ones and the three round-2 ones) agreed on all 286
+inputs, and on 640 corrupted copies of the synthetic files
+(`mutate.py`): 165 equivalent and 475 rejected by all. The notes
+(`notes/r2/`) list about 25 points where careful readers could still
+disagree. No input reached them. The main ones:
+
+- **Evaluation order:** whether a malformed tag or LV member rejects the
+  input depended on whether, and in which order, an implementation read it.
+- **TIFF field types:** which types count as integers, and counts of 0.
+- **The XML tag scan:** its grammar, Unicode vs XML whitespace, duplicate
+  attributes, numeric references, and the text of `UUID` elements.
+- **LV types:** pointers (type 7) and bytes as numbers, binary64 or negative
+  integers, and paths through values that are not objects.
+- **Validity lists:** where `pItemValid` lives.
+- **Sibling loops:** time loops of eType 1 and 8 at the same depth were
+  dropped instead of merged.
+- **Tall padded ND2 frames:** these were rejected, because one reference per
+  row exceeds 65519 bytes after about 6000 rows.
+
+**Revision 3** settles these:
+
+- **Order independence (§1.2):** every listed check applies whether or not
+  its value ends up in the output.
+- **Reference payloads:** §1.2 gives the payload formula.
+- **Whitespace and digits:** both are defined.
+- **TIFF:**
+  - every table tag of every IFD read is checked (field type, value in the
+    file, count), while other tags are ignored;
+  - integer tags take unsigned integer types only;
+  - IFD offsets must be distinct and past the header;
+  - formats and sizes are checked for IFD 0, planes, levels and level-scan
+    candidates, and sizes are at least 1;
+  - at most 100000 planes.
+- **XML:**
+  - one left-to-right scan with an ASCII grammar;
+  - the first of duplicate attributes wins;
+  - references are decoded only to scalar values other than U+0000;
+  - UUID text is defined, and file identity is FileName, else text;
+  - mapping is checked after all `TiffData`.
+- **LV:** members are read as number, integer, color, flag, string, object
+  or list, with the types each allows:
+  - a byte counts as type 3, and pointers are not numbers;
+  - paths through non-objects reject;
+  - NaN and infinity reject;
+  - numbers are used as binary64.
+- **Experiment:**
+  - full paths are given (`pItemValid` belongs to the node);
+  - every member of every visited node is checked;
+  - rule 4 merges by kind and carries the period or step.
+- **Picture metadata:**
+  - every plane member is checked;
+  - a missing `SLxExperiment` or `SLxPictureMetadata` counts as absent.
+- **Frames:**
+  - frame names must be canonical;
+  - other frames' headers are explicitly not read;
+  - padded frames are split into **row blocks** (the largest divisor of the
+    height whose references fit), so they are never rejected for their size.
+
+New synthetic files exercise each rule: 13 TIFFs (`edge_xml_scan`,
+`edge_field_types`, `edge_reject_shared_subifd`, ...) and 9 ND2 files
+(`nd2_edge_kind_merge`, `nd2_edge_tall_padded`, `nd2_reject_pointer_number`,
+...). Both maintained implementations agree on all 86 synthetic files and on
+860 corrupted copies.
