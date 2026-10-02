@@ -39,19 +39,31 @@ const METERS: Record<string, number> = {
   centimeter: 1e-2, inch: 0.0254, foot: 0.3048,
 };
 
+interface OmeroChannel {
+  label?: string;
+  color?: string;
+  window?: { start: number; end: number };
+}
+
 function neuroglancerState(
   zarrUrl: string,
   axes: { name: string; unit?: string }[],
   scale: number[],
   shape: number[],
   dtype: string,
+  omero: OmeroChannel[] = [],
 ) {
   const source = `${zarrUrl}|zarr3:`;
   // Fit the whole image in the view: crossSectionScale is in meters per
   // screen pixel (or voxels per pixel if the axes have no unit).
   const n = shape.length;
   const extent = (i: number) => shape[i] * scale[i] * (METERS[axes[i].unit ?? ""] ?? 1);
-  const view = { crossSectionScale: Math.max(extent(n - 2) / 600, extent(n - 1) / 850), layout: "xy" };
+  const view = {
+    crossSectionScale: Math.max(extent(n - 2) / 600, extent(n - 1) / 850),
+    layout: "xy",
+    // Without this, Neuroglancer may display a non-spatial axis such as t.
+    displayDimensions: ["x", "y"],
+  };
   const c = axes.findIndex((a) => a.name === "c");
   if (c >= 0 && shape[c] === 3 && dtype === "uint8") {
     const colors = ["v, 0.0, 0.0", "0.0, v, 0.0", "0.0, 0.0, v"];
@@ -61,6 +73,24 @@ function neuroglancerState(
         localDimensions: { "c'": [1, ""] }, localPosition: [i],
         shader: `void main() {\n  float v = toNormalized(getDataValue());\n  emitRGB(vec3(${rgb}));\n}\n`,
       })),
+      crossSectionBackgroundColor: "#000000", ...view,
+    };
+  }
+  // Other multi-channel images: one layer per channel, with the colours and
+  // contrast windows from OME's omero metadata when it has them.
+  if (c >= 0 && shape[c] > 1 && shape[c] <= 8) {
+    const hex = (s: string) => [0, 2, 4].map((i) => (parseInt(s.slice(i, i + 2), 16) / 255).toFixed(3));
+    return {
+      layers: Array.from({ length: shape[c] }, (_, i) => {
+        const ch = omero[i] ?? {};
+        const [r, g, b] = hex(ch.color ?? "FFFFFF");
+        const range = ch.window ? `(range=[${ch.window.start}, ${ch.window.end}])` : "";
+        return {
+          type: "image", source, name: ch.label ?? `channel ${i}`, opacity: 1, blend: "additive",
+          localDimensions: { "c'": [1, ""] }, localPosition: [i],
+          shader: `#uicontrol invlerp contrast${range}\nvoid main() {\n  emitRGB(vec3(${r}, ${g}, ${b}) * contrast());\n}\n`,
+        };
+      }),
       crossSectionBackgroundColor: "#000000", ...view,
     };
   }
@@ -131,7 +161,8 @@ async function virtualize(url: string) {
   const scale = ms0.datasets[0].coordinateTransformations?.find(
     (t: { type: string }) => t.type === "scale",
   )?.scale ?? level0.shape.map(() => 1);
-  const state = neuroglancerState(imageUrl, ms0.axes, scale, level0.shape, level0.data_type);
+  const omero = (await getJson(`${imageUrl}zarr.json`)).attributes?.ome?.omero?.channels ?? [];
+  const state = neuroglancerState(imageUrl, ms0.axes, scale, level0.shape, level0.data_type, omero);
   $<HTMLAnchorElement>("open-ng").href = new URL(
     `neuroglancer/#!${encodeURIComponent(JSON.stringify(state))}`,
     location.href,

@@ -136,8 +136,14 @@ def main(url: str, out: str) -> None:
     scale = {"t": period_s or 1.0, "c": 1.0, "z": voxel.z, "y": voxel.y, "x": voxel.x}
     units = {"t": "second" if period_s else None, "z": "micrometer", "y": "micrometer", "x": "micrometer"}
     types = {"t": "time", "c": "channel", "z": "space", "y": "space", "x": "space"}
+    channel_colors: list[str] = []
     try:
         channel_names = [c.channel.name for c in nf.metadata.channels] if nf.metadata.channels else []
+        with __import__("warnings").catch_warnings():
+            __import__("warnings").simplefilter("ignore", DeprecationWarning)
+            for c in nf.metadata.channels or []:
+                abgr = c.channel.colorRGBA  # 0xAABBGGRR
+                channel_colors.append(f"{abgr & 255:02X}{(abgr >> 8) & 255:02X}{(abgr >> 16) & 255:02X}")
     except Exception as e:  # noqa: BLE001
         warnings.append(f"no channel names: {type(e).__name__}: {e}")
         channel_names = []
@@ -148,6 +154,16 @@ def main(url: str, out: str) -> None:
     else:
         labels = channel_names or [f"C{i}" for i in range(ncomp)]
     labels = labels[:ncomp] + [f"C{i}" for i in range(len(labels), ncomp)]
+    # omero windows: the range of the significant bits, so viewers have a
+    # sensible contrast without reading any pixels.
+    top = 2 ** (a.bitsPerComponentSignificant or 8 * itemsize) - 1
+    colors = ["FF0000", "00FF00", "0000FF"] * (ncomp // 3) if "S" in sizes else (
+        channel_colors if len(channel_colors) == ncomp else ["FFFFFF"] * ncomp)
+    omero_channels = [
+        {"label": label, "color": color, "active": True,
+         "window": {"min": 0, "max": top, "start": 0, "end": top}}
+        for label, color in zip(labels, colors)
+    ]
 
     # References.
     refs: dict[str, list[Range]] = {}
@@ -198,7 +214,7 @@ def main(url: str, out: str) -> None:
                 "axes": [{"name": d, "type": types[d], **({"unit": units[d]} if units.get(d) else {})} for d in axes],
                 "datasets": [{"path": "0", "coordinateTransformations": [{"type": "scale", "scale": [scale[d] for d in axes]}]}],
             }],
-            "omero": {"channels": [{"label": label, "active": True} for label in labels]},
+            "omero": {"channels": omero_channels},
         }})
         meta[f"{p}/0/zarr.json"] = json.dumps(array, indent=2).encode()
     meta["nd2/metadata.json"] = json.dumps({
