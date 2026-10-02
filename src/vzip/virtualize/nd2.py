@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import math
 import re
 import struct
 
-from vzip.pb import Concat, Range
 from vzip.virtualize.common import Output, Reader, Rejected, array_json, group_json, image_ome, transpose_codec
-from vzip.virtualize.lv import LVList, decode_lv
+from vzip.virtualize.lv import LVList, Scalar, decode_lv
 
 CHUNK_MAGIC = 0x0ABECEDA
 FILE_SIGNATURE = b"ND2 FILE SIGNATURE CHUNK NAME01!"
 MAP_SIGNATURE = b"ND2 CHUNK MAP SIGNATURE 0000001!"
 FILEMAP_NAME = b"ND2 FILEMAP SIGNATURE NAME 0001!"
+FRAME = re.compile(rb"ImageDataSeq\|(0|[1-9][0-9]*)!")
 MAX_PAYLOAD = 65519
+MAX_SAFE = 2**53 - 1
 REQUIRED = object()
 
 
@@ -22,95 +24,145 @@ def is_nd2(head: bytes) -> bool:
 
 
 def _header(read: Reader, offset: int) -> tuple[int, int, bytes]:
+    if offset > MAX_SAFE:
+        raise Rejected(f"chunk offset {offset} is too large")
     magic, name_length, data_length = struct.unpack("<IIQ", read(offset, 16))
     if magic != CHUNK_MAGIC:
         raise Rejected(f"no ND2 chunk at {offset}")
-    return name_length, data_length, read(offset + 16, name_length).rstrip(b"\0")
+    return name_length, data_length, read(offset + 16, name_length).split(b"\0", 1)[0]
 
 
-def _at(value, path: str):
-    for part in path.split("/"):
-        if isinstance(value, dict):
-            value = value.get(part)
-        elif isinstance(value, LVList) and part.isdigit():
-            value = value[int(part)] if int(part) < len(value) else None
-        else:
-            return None
+# ---- typed member access (§4.2)
+
+def _missing(what: str, default):
+    if default is REQUIRED:
+        raise Rejected(f"missing {what}")
+    return default
+
+
+def number(value, what: str, default=REQUIRED):
+    if value is None:
+        return _missing(what, default)
+    if not isinstance(value, Scalar) or value.type not in (2, 3, 4, 5, 6):
+        raise Rejected(f"{what} is not a number")
+    v = float(value.value)  # every number is used as binary64 (§4.2)
+    if not math.isfinite(v):
+        raise Rejected(f"{what} is not finite")
+    return v
+
+
+def integer(value, what: str, default=REQUIRED):
+    if value is None:
+        return _missing(what, default)
+    v = number(value, what)
+    if v != int(v) or not 0 <= v <= MAX_SAFE:
+        raise Rejected(f"{what} = {v} is not an integer from 0 to 2^53 - 1")
+    return int(v)
+
+
+def color(value, what: str, default=REQUIRED):
+    if value is None:
+        return _missing(what, default)
+    v = number(value, what)
+    if v != int(v) or not -(2**31) <= v <= 2**32 - 1:
+        raise Rejected(f"{what} = {v} is not a color")
+    return int(v) % 2**32
+
+
+def flag(value, what: str, default=REQUIRED) -> bool:
+    if value is None:
+        return _missing(what, default)
+    if not isinstance(value, Scalar) or value.type not in (1, 2, 3, 4, 5):
+        raise Rejected(f"{what} is not a flag")
+    return bool(value.value)
+
+
+def string(value, what: str, default=REQUIRED) -> str:
+    if value is None:
+        return _missing(what, default)
+    if not isinstance(value, Scalar) or value.type != 8:
+        raise Rejected(f"{what} is not a string")
+    return value.value
+
+
+def obj(value, what: str, default=REQUIRED):
+    if value is None:
+        return _missing(what, default)
+    if not isinstance(value, dict):
+        raise Rejected(f"{what} is not an object")
     return value
 
 
-def _members(value) -> list:
-    if isinstance(value, list):
-        return list(value)
+def lst(value, what: str, default=REQUIRED):
+    if value is None:
+        return _missing(what, default)
+    if not isinstance(value, LVList):
+        raise Rejected(f"{what} is not a list")
+    return value
+
+
+def members(value, what: str) -> list:
+    """The members of an object or a list (default: none)."""
+    if value is None:
+        return []
     if isinstance(value, dict):
         return list(value.values())
-    return []
+    if isinstance(value, LVList):
+        return list(value)
+    raise Rejected(f"{what} is not an object or a list")
 
 
-def _number(value, what: str, default=REQUIRED):
-    """A member used as a number (§4.2): types 2-6."""
-    if value is None:
-        if default is REQUIRED:
-            raise Rejected(f"missing {what}")
-        return default
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise Rejected(f"{what} is not a number")
-    return value
-
-
-def _flag(value, what: str, default=False) -> bool:
-    """A member used as a flag (§4.2): types 1-5, true if nonzero."""
-    if value is None:
-        return default
-    if isinstance(value, float) or not isinstance(value, (bool, int)):
-        raise Rejected(f"{what} is not a flag")
-    return bool(value)
-
-
-def _valid(members: list, flags) -> list:
+def _valid(items: list, flags, what: str) -> list:
     if flags is None:
-        return members
-    f = _members(flags)
-    return [m for i, m in enumerate(members) if i < len(f) and _flag(f[i], "validity entry")]
+        return items
+    f = [flag(x, f"{what} entry") for x in lst(flags, what)]
+    return [m for i, m in enumerate(items) if i < len(f) and f[i]]
 
 
-def _node_loop(node):
-    """A node's loop (kind, eType, count, period, step), "spectral", or None (§4.3)."""
-    typ = _number(_at(node, "eType"), "eType")
+# ---- experiment (§4.3)
+
+def _node_loop(node: dict):
+    """A node's loop as (kind, count, period or step), "spectral", or None (skipped)."""
+    typ = integer(node.get("eType"), "eType")
     if typ not in (1, 2, 4, 6, 8):
         raise Rejected(f"unsupported experiment loop type {typ}")
-    pars = _at(node, "uLoopPars")
+    pars = obj(node.get("uLoopPars"), "uLoopPars", None)
+    item_valid = lst(node.get("pItemValid"), "pItemValid", None)
     if pars is None:
         return None
     if typ == 1:
-        count = _number(_at(pars, "uiCount"), "uiCount", 0)
-        return ("t", typ, count, _number(_at(pars, "dPeriod"), "dPeriod", 0), None) if count else None
-    if typ == 8:
-        periods = _valid(_members(_at(pars, "pPeriod")), _at(pars, "pPeriodValid"))
-        count = sum(_number(_at(p, "uiCount"), "uiCount", 0) for p in periods)
-        period = _number(_at(periods[0], "dPeriod"), "dPeriod", 0) if periods else 0
-        return ("t", typ, count, period, None) if count else None
-    if typ == 2:
-        count = len(_valid(_members(_at(pars, "Points")), _at(node, "pItemValid")))
-        return ("p", typ, count, None, None) if count else None
-    if typ == 4:
-        count = _number(_at(pars, "uiCount"), "uiCount", 0)
-        step = abs(_number(_at(pars, "dZStep"), "dZStep", 0))
+        count = integer(pars.get("uiCount"), "uiCount", 0)
+        loop = ("t", count, number(pars.get("dPeriod"), "dPeriod", 0))
+    elif typ == 8:
+        periods = [obj(p, "pPeriod member") for p in members(pars.get("pPeriod"), "pPeriod")]
+        valid = _valid(periods, pars.get("pPeriodValid"), "pPeriodValid")
+        count = sum(integer(p.get("uiCount"), "uiCount") for p in valid)
+        periods_ms = [number(p.get("dPeriod"), "dPeriod", 0) for p in valid]
+        loop = ("t", count, periods_ms[0] if periods_ms else 0)
+    elif typ == 2:
+        count = len(_valid(members(pars.get("Points"), "Points"), item_valid, "pItemValid"))
+        loop = ("p", count, None)
+    elif typ == 4:
+        count = integer(pars.get("uiCount"), "uiCount", 0)
+        step = abs(number(pars.get("dZStep"), "dZStep", 0))
+        high = number(pars.get("dZHigh"), "dZHigh", 0)
+        low = number(pars.get("dZLow"), "dZLow", 0)
         if step == 0 and count > 1:
-            high = _number(_at(pars, "dZHigh"), "dZHigh", 0)
-            low = _number(_at(pars, "dZLow"), "dZLow", 0)
             step = abs(high - low) / (count - 1)
-        return ("z", typ, count, None, step) if count else None
-    count = _at(pars, "uiCount")
-    if count is None:
-        count = _at(pars, "pPlanes/uiCount")
-    return "spectral" if _number(count, "uiCount", 0) else None
+        loop = ("z", count, step)
+    else:
+        count = integer(pars.get("uiCount"), "uiCount", None)
+        if count is None:
+            planes = obj(pars.get("pPlanes"), "pPlanes", None)
+            count = integer(planes.get("uiCount"), "pPlanes/uiCount", 0) if planes is not None else 0
+        loop = "spectral"
+    return loop if count else None
 
 
 def flatten_experiment(root) -> list[dict]:
     loops: list[dict] = []
 
-    def visit(node, depth: int) -> None:
+    def visit(node: dict, depth: int) -> None:
         loop = _node_loop(node)
         if loop is None:
             return
@@ -118,25 +170,41 @@ def flatten_experiment(root) -> list[dict]:
         if loop == "spectral":
             child_depth = depth
         else:
-            kind, typ, count, period, step = loop
-            item = {"kind": kind, "type": typ, "count": count, "period": period, "step": step, "depth": depth}
+            kind, count, scale = loop
+            item = {"kind": kind, "count": count, "scale": scale, "depth": depth}
             if not loops or loops[-1]["depth"] < depth:
                 loops.append(item)
-            elif loops[-1]["depth"] == depth and loops[-1]["type"] == typ and loops[-1]["count"] < count:
+            elif loops[-1]["depth"] == depth and loops[-1]["kind"] == kind and loops[-1]["count"] < count:
                 loops[-1] = item
-        for child in _members(_at(node, "ppNextLevelEx")):
-            visit(child, child_depth)
+        for child in members(node.get("ppNextLevelEx"), "ppNextLevelEx"):
+            visit(obj(child, "experiment node"), child_depth)
 
     if root is not None:
-        visit(root, 0)
+        visit(obj(root, "SLxExperiment"), 0)
     kinds = [l["kind"] for l in loops]
     if len(set(kinds)) != len(kinds):
         raise Rejected(f"repeated loop kinds {kinds}")
     return loops
 
 
+# ---- reference payloads (§1.2)
+
+def _varint_size(v: int) -> int:
+    return max(1, (v.bit_length() + 6) // 7)
+
+
+def _range_size(offset: int, length: int) -> int:
+    return (1 + _varint_size(offset) if offset else 0) + (1 + _varint_size(length) if length else 0)
+
+
+def payload_size(ranges: list[tuple[int, int]]) -> int:
+    if len(ranges) == 1:
+        return _range_size(*ranges[0])
+    return sum(1 + _varint_size(r) + r for r in (_range_size(o, n) for o, n in ranges))
+
+
 def _check_range(offset: int, length: int, size: int) -> None:
-    if offset < 0 or length < 0 or offset + length > size:
+    if offset + length > size:
         raise Rejected(f"range [{offset}, {offset + length}) outside the {size}-byte file")
 
 
@@ -178,15 +246,19 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
         n, d, _ = _header(read, chunks[cname])
         return decode_lv(read(chunks[cname] + 16 + n, d))
 
-    # §4.3
-    attrs = _at(chunk(b"ImageAttributesLV!"), "SLxImageAttributes")
-    if not isinstance(attrs, dict):
+    # §4.3 attributes
+    attributes = chunk(b"ImageAttributesLV!")
+    if attributes is None:
         raise Rejected("no ImageAttributesLV! chunk")
-    width, height = _number(attrs.get("uiWidth"), "uiWidth"), _number(attrs.get("uiHeight"), "uiHeight")
-    width_bytes, comp = _number(attrs.get("uiWidthBytes"), "uiWidthBytes"), _number(attrs.get("uiComp"), "uiComp")
-    bpc = _number(attrs.get("uiBpcInMemory"), "uiBpcInMemory")
-    significant = _number(attrs.get("uiBpcSignificant"), "uiBpcSignificant")
-    compression = _number(attrs.get("eCompression"), "eCompression", 2)
+    attrs = obj(attributes.get("SLxImageAttributes"), "SLxImageAttributes")
+    width, height = integer(attrs.get("uiWidth"), "uiWidth"), integer(attrs.get("uiHeight"), "uiHeight")
+    width_bytes = integer(attrs.get("uiWidthBytes"), "uiWidthBytes")
+    comp = integer(attrs.get("uiComp"), "uiComp")
+    bpc = integer(attrs.get("uiBpcInMemory"), "uiBpcInMemory")
+    significant = number(attrs.get("uiBpcSignificant"), "uiBpcSignificant")
+    compression = integer(attrs.get("eCompression"), "eCompression", 2)
+    tile_width = integer(attrs.get("uiTileWidth"), "uiTileWidth", 0)
+    tile_height = integer(attrs.get("uiTileHeight"), "uiTileHeight", 0)
     if min(width, height, comp) < 1:
         raise Rejected("image width, height and components must be at least 1")
     data_type = {8: "uint8", 16: "uint16", 32: "float32"}.get(bpc)
@@ -196,37 +268,52 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
         raise Rejected("lossy ND2 compression is not supported")
     if compression not in (0, 2):
         raise Rejected(f"unknown ND2 compression {compression}")
-    for key, full in (("uiTileWidth", width), ("uiTileHeight", height)):
-        tile = _number(attrs.get(key), key, 0)
-        if tile > 0 and tile != full:
-            raise Rejected("tiled ND2 frames are not supported")
+    if (tile_width > 0 and tile_width != width) or (tile_height > 0 and tile_height != height):
+        raise Rejected("tiled ND2 frames are not supported")
     compressed = compression == 0
     row_bytes = width * comp * bpc // 8
     if width_bytes < row_bytes:
         raise Rejected("uiWidthBytes is less than a row")
     if compressed and width_bytes != row_bytes:
         raise Rejected("compressed frames with padded rows are not supported")
+
+    # §4.3 experiment
     exp = chunk(b"ImageMetadataLV!")
-    loops = flatten_experiment(_at(exp, "SLxExperiment") if exp is not None else None)
-    picture = _at(chunk(b"ImageMetadataSeqLV|0!"), "SLxPictureMetadata")
+    loops = flatten_experiment(exp.get("SLxExperiment") if exp is not None else None)
+
+    # §4.3 picture metadata
+    seq = chunk(b"ImageMetadataSeqLV|0!")
+    picture = (obj(seq.get("SLxPictureMetadata"), "SLxPictureMetadata", None) if seq is not None else None) or {}
+    bcal = flag(picture.get("bCalibrated"), "bCalibrated", False)
+    cal = number(picture.get("dCalibration"), "dCalibration", None)
+    aspect = number(picture.get("dAspect"), "dAspect", 1)
+    calibrated = bcal and cal is not None and cal > 0
+    if not aspect > 0:
+        aspect = 1
+    pp = obj(picture.get("sPicturePlanes"), "sPicturePlanes", None) or {}
+    plane_count = integer(pp.get("uiCount"), "uiCount", 0)
+    new = obj(pp.get("sPlaneNew"), "sPlaneNew", None) or {}
+    planes = {}
+    for key, value in new.items():
+        m = re.fullmatch(r"a(0|[1-9][0-9]*)", key)
+        if m and int(m[1]) < plane_count:
+            p = obj(value, key)
+            planes[int(m[1])] = (string(p.get("sDescription"), "sDescription", ""),
+                                 color(p.get("uiColor"), "uiColor", 0xFFFFFF),
+                                 integer(p.get("uiCompCount"), "uiCompCount", 1))
 
     # §4.5
-    plane_count = _number(_at(picture, "sPicturePlanes/uiCount"), "uiCount", 0)
-    planes = [_at(picture, f"sPicturePlanes/sPlaneNew/a{i}") for i in range(int(plane_count))]
     labels, colors = [], []
-    counts = [_number(_at(p, "uiCompCount"), "uiCompCount", 1) for p in planes if p is not None]
-    if planes and all(p is not None for p in planes) and all(k in (1, 3) for k in counts) and sum(counts) == comp:
-        for p, k in zip(planes, counts):
-            desc = _at(p, "sDescription")
-            name = "" if desc is None else desc
-            if not isinstance(name, str):
-                raise Rejected("sDescription is not a string")
+    if (plane_count >= 1 and len(planes) == plane_count
+            and all(k in (1, 3) for _, _, k in planes.values())
+            and sum(k for _, _, k in planes.values()) == comp):
+        for i in range(plane_count):
+            desc, abgr, k = planes[i]
             if k == 3:
-                labels += [f"{name} R", f"{name} G", f"{name} B"]
+                labels += [f"{desc} R", f"{desc} G", f"{desc} B"]
                 colors += ["FF0000", "00FF00", "0000FF"]
             else:
-                abgr = int(_number(_at(p, "uiColor"), "uiColor", 0xFFFFFF))
-                labels.append(name)
+                labels.append(desc)
                 colors.append(f"{abgr & 255:02X}{(abgr >> 8) & 255:02X}{(abgr >> 16) & 255:02X}")
     else:
         labels = [f"C{k}" for k in range(comp)]
@@ -236,14 +323,23 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
     total = 1
     for l in loops:
         total *= l["count"]
-    present = [f for f in range(total) if f"ImageDataSeq|{f}!".encode() in chunks]
-    offset = {f: chunks[f"ImageDataSeq|{f}!".encode()] for f in present}
+    offset = {}
+    for cname, o in chunks.items():
+        m = FRAME.fullmatch(cname)
+        if m and int(m[1]) < total:
+            offset[int(m[1])] = o
+    present = sorted(offset)
+    h = height
     if compressed:
-        def frame_ranges(f):
+        starts = {}
+        for f in present:
             n, d, _ = _header(read, offset[f])
             if d <= 8:
                 raise Rejected(f"compressed frame {f} has no data")
-            return [(offset[f] + 16 + n + 8, d - 8)]
+            starts[f] = (offset[f] + 16 + n + 8, d - 8)
+
+        def frame_chunks(f):
+            return [[starts[f]]]
     else:
         name_len = 0
         if present:
@@ -254,11 +350,21 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
                 raise Rejected("frame chunk too short for its pixels")
             name_len = first[0]
 
-        def frame_ranges(f):
-            start = offset[f] + 16 + name_len + 8
+        def start(f):
+            return offset[f] + 16 + name_len + 8
+
+        if width_bytes != row_bytes and present:
+            # The block with the largest payload is the last block of the
+            # frame that starts last: varint sizes grow with offsets.
+            far = max(start(f) for f in present)
+            h = next(d for d in range(height, 0, -1) if height % d == 0 and payload_size(
+                [(far + r * width_bytes, row_bytes) for r in range(height - d, height)]) <= MAX_PAYLOAD)
+
+        def frame_chunks(f):
             if width_bytes == row_bytes:
-                return [(start, height * row_bytes)]
-            return [(start + r * width_bytes, row_bytes) for r in range(height)]
+                return [[(start(f), height * row_bytes)]]
+            rows = [(start(f) + r * width_bytes, row_bytes) for r in range(height)]
+            return [rows[j : j + h] for j in range(0, height, h)]
 
     # §4.6
     def loop(kind):
@@ -267,18 +373,13 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
     t, z, p = loop("t"), loop("z"), loop("p")
     axes = (["t"] if t else []) + (["c"] if comp > 1 else []) + (["z"] if z else []) + ["y", "x"]
     shape = {"t": t["count"] if t else 1, "c": comp, "z": z["count"] if z else 1, "y": height, "x": width}
-    chunk_shape = {"t": 1, "c": comp, "z": 1, "y": height, "x": width}
-    cal = _number(_at(picture, "dCalibration"), "dCalibration", 0)
-    calibrated = _flag(_at(picture, "bCalibrated"), "bCalibrated") and cal > 0
-    aspect = _number(_at(picture, "dAspect"), "dAspect", 1)
-    if not aspect > 0:
-        aspect = 1
-    period = t["period"] if t and t["period"] > 0 else None
-    step = z["step"] if z and z["step"] > 0 else None
+    chunk_shape = {"t": 1, "c": comp, "z": 1, "y": h, "x": width}
+    period = t["scale"] if t and t["scale"] > 0 else None
+    step = z["scale"] if z and z["scale"] > 0 else None
     scale = {"t": period / 1000 if period else 1, "c": 1, "z": step if step else 1,
              "y": cal * aspect if calibrated else 1, "x": cal if calibrated else 1}
     for v in scale.values():
-        if v != v or v in (float("inf"), float("-inf")):
+        if not math.isfinite(v):
             raise Rejected("a scale is not finite")
     units = {"t": "second" if period else None, "z": "micrometer" if step else None,
              "y": "micrometer" if calibrated else None, "x": "micrometer" if calibrated else None}
@@ -286,7 +387,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
         {"name": "bytes", "configuration": {"endian": "little"}} if bpc > 8 else {"name": "bytes"}]
     if compressed:
         codecs.append({"name": "zlib", "configuration": {"level": 1}})
-    b = significant if 1 <= significant <= bpc else bpc
+    b = int(significant) if significant == int(significant) and 1 <= significant <= bpc else bpc
     window = {} if data_type == "float32" else {"window": {"min": 0, "max": 2**b - 1, "start": 0, "end": 2**b - 1}}
     positions = p["count"] if p else 1
     out = Output(url)
@@ -294,8 +395,8 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
     out.json("OME/zarr.json", group_json({"version": "0.5", "series": [str(i) for i in range(positions)]}))
     for pi in range(positions):
         ome = image_ome(axes, units, [[scale[a] for a in axes]], f"position {pi}")
-        ome["omero"] = {"channels": [{"label": label, "color": color, "active": True, **window}
-                                     for label, color in zip(labels, colors)]}
+        ome["omero"] = {"channels": [{"label": label, "color": c, "active": True, **window}
+                                     for label, c in zip(labels, colors)]}
         out.json(f"{pi}/zarr.json", group_json(ome))
         out.json(f"{pi}/0/zarr.json", array_json([shape[a] for a in axes], data_type,
                                                   [chunk_shape[a] for a in axes], codecs, axes))
@@ -304,14 +405,15 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
         for l in reversed(loops):
             coords[l["kind"]] = rest % l["count"]
             rest //= l["count"]
-        index = [coords.get(a, 0) if a in ("t", "z") else 0 for a in axes]
-        ranges = frame_ranges(f)
-        for o, n in ranges:
-            _check_range(o, n, size)
-        if len(ranges) > 1 and len(Concat(tuple(Range(0, o, n) for o, n in ranges)).encode()) > MAX_PAYLOAD:
-            raise Rejected(f"frame {f}'s reference payload exceeds {MAX_PAYLOAD} bytes")
-        out.refs[f"{coords.get('p', 0)}/0/c/" + "/".join(map(str, index))] = ranges
+        for j, ranges in enumerate(frame_chunks(f)):
+            for o, n in ranges:
+                _check_range(o, n, size)
+            if payload_size(ranges) > MAX_PAYLOAD:
+                raise Rejected(f"frame {f}'s reference payload exceeds {MAX_PAYLOAD} bytes")
+            index = [coords.get(a, 0) if a in ("t", "z") else j if a == "y" else 0 for a in axes]
+            out.refs[f"{coords.get('p', 0)}/0/c/" + "/".join(map(str, index))] = ranges
     out.summary = {"sizes": {**{l["kind"]: l["count"] for l in loops}, "c": comp, "y": height, "x": width},
                    "dataType": data_type, "compressed": compressed, "paddedRows": width_bytes != row_bytes,
-                   "positions": positions, "frames": total, "missing": total - len(present), "channels": labels}
+                   "rowBlock": h, "positions": positions, "frames": total, "missing": total - len(present),
+                   "channels": labels}
     return out

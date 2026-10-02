@@ -328,12 +328,15 @@ def edges() -> None:
     f.chunk("ImageAttributesLV!", attributes(w, h, 1, 16, sequence=1, compression=0))
     f.chunk("ImageDataSeq|0!", struct.pack("<d", 0))
     write("nd2_reject_empty_compressed_frame", f, {})
-    # Padded rows whose reference payload exceeds 65519 bytes.
-    tall = 12000
+    # Padded rows too many for one reference (65519 bytes): the frame is
+    # split into row blocks of 6000 rows, the largest divisor of 12000 whose
+    # blocks fit (each row costs 8 bytes of payload here, so at most 8189).
+    tall, block = 12000, 6000
     f = Nd2()
     f.chunk("ImageAttributesLV!", attributes(1, tall, 1, 8, sequence=1, width_bytes=4))
-    f.chunk("ImageDataSeq|0!", struct.pack("<d", 0) + b"\0" * (4 * tall))
-    write("nd2_reject_payload", f, {})
+    px = rng.integers(0, 256, (tall, 1, 1), dtype=np.uint8)
+    f.chunk("ImageDataSeq|0!", frame_bytes(px, 4, False))
+    write("nd2_edge_tall_padded", f, {f"0/0/c/{j}/0": px[j * block : (j + 1) * block, :, 0] for j in range(tall // block)})
     # A chunk map entry pointing at bytes without the magic.
     f = Nd2()
     f.chunk("ImageAttributesLV!", base)
@@ -344,6 +347,69 @@ def edges() -> None:
     (OUT / "nd2_reject_tiny.nd2").write_bytes(Nd2().buf[:32] + b"\0" * 4)
 
 
+def revision3() -> None:
+    """The typed-member and loop-kind rules of revision 3 (§4.2, §4.3)."""
+    h, w = 3, 4
+
+    def frames(f: Nd2, n: int) -> dict:
+        out = {}
+        for i in range(n):
+            px = rng.integers(0, 200, (h, w, 1)).astype(np.uint16)
+            f.chunk(f"ImageDataSeq|{i}!", frame_bytes(px, w * 2, False))
+            out[i] = px[:, :, 0]
+        return out
+
+    # Sibling time loops of different eTypes merge by kind: a position loop
+    # (2 points) with time children of 2 (eType 1) and 3 (eType 8) gives
+    # [position 2, time 3], with the second loop's period. eType is a
+    # binary64; uiColor a negative i32; an unused pointer member is not read.
+    f = Nd2()
+    f.chunk("ImageAttributesLV!", attributes(w, h, 1, 16, sequence=6))
+    first = {"eType": 1, "uLoopPars": {"uiCount": 2, "dPeriod": 100.0}}
+    second = {"eType": 8, "uLoopPars": {"pPeriod": [{"uiCount": 3, "dPeriod": 500.0}]}}
+    root = level("SLxExperiment", [record(6, "eType", struct.pack("<d", 2.0)),
+                                    lv("uLoopPars", {"Points": [{"dPosX": 0.0}, {"dPosX": 1.0}]}),
+                                    lv("ppNextLevelEx", {"i0": first, "i1": second})])
+    f.chunk("ImageMetadataLV!", root)
+    f.chunk("ImageMetadataSeqLV|0!", level("SLxPictureMetadata", [
+        record(7, "pPointer", struct.pack("<Q", 12345)),
+        level("sPicturePlanes", [lv("uiCount", 1), level("sPlaneNew", [
+            level("a0", [lv("sDescription", "red"), record(2, "uiColor", struct.pack("<i", -16776961))])])])]))
+    px = frames(f, 6)
+    write("nd2_edge_kind_merge", f, {f"{i // 3}/0/c/{i % 3}/0/0": px[i] for i in range(6)})
+
+    def attrs(**changes) -> bytes:
+        a = {"uiWidth": lv("uiWidth", w), "uiHeight": lv("uiHeight", h), "uiWidthBytes": lv("uiWidthBytes", w * 2),
+             "uiComp": lv("uiComp", 1), "uiBpcInMemory": lv("uiBpcInMemory", 16),
+             "uiBpcSignificant": lv("uiBpcSignificant", 16)}
+        a.update(changes)
+        return level("SLxImageAttributes", list(a.values()))
+
+    time_loop = lambda pars: experiment(node(1, pars))  # noqa: E731
+    cases = {
+        "nd2_reject_pointer_number": dict(attrs=attrs(uiWidth=record(7, "uiWidth", struct.pack("<Q", w)))),
+        "nd2_reject_fraction": dict(attrs=attrs(uiHeight=lv("uiHeight", 3.5))),
+        "nd2_reject_negative_count": dict(exp=time_loop({"uiCount": -1})),
+        "nd2_reject_nan_period": dict(exp=time_loop({"uiCount": 1, "dPeriod": float("nan")})),
+        "nd2_reject_path_through_scalar": dict(exp=experiment({"eType": 1, "uLoopPars": 5})),
+        "nd2_reject_validity_object": dict(exp=experiment(node(2, {"Points": [{"x": 1.0}]}, item_valid=None) | {
+            "pItemValid": {"a": 1}})),
+        "nd2_reject_unused_calibration": dict(pic=level("SLxPictureMetadata", [
+            lv("bCalibrated", False), lv("dCalibration", "0.5")])),
+        "nd2_reject_unused_plane_color": dict(pic=level("SLxPictureMetadata", [level("sPicturePlanes", [
+            lv("uiCount", 2), level("sPlaneNew", [level("a0", [lv("uiColor", "red")])])])])),
+    }
+    for name, c in cases.items():
+        f = Nd2()
+        f.chunk("ImageAttributesLV!", c.get("attrs", attrs()))
+        if "exp" in c:
+            f.chunk("ImageMetadataLV!", c["exp"])
+        if "pic" in c:
+            f.chunk("ImageMetadataSeqLV|0!", c["pic"])
+        frames(f, 1)
+        write(name, f, {})
+
+
 if __name__ == "__main__":
     OUT.mkdir(exist_ok=True)
     tz_uint16()
@@ -352,5 +418,6 @@ if __name__ == "__main__":
     float_uncalibrated()
     rejected()
     edges()
+    revision3()
     for p in sorted(OUT.glob("nd2_*.nd2")):
         print(p.name, p.stat().st_size)

@@ -18,7 +18,9 @@ virtualize <url> <out.json>
   exit with status 0. Printing a one-line summary to stdout is optional.
 - If the specification rejects the input, exit with status 3, write nothing,
   and print the reason to stderr.
-- Any other exit status means the implementation failed.
+- If reading fails (a network error, or a response other than those below),
+  exit with any other status (for example 1). Any status other than 0 and 3
+  means the implementation failed.
 
 ## Reading the input
 

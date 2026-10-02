@@ -1,6 +1,6 @@
 # Virtualizing image files as OME-Zarr in vzip
 
-Profiles version: 0 (**draft**) · Revision: 2
+Profiles version: 0 (**draft**) · Revision: 3
 
 ## 1. Introduction
 
@@ -62,10 +62,19 @@ error) is not a rejection; the virtualizer fails instead.
 **Structure only.** The output MUST NOT depend on the file's pixel data.
 (Reading blocks that happen to include pixel bytes is fine.)
 
+**Evaluation order.** Whether an input is rejected never depends on the
+order in which a virtualizer reads or checks things: each profile lists what
+is checked, and every listed check applies whether or not its value ends up
+in the output.
+
 **References stay in the file.** Every range of the output MUST lie within
 the file (`offset + length ≤` the file's size), and every reference entry's
-payload (SPEC.md §4.3, as encoded by SPEC.md §5) MUST be at most 65519 bytes;
-otherwise the input is rejected.
+payload MUST be at most 65519 bytes; otherwise the input is rejected. The
+payload (SPEC.md §4.3, §5) of a single range `(0, o, n)` is a `Range`
+message: `0x10 varint(o)` if `o > 0`, then `0x18 varint(n)` if `n > 0`.
+The payload of several ranges is a `Concat` message: for each range, `0x0A
+varint(len(r)) r`, where `r` is that range's `Range` message. `varint` is the
+protobuf base-128 encoding (1 byte below 2^7, 2 below 2^14, and so on).
 
 ### 1.3 Arithmetic
 
@@ -73,7 +82,13 @@ Where this document computes a number (a scale, a size), it is computed in
 IEEE 754 binary64 arithmetic, in the order written, with each operation
 rounded to nearest. Decimal strings are converted to binary64 by correct
 rounding. Integers are exact. A number that would be infinite or NaN rejects
-the input. In JSON documents, integers are written as integers.
+the input. In JSON documents, integers (shapes, counts, codec parameters) are
+written as integers; a computed number such as a scale MAY be written either
+way (`1` or `1.0`), since outputs compare numbers by value (§1.1).
+
+**Whitespace** in this document means the XML whitespace characters: space,
+tab, CR and LF (U+0020, U+0009, U+000D, U+000A). **Digits** are the ASCII
+digits `0`–`9`.
 
 ## 2. Common output
 
@@ -177,81 +192,149 @@ The input is a TIFF (magic 42) or BigTIFF (magic 43, offset size 8 and
 reserved word 0), in either byte order.
 
 - **IFDs:** the virtualizer reads the chain of image file directories (IFDs)
-  from the header (the **main chain**), and then, for every main-chain IFD,
-  the IFDs whose offsets its `SubIFDs` tag (330) lists, in order. Only the
-  listed offsets are read: a SubIFD's own next-IFD offset and SubIFDs are
-  ignored. Every IFD read counts toward a limit of 100000, and reading the
-  same offset twice (anywhere) is a cycle; either rejects the input. A
-  `SubIFDs` tag with no values means no SubIFDs.
-- **Values** are read as TIFF 6.0 and BigTIFF define them, for the field
-  types they define. A used tag with an unknown field type rejects the input.
-  Of duplicate tags in an IFD, the first is used.
+  from the header (the **main chain**, which ends at a next-IFD offset of 0).
+  Then, for every main-chain IFD in order, it reads the IFDs whose offsets
+  that IFD's `SubIFDs` tag (330) lists, in order. Only the listed offsets are
+  read: a SubIFD's own next-IFD offset and SubIFDs are ignored. A `SubIFDs`
+  tag with no values means no SubIFDs.
+- **Limits:** every IFD offset read (main chain or SubIFD) MUST be at least
+  8 (16 for BigTIFF) and MUST differ from every other IFD offset read, so a
+  cycle, or a SubIFD shared by two IFDs, rejects the input. At most 100000
+  IFDs are read; reading the 100001st rejects the input.
+- **Tags** not in the table below are ignored: neither their field types nor
+  their values are read or checked. Of duplicate tags in an IFD, the first is
+  used and the others are ignored.
 
 Tags used (absent tags take the defaults shown):
 
-| tag | name | default |
-|---|---|---|
-| 256, 257 | ImageWidth, ImageLength | required |
-| 258 | BitsPerSample | required |
-| 259 | Compression | 1 |
-| 270 | ImageDescription | none |
-| 277 | SamplesPerPixel | 1 |
-| 284 | PlanarConfiguration | 1 (only read when SamplesPerPixel > 1; then it MUST be 1 or 2) |
-| 317 | Predictor | 1 |
-| 322, 323 | TileWidth, TileLength | required for tiled images |
-| 324, 325 | TileOffsets, TileByteCounts | required for tiled images |
-| 330 | SubIFDs | none |
-| 339 | SampleFormat | 1 |
+| tag | name | kind | default |
+|---|---|---|---|
+| 256, 257 | ImageWidth, ImageLength | scalar | required |
+| 258 | BitsPerSample | array | required |
+| 259 | Compression | scalar | 1 |
+| 270 | ImageDescription | text | none |
+| 277 | SamplesPerPixel | scalar | 1 |
+| 284 | PlanarConfiguration | scalar | 1 |
+| 317 | Predictor | scalar | 1 |
+| 322, 323 | TileWidth, TileLength | scalar | required for tiled images |
+| 324, 325 | TileOffsets, TileByteCounts | array | required for tiled images |
+| 330 | SubIFDs | array | none |
+| 339 | SampleFormat | array | 1 |
 
-An IFD is **tiled** if it has TileWidth and TileOffsets. "Required" applies
-to the IFDs that become planes or levels (§3.3, §3.4): a missing required
-tag there rejects the input. All BitsPerSample values of such an IFD MUST be
-equal, and all its SampleFormat values MUST be equal; their counts are not
-checked. Its **format** is the tuple (BitsPerSample, SamplesPerPixel,
-SampleFormat, PlanarConfiguration, Compression, Predictor), with
-PlanarConfiguration taken as 1 when SamplesPerPixel is 1.
+**Checks on every IFD read.** For every tag of the table present in an IFD
+read (whether or not that IFD is used):
+
+- **Field type:** ImageDescription may have any field type that TIFF 6.0 or
+  BigTIFF defines (1–12, 16–18), or 13 (IFD). Every other tag MUST have an
+  unsigned integer type: BYTE (1), SHORT (3), LONG (4), IFD (13), LONG8
+  (16) or IFD8 (18), in either TIFF variant. Any other type rejects.
+- **Value:** its value MUST lie within the file.
+- **Count:** a scalar tag MUST have at least one value (only the first is
+  used). An array tag may have any count; BitsPerSample and SampleFormat
+  with no values reject when they are used.
+
+**Format.** An IFD's **format** is the tuple (BitsPerSample, SamplesPerPixel,
+SampleFormat, PlanarConfiguration, Compression, Predictor). Computing it
+requires:
+
+- BitsPerSample, with at least one value, all equal and at least 1;
+- SamplesPerPixel at least 1;
+- SampleFormat values all equal (when the tag is present it MUST have at
+  least one value).
+
+When SamplesPerPixel is 1, PlanarConfiguration is taken as 1. Otherwise it
+MUST be 1 or 2. Counts of BitsPerSample and SampleFormat are not otherwise
+checked. If any of these fails, the input is rejected. Formats are computed
+for IFD 0 (always, even when it is not a plane), for every IFD that becomes
+a plane or a level (§3.3, §3.4), and for every candidate of the level scan
+(§3.4).
+
+**Size.** An IFD that becomes a plane or a level, or is a candidate of the
+level scan, MUST have ImageWidth and ImageLength, and both MUST be at least
+1. A tiled one (§3.4) MUST have TileWidth, TileLength, TileOffsets and
+TileByteCounts, with TileWidth and TileLength at least 1. An IFD is
+**tiled** if it has TileWidth and TileOffsets.
 
 **IFD 0** below is the first IFD of the main chain.
 
 ### 3.2 OME-XML
 
 If IFD 0's ImageDescription has field type ASCII (2), let `D` be its bytes up
-to the first NUL. If `D` is valid UTF-8 and its text contains a start tag
-whose name, without a namespace prefix, is `OME` (`<OME` or `<prefix:OME`,
-followed by whitespace, `/` or `>`), `D` is the **OME-XML** `X`.
+to the first NUL. If `D` is valid UTF-8 and the tag scan below finds a start
+tag named `OME` in it, `D` is the **OME-XML**, and `X` is its text.
 
-`X` is read as a sequence of tags, not as a validated XML document:
+**Tag scan.** `X` is read as a sequence of tags, not as a validated XML
+document:
 
-- comments (`<!--` to `-->`), CDATA sections (`<![CDATA[` to `]]>`),
-  processing instructions (`<?` to `?>`) and other declarations (`<!` to
-  `>`) are skipped;
-- an element's name is compared without its namespace prefix; attribute
-  names are compared exactly (they are unprefixed in OME-XML);
-- attribute values have the five XML predefined entities (`&lt;` `&gt;`
-  `&amp;` `&quot;` `&apos;`) and numeric character references decoded;
-  other entity references are left as they are, and whitespace is not
-  normalized;
-- malformed XML is not detected; the scan uses the tags it finds.
+1. **Skipped sections:** scanning from the start, the first of these to
+   begin at each point is skipped, up to and including its end:
+   - comments, `<!--` to the next `-->`;
+   - CDATA sections, `<![CDATA[` to the next `]]>`;
+   - processing instructions, `<?` to the next `?>`;
+   - other declarations, `<!` to the next `>`.
+
+   A section without an end runs to the end of `X`.
+2. **Tags:** outside skipped sections, a tag is a match of this grammar
+   starting at a `<` (whitespace and digits as in §1.3):
+
+   ```
+   tag    = "<" ["/"] qname *(ws1 attr) [ws] ["/"] ">"
+   qname  = [name ":"] name
+   name   = 1*(ASCII letter / digit / "_" / "." / "-")
+   attr   = aname [ws] "=" [ws] ( DQUOTE *(not DQUOTE) DQUOTE / "'" *(not "'") "'" )
+   aname  = 1*(any character except whitespace, "=", "/", ">", DQUOTE, "'", "<")
+   ws     = 1*whitespace ; ws1 is the same
+   ```
+
+   A `<` where the grammar does not match is text. Scanning continues after
+   the end of each tag.
+3. A tag is a **start tag** if it does not begin with `</`, and an **end
+   tag** if it does. It is **self-closing** if it ends with `/>`. Its
+   **name** is the last `name` of its `qname`, without the namespace prefix.
+   Attribute names are compared exactly. Of duplicate attribute names in a
+   tag, the first is used.
+4. **Attribute values** have references decoded: the five XML predefined
+   entities (`&lt;` `&gt;` `&amp;` `&quot;` `&apos;`), and numeric character
+   references (`&#` digits `;` or `&#x` hex digits `;`) that denote a Unicode
+   scalar value other than U+0000. Anything else, including other entity
+   references and references to U+0000, surrogates or values above
+   U+10FFFF, is left as it is. Whitespace is not normalized.
 
 From `X` the virtualizer uses:
 
 - the `Name` attribute of the first `Image` start tag (the image name);
-- the attributes of the first `Pixels` start tag (in document order):
-  `SizeZ`, `SizeC`, `SizeT`, `DimensionOrder`, `PhysicalSizeX/Y/Z` and
-  `PhysicalSizeX/Y/ZUnit`;
-- the `TiffData` start tags between that `Pixels` start tag and its end tag
-  (`</Pixels>`, or the end of `X`), in order, with attributes `IFD`,
-  `FirstZ`, `FirstC`, `FirstT` and `PlaneCount`, and the `UUID` start tag
-  between each `TiffData` start tag and its end (if it is not self-closing),
-  with its `FileName` attribute and its text.
+- the attributes of the first `Pixels` start tag:
+  - `SizeZ`, `SizeC`, `SizeT` and `DimensionOrder`;
+  - `PhysicalSizeX/Y/Z` and `PhysicalSizeX/Y/ZUnit`;
+- the `TiffData` start tags after that `Pixels` start tag and before the
+  first `Pixels` end tag after it (or the end of `X`), in order:
+  - with attributes `IFD`, `FirstZ`, `FirstC`, `FirstT` and `PlaneCount`;
+  - if the `Pixels` start tag is self-closing, there are none;
+- for each `TiffData` that is not self-closing, the first `UUID` start tag
+  after it and before the next `TiffData` end tag, `TiffData` start tag or
+  `Pixels` end tag:
+  - its `FileName` attribute;
+  - its **text**: if it is not self-closing, the characters of `X` from the
+    end of the `UUID` tag to the start of the next tag, with skipped
+    sections removed, references decoded as in attribute values, and
+    leading and trailing whitespace removed.
 
-**Values.** Integer attributes (`Size*`, `First*`, `IFD`, `PlaneCount`) MUST
-be decimal digits, optionally surrounded by whitespace; `SizeZ`, `SizeC`,
-`SizeT` and `PlaneCount` MUST be at least 1. Otherwise the input is
-rejected. A `PhysicalSize*` value counts as present only if it matches
-`[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?` and its value is
-finite and positive; otherwise it is treated as absent. `DimensionOrder`
-MUST be `XY` followed by a permutation of `ZCT`, or the input is rejected.
+Without a `Pixels` start tag, every `Pixels` attribute is absent and there
+are no `TiffData` tags.
+
+**Values.**
+
+- **Integer attributes** (`Size*`, `First*`, `IFD`, `PlaneCount`): the whole
+  value MUST be one or more digits, optionally preceded and followed by
+  whitespace, and at most 2^53 − 1. `SizeZ`, `SizeC`, `SizeT` and
+  `PlaneCount` MUST be at least 1. Otherwise the input is rejected.
+- **`PhysicalSize*`:** a value counts as present only if the whole value
+  (with no whitespace) matches
+  `[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?` and its value is
+  finite and positive. Otherwise it is treated as absent.
+- **`DimensionOrder`:** MUST be `XY` followed by a permutation of `ZCT`, or
+  the input is rejected.
+- **Unit attributes:** matched exactly (by code points) against §2.3.
 
 The OME-XML's other content (for example `Interleaved`) is not used: the
 TIFF tags decide.
@@ -269,15 +352,17 @@ IFD 0. With OME-XML:
 
 Let `Cp` be 1 if `spp > 1`, else `SizeC`. Planes have positions (z, c, t)
 with `z < SizeZ`, `c < Cp`, `t < SizeT`; the plane count is
-`SizeZ × Cp × SizeT`. Planes are mapped to main-chain IFDs (by their index
+`SizeZ × Cp × SizeT`, which MUST be at most 100000. Planes are mapped to main-chain IFDs (by their index
 in the main chain, IFD 0 being index 0) by the `TiffData` elements, in
 document order (with one implicit `TiffData` without attributes if there
 are none):
 
-- **Multi-file datasets:** if the `TiffData` elements' `UUID`s name more
-  than one distinct file (by `FileName`, or by UUID text when there is no
-  `FileName`), the input is rejected. Otherwise `UUID`s are ignored, so a
-  file that names itself is accepted.
+- **Multi-file datasets:** a `TiffData` with a `UUID` names the file
+  identified by the `UUID`'s `FileName` if it has one, else by its text (two
+  identifiers are the same file only if they are equal strings). If the
+  `TiffData` elements name more than one distinct file, the input is
+  rejected. Otherwise `UUID`s are ignored, so a file that names itself is
+  accepted, and a `TiffData` without a `UUID` names no file.
 - **Coverage:** a `TiffData` starts at position (`FirstZ`, `FirstC`,
   `FirstT`) (each default 0, and each MUST be less than `SizeZ`, `Cp`,
   `SizeT` respectively, else the input is rejected) and IFD index `IFD`
@@ -290,8 +375,9 @@ are none):
   indices. Planes past the last position are ignored.
 - A plane mapped twice takes the later mapping.
 
-Every plane MUST be mapped to an existing main-chain IFD, else the input is
-rejected.
+After all `TiffData` elements are applied, every plane MUST be mapped to an
+existing main-chain IFD, else the input is rejected. (An index past the
+chain that a later mapping replaces is not an error.)
 
 ### 3.4 Pyramid levels
 
@@ -300,9 +386,11 @@ rejected.
   plane, its IFD's `k`-th SubIFD. A plane IFD with fewer than `s` SubIFDs
   rejects the input.
 - Otherwise level 0 is the planes. Without OME-XML, the later main-chain
-  IFDs are scanned in order. One becomes the next level if it is tiled, has
-  BitsPerSample, has IFD 0's format, and is strictly smaller in both width
-  and length than the last level; others are skipped. This finds the
+  IFDs are scanned in order. An IFD that is tiled and has BitsPerSample is a
+  **candidate**: its format and size are checked as §3.1 says (a failure
+  rejects the input). A candidate becomes the next level if it has IFD 0's
+  format and is strictly smaller in both width and length than the last
+  level. Other IFDs, and other candidates, are skipped. This finds the
   pyramids of Aperio SVS files, whose stripped thumbnails, labels and macros
   are skipped. (A tiled image of the right format that is not part of the
   pyramid would be taken as a level.)
@@ -376,11 +464,15 @@ rejected; names are not checked except as stated.
 - **Chunk map:** the file MUST be at least 40 bytes long; its last 40 bytes
   are the 32 bytes `ND2 CHUNK MAP SIGNATURE 0000001!` and a `u64` offset
   `m`. The chunk at `m` MUST be named `ND2 FILEMAP SIGNATURE NAME 0001!`
-  (after removing NUL padding). Its data is a sequence of records, each a
-  name running up to and including the first `!`, then a `u64` offset and a
-  `u64` size (unused), ending with the record named
-  `ND2 CHUNK MAP SIGNATURE 0000001!`. The map gives each named chunk's header
-  offset; of duplicate names, the last is used.
+  (its name bytes up to the first NUL, or all `n` if there is none). Its
+  data is a sequence of records, each a name running up to and including the
+  first `!`, then a `u64` offset and a `u64` size (unused). The record named
+  `ND2 CHUNK MAP SIGNATURE 0000001!` ends the map: its offset and size, and
+  anything after them, are not read. A record (other than the last) that
+  runs past the end of the data, or data without that last record, rejects
+  the input. The map gives each named chunk's header offset; of duplicate
+  names, the last is used. An offset is checked (≤ 2^53 − 1, chunk magic)
+  only when that chunk is read.
 
 ### 4.2 Lite variant
 
@@ -388,7 +480,7 @@ Metadata chunks hold a **lite variant** (LV) structure: a sequence of
 records, running to the end of the chunk's data. A record is `u8` type,
 `u8` name length `k` (in UTF-16 code units, including a terminating NUL),
 the name (`2k` bytes of UTF-16LE; the name is its units up to the first
-NUL), and a value:
+NUL, decoded like a string), and a value:
 
 | type | value |
 |---|---|
@@ -402,30 +494,54 @@ NUL), and a value:
 | 11 | level: `u32` item count `c`, `u64` length `L`, then exactly `c` records, which MUST end at `L` bytes from the start of this record (its type byte); then `8c` bytes to skip |
 
 Any other type rejects the input, except that a chunk's data MAY consist of
-a single **compressed** record, type 76: the type byte and a name-length
-byte, 10 bytes to skip, then a zlib stream (RFC 1950) that MUST end exactly
-at the end of the chunk's data. The stream inflates to the chunk's LV
-structure (which MUST NOT itself be compressed).
+a single **compressed** record, type 76: the type byte, a name-length byte
+(whatever its value), 10 bytes to skip, then from offset 12 a zlib stream
+(RFC 1950) that MUST end exactly at the end of the chunk's data. The stream
+inflates to the chunk's LV structure (which MUST NOT itself start with a
+compressed record).
 
 **Values.** All integers are little-endian. A level with at least one
 record, all with empty names, is a **list** of their values. Any other level
 (including an empty one) is an **object**: its members are its records by
 name, in the order of each name's first appearance, and a repeated name has
-its last value. A byte array is a list of its bytes. "The members of" an
-object or a list are its values in order. Paths name members, for example
-`SLxImageAttributes/uiWidth`; `a<i>` names a member like `a0`. A member
-used as a number MUST have type 2–6, and as a flag type 1–5 (true if
-nonzero); a missing member takes the default given, and a missing member
-without one rejects the input.
+its last value. A chunk's top-level records always form an object. A byte
+array is a list of its bytes; each byte counts as a value of type 3. "The
+members of" an object or a list are its values in order.
+
+**Paths** name members, for example `SLxImageAttributes/uiWidth`; `a<i>`
+names a member like `a0` (`i` in decimal, without leading zeros). Each step
+of a path looks up a name in an object; a step from a value that is not an
+object (a list, a byte array, a scalar) rejects the input. A missing member
+takes the default given, and a missing member without one rejects the
+input. A member read as:
+
+- a **number** MUST have type 2–6; its value is converted to binary64
+  (rounding to nearest) and MUST be finite;
+- an **integer** MUST be a number with an integral value from 0 to
+  2^53 − 1 (a **color** is an integer from −2^31 to 2^32 − 1, taken modulo
+  2^32);
+- a **flag** MUST have type 1–5 (true if nonzero);
+- a **string** MUST have type 8;
+- an **object** or a **list** MUST be one (a byte array is a list).
+
+Any other value rejects the input.
 
 ### 4.3 Metadata
 
+Every member listed in this section is read and checked (with the kind
+given, §4.2) wherever it is present in the places described, whether or not
+its value ends up in the output.
+
 - **Attributes** (chunk `ImageAttributesLV!`, member `SLxImageAttributes`;
-  required): `uiWidth`, `uiHeight`, `uiWidthBytes`, `uiComp` (components per
-  pixel), `uiBpcInMemory`, `uiBpcSignificant` (all required, `uiWidth`,
-  `uiHeight` and `uiComp` at least 1), `eCompression` (default 2),
-  `uiTileWidth` and `uiTileHeight` (default 0). Other members, such as
-  `uiSequenceCount` and `ePixelType`, are not used.
+  required):
+  - integers `uiWidth`, `uiHeight`, `uiWidthBytes`, `uiComp` (components per
+    pixel), `uiBpcInMemory` (all required; `uiWidth`, `uiHeight` and
+    `uiComp` at least 1);
+  - number `uiBpcSignificant` (required);
+  - integers `eCompression` (default 2), `uiTileWidth` and `uiTileHeight`
+    (default 0).
+
+  Other members, such as `uiSequenceCount` and `ePixelType`, are not read.
   - `uiBpcInMemory` 8, 16, 32 gives `uint8`, `uint16`, `float32`; other values
     are rejected.
   - `eCompression` 2 is uncompressed and 0 is lossless (zlib); any other
@@ -433,61 +549,81 @@ without one rejects the input.
   - A tile width or height that is positive and differs from the image's is
     rejected.
 - **Experiment** (chunk `ImageMetadataLV!`, member `SLxExperiment`; if the
-  chunk is absent there are no loops) is a tree. A node has `eType`
-  (required), `uLoopPars` and children, the members of `ppNextLevelEx`. Each
-  node's loop is given by:
+  chunk or the member is absent there are no loops) is a tree of objects
+  (any other value rejects).
+  - A **node** has:
+    - `eType` (integer, required);
+    - `uLoopPars` (object, default absent);
+    - `pItemValid` (list, default absent), a member of the node itself;
+    - children, the members of `ppNextLevelEx` (object or list, default
+      none), each of which MUST be an object.
+  - Each node's loop has a **kind** and a count. Its members are in
+    `uLoopPars`:
 
-  | `eType` | loop | count |
-  |---|---|---|
-  | 1 | time | `uLoopPars/uiCount` (default 0); period `uLoopPars/dPeriod` (ms, default 0) |
-  | 8 | time | the sum of `uiCount` over the members `p` of `uLoopPars/pPeriod` (default: none) that are valid; period: the first valid member's `dPeriod` (default 0) |
-  | 2 | position | the number of members of `uLoopPars/Points` (default: none) that are valid |
-  | 4 | z | `uLoopPars/uiCount` (default 0); step `abs(dZStep)`, or if that is 0 and the count is more than 1, `abs(dZHigh − dZLow) / (count − 1)` (each in `uLoopPars`, default 0) |
-  | 6 | (spectral) | `uLoopPars/uiCount`, else `uLoopPars/pPlanes/uiCount`, else 0 |
+    | `eType` | kind | count, and period or step |
+    |---|---|---|
+    | 1 | time | integer `uiCount` (default 0); period: number `dPeriod` (ms, default 0) |
+    | 8 | time | the members `p` of `pPeriod` (object or list, default none) MUST be objects. The count is the sum of integer `p/uiCount` (required) over the valid `p`. The period is number `p/dPeriod` (default 0) of the first valid `p`, or 0 if none is valid. |
+    | 2 | position | the number of valid members of `Points` (object or list, default none) |
+    | 4 | z | integer `uiCount` (default 0); numbers `dZStep`, `dZLow`, `dZHigh` (default 0); step `abs(dZStep)`, or if that is 0 and the count is more than 1, `abs(dZHigh − dZLow) / (count − 1)` |
+    | 6 | (spectral) | integer `uiCount`; if it is absent, integer `pPlanes/uiCount`; if that is absent, 0 |
 
-  The `i`-th member of `pPeriod` (`Points`) is **valid** if
-  `uLoopPars/pPeriodValid` (the node's `pItemValid`) is absent, or if its
-  `i`-th member exists and is nonzero.
+    For eType 8, `uiCount` and `dPeriod` are read only from valid members.
+  - **Validity:** the `i`-th member of `pPeriod` (of `Points`) is
+    **valid** if the list `uLoopPars/pPeriodValid` (for `Points`: the node's
+    `pItemValid`, not a member of `uLoopPars`) is absent, or if its `i`-th
+    member exists and is true. Every member of a validity list is a flag.
 
   Any other `eType` is rejected. The tree is flattened into a list of loops
   by visiting nodes depth first, each node before its children. The root has
   depth 0 and children are one deeper than their node, except that the
-  children of a spectral node have the spectral node's depth. For each node,
-  in this order:
+  children of a spectral node have the spectral node's depth. A loop is its
+  kind, depth, count, and period or step. For each node visited, in this
+  order:
   1. its `eType` is checked;
   2. without `uLoopPars`, or with a count of 0 (spectral nodes included): the
-     node and its children are skipped;
+     node and its children are skipped (not visited);
   3. spectral: the node is skipped and its children are visited (its planes
      are pixel components, not a loop of the output);
   4. otherwise: if the list is empty or the last loop's depth is less than
      the node's, the node's loop is appended. If the last loop has the same
-     depth and type (`eType`), and its count is less than the node's count,
-     the node's loop replaces it. Otherwise the node's loop is dropped.
-     Either way its children are visited.
+     depth and kind, and its count is less than the node's count, the node's
+     loop (with its period or step) replaces it. Otherwise the node's loop is
+     dropped. Either way its children are visited.
 
-  Rule 4 merges sibling branches that repeat one loop: a time loop with two
+  Rule 4 merges sibling branches that repeat one loop. A time loop with two
   position-loop children of 25 and 25 points gives [time, position]; the
   second position loop is dropped, and its children are still visited one
-  level deeper.
+  level deeper. Rule 4 compares only with the last loop: if the first
+  position loop had a z-loop child, the last loop is that z loop when the
+  second position loop is visited, so the second is dropped whatever its
+  count.
 
   Two loops of the same kind (two time loops, for example) in the final list
   are rejected.
 - **Picture metadata** (chunk `ImageMetadataSeqLV|0!`, member
-  `SLxPictureMetadata`; optional):
-  - planes: `sPicturePlanes/sPlaneNew/a<i>` for `i < sPicturePlanes/uiCount`
-    (default 0), each with `sDescription` (default empty), `uiColor`
-    (default `0xFFFFFF`) and `uiCompCount` (default 1);
+  `SLxPictureMetadata`; if the chunk or the member is absent there are no
+  planes and the image is not calibrated):
+  - flag `bCalibrated` (default false), number `dCalibration` (default
+    absent), number `dAspect` (default 1);
+  - planes: object `sPicturePlanes` (default absent: no planes), with
+    integer `uiCount` (default 0) and object `sPlaneNew` (default absent).
+    Plane `i` is the member `sPlaneNew/a<i>`, for `i < uiCount`. Each one
+    present MUST be an object, with string `sDescription` (default empty),
+    color `uiColor` (default `0xFFFFFF`) and integer `uiCompCount`
+    (default 1).
   - calibration: the image is **calibrated** if `bCalibrated` is true and
-    `dCalibration` (µm per pixel) is present and positive; `dAspect`
-    defaults to 1, and a value that is not positive counts as 1.
+    `dCalibration` is present and positive. A `dAspect` that is not positive
+    counts as 1.
 
 ### 4.4 Frames
 
 The frames are numbered `0 ≤ f < N`, where `N` is the product of the loops'
 counts (1 if there are none). Frame `f`'s coordinates are its row-major
 index over the loops in list order (the last loop fastest). Frame `f` is the
-chunk named `ImageDataSeq|<f>!` (decimal); a frame absent from the chunk map
-is missing (no entry). Chunks with `f ≥ N` are ignored.
+chunk named `ImageDataSeq|<f>!` (`f` in decimal, without leading zeros); a
+frame absent from the chunk map is missing (no entry). Other chunk names,
+and frames with `f ≥ N`, are ignored.
 
 A frame's data is an 8-byte timestamp followed by its pixels: `uiHeight`
 rows of `uiWidthBytes` bytes, each holding `uiWidth × uiComp` samples
@@ -498,20 +634,30 @@ then padding. Let `R = uiWidth × uiComp × uiBpcInMemory / 8`;
 - **Uncompressed:** the virtualizer MUST read the headers of the present
   frames with the lowest and the highest numbers, and reject the file if
   their name lengths differ, or if either's data length `d` is less than
-  `8 + uiHeight × uiWidthBytes`. It uses the first one's name length `n` for
-  every frame: frame `f`'s pixels start at `start = o + 16 + n + 8`, where
-  `o` is its chunk's offset from the chunk map. If `uiWidthBytes = R`, the
-  frame is one range `(0, start, uiHeight × R)`. Otherwise it is `uiHeight`
-  ranges `(0, start + r × uiWidthBytes, R)` for rows `r = 0, 1, ...` in
-  order.
+  `8 + uiHeight × uiWidthBytes`. It reads no other frame's header: it uses
+  the first one's name length `n` for every frame, and frame `f`'s pixels
+  start at `start = o + 16 + n + 8`, where `o` is its chunk's offset from the
+  chunk map. (Other frames' chunks are not checked, except that their ranges
+  MUST lie within the file, §1.2.) Row `r` of the frame is the range
+  `(0, start + r × uiWidthBytes, R)`.
+  - If `uiWidthBytes = R`, the frame is one chunk, the single range
+    `(0, start, uiHeight × R)`.
+  - Otherwise (padded rows) the frame is split into **row blocks** of `h`
+    rows: block `j` is the ranges of rows `j × h` to `j × h + h − 1`, in
+    order. `h` is the largest divisor of `uiHeight` such that every block of
+    every present frame has a payload of at most 65519 bytes (§1.2). (`h = 1`
+    always qualifies, so padded frames are never rejected for their payload.)
 - **Compressed:** `uiWidthBytes` MUST equal `R`. The virtualizer reads every
-  present frame's header; the frame is one range `(0, o + 16 + n + 8, d − 8)`,
-  a zlib stream of the pixels, and `d` MUST be more than 8.
+  present frame's header; the frame is one chunk, the single range
+  `(0, o + 16 + n + 8, d − 8)`, a zlib stream of the pixels, and `d` MUST be
+  more than 8.
+
+Let `h` be `uiHeight` except for padded rows, where it is the block height.
 
 ### 4.5 Channels
 
-Channels are the components. If there is at least one plane, every plane
-exists, every plane's `uiCompCount` is 1 or 3, and they add up to `uiComp`,
+Channels are the components. If `uiCount` is at least 1, every plane
+`i < uiCount` exists, every plane's `uiCompCount` is 1 or 3, and they add up to `uiComp`,
 the components are labeled plane by plane:
 
 - a plane with one component gives one channel labeled `sDescription`,
@@ -542,8 +688,8 @@ Each array:
   `uiComp > 1`, `z` if there is a z loop, then `y`, `x`. Shape: the loops'
   counts, `uiComp`, then `uiHeight`, `uiWidth` (each only for the axes
   present).
-- **Chunk shape:** 1 for `t` and `z`, `uiComp` for `c`, then `uiHeight`,
-  `uiWidth`: one frame per chunk.
+- **Chunk shape:** 1 for `t` and `z`, `uiComp` for `c`, then `h` (§4.4) and
+  `uiWidth`: one frame, or one row block, per chunk.
 - **Codecs** (§2.1): transpose when `c` is present (frames are interleaved),
   bytes (with `"endian": "little"` when the data type is larger than 1 byte),
   and zlib if compressed.
@@ -561,15 +707,17 @@ Each array:
   `"omero": {"channels": [...]}`, one object per channel (even when there is
   no `c` axis):
   `{"label": ..., "color": ..., "active": true, "window": {"min": 0, "max": V, "start": 0, "end": V}}`
-  with `V = 2^b − 1`, where `b` is `uiBpcSignificant` if it is between 1 and
-  `uiBpcInMemory`, else `uiBpcInMemory`; for `float32` there is no `window`.
+  with `V = 2^b − 1`, where `b` is `uiBpcSignificant` if it is an integer
+  from 1 to `uiBpcInMemory`, else `uiBpcInMemory`; for `float32` there is no
+  `window`.
 - **Chunks:** frame `f` at position `p` (0 without a position loop) is the
   entry `<p>/0/c/<coords>` with its ranges (§4.4); coords are its `t`, 0 for
-  `c`, its `z` (each only when its axis is present), then 0, 0.
+  `c`, its `z` (each only when its axis is present), then 0, 0. With row
+  blocks, block `j` is the entry with coords ..., `j`, 0.
 
 ## 5. Conformance
 
-There are two maintained implementations:
+This section is informative. There are two maintained implementations:
 - the Python reference, `python -m vzip.virtualize <url> <out.vzip>`
   (`src/vzip/virtualize/`);
 - the browser one, `web/src/virtualize.ts` and `web/src/nd2.ts`, run under
