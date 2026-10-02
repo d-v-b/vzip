@@ -168,3 +168,46 @@ New synthetic files exercise each rule: 13 TIFFs (`edge_xml_scan`,
 (`nd2_edge_kind_merge`, `nd2_edge_tall_padded`, `nd2_reject_pointer_number`,
 ...). Both maintained implementations agree on all 86 synthetic files and on
 860 corrupted copies.
+
+## Round 3 (revision 3)
+
+**Result.** On the 317-input corpus (95 synthetic files, 205 IDR TIFFs and
+17 ND2 files), the round-3 implementations agree with both maintained ones
+everywhere except on the files added for revision 4. The same holds for 950
+corrupted copies (`mutate.py`, seed 1). The corrupted copies also found one
+bug shared by both maintained implementations: a file truncated inside the
+8-byte TIFF header crashed them instead of being rejected.
+
+The notes (`notes/r3/`) agree on a short list. Probe files showed which
+points split the implementations:
+
+| question | split |
+|---|---|
+| Are nodes under a skipped (count 0) node checked? | Python and Rust yes; TypeScript and both maintained implementations no |
+| Is `pItemValid` a list of flags on nodes other than positions? | all three round-3 implementations yes; maintained no |
+| Is `pPlanes/uiCount` read when a spectral node has `uiCount`? | TypeScript yes; the rest no |
+| A LONG8 tile offset above 2^53 on a tile with no bytes | TypeScript and the browser implementation reject; the rest accept |
+| LV levels nested 2000 deep | the Python reference crashed; the rest accept |
+
+**Revision 4** settles these:
+
+- **Experiment tree:**
+  - every node is checked, whether or not the flattening visits it;
+  - `pItemValid` holds flags on every node;
+  - `pPlanes` is read only when `uiCount` is absent;
+  - the eType 8 count sum and the frame count `N` are at most 2^53 − 1.
+- **TIFF tags:** integer values of table tags are at most 2^53 − 1 in
+  magnitude.
+- **LV nesting:** at most 100 levels deep.
+- **Smaller points, now stated:**
+  - a TIFF needs at least one IFD;
+  - only `SizeZ`, `SizeC` and `SizeT` are validated;
+  - the end of a skipped section is searched for after its whole start
+    marker;
+  - a self-closing `UUID` has empty text.
+
+New synthetic files cover each rule (`nd2_reject_skipped_bad_etype`,
+`nd2_reject_itemvalid_on_time`, `nd2_edge_spectral_unread_pplanes`,
+`nd2_edge_nesting_100`, `nd2_reject_nesting_101`, `edge_reject_big_offset`,
+`edge_xml_comment_marker`, `edge_reject_uuid_self_closing`,
+`edge_reject_no_ifds`).

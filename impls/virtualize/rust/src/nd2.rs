@@ -1,863 +1,735 @@
-//! ND2 profile (VIRTUALIZE.md §4).
-
-use std::collections::HashMap;
-use std::io::Read;
-
+//! ND2 profile (§4).
 use crate::common::*;
+use crate::http::Source;
+use crate::json::{J, obj};
+use crate::lv::{self, Item, Lv};
 use crate::rej;
+use std::collections::HashMap;
 
-// ------------------------------------------------------------------ LV (§4.2)
+const MAGIC: u32 = 0x0ABE_CEDA;
+const SIG_NAME: &[u8] = b"ND2 FILE SIGNATURE CHUNK NAME01!";
+const MAP_SIG: &[u8] = b"ND2 CHUNK MAP SIGNATURE 0000001!";
+const FILEMAP_NAME: &[u8] = b"ND2 FILEMAP SIGNATURE NAME 0001!";
 
-#[derive(Clone, Debug)]
-enum V {
-    Bool(u8),
-    /// Integer of LV type 2..=5.
-    Int(i128),
-    F64(f64),
-    Ptr,
-    Str(String),
-    Bytes(Vec<u8>),
-    /// A byte of a byte array, as a member of its list.
-    Byte(u8),
-    Level(Vec<(String, V)>),
+struct ChunkHeader {
+    n: u64,
+    d: u64,
 }
 
-fn le_u32(b: &[u8]) -> u32 {
+fn u32le(b: &[u8]) -> u32 {
     u32::from_le_bytes(b[..4].try_into().unwrap())
 }
-fn le_u64(b: &[u8]) -> u64 {
+fn u64le(b: &[u8]) -> u64 {
     u64::from_le_bytes(b[..8].try_into().unwrap())
 }
 
-struct Lv<'a> {
-    d: &'a [u8],
+fn header(src: &mut Source, o: u64) -> Res<ChunkHeader> {
+    if o > MAX_SAFE {
+        rej!("chunk offset {o} above 2^53-1");
+    }
+    let h = src.read(o, 16)?;
+    if u32le(&h) != MAGIC {
+        rej!("chunk at {o}: bad magic");
+    }
+    Ok(ChunkHeader { n: u32le(&h[4..]) as u64, d: u64le(&h[8..]) })
 }
 
-impl Lv<'_> {
-    fn need(&self, pos: usize, n: usize) -> R<()> {
-        if pos.checked_add(n).is_none_or(|e| e > self.d.len()) {
-            rej!("LV record is truncated");
-        }
-        Ok(())
-    }
-
-    /// Parses one record at `pos`; returns (name, value, next position).
-    fn record(&self, pos: usize, depth: usize) -> R<(String, V, usize)> {
-        if depth > 10000 {
-            rej!("LV nesting too deep");
-        }
-        let start = pos;
-        self.need(pos, 2)?;
-        let typ = self.d[pos];
-        let k = self.d[pos + 1] as usize;
-        let mut p = pos + 2;
-        self.need(p, 2 * k)?;
-        let units: Vec<u16> = self.d[p..p + 2 * k]
-            .chunks(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
-        let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
-        let name = String::from_utf16_lossy(&units[..end]);
-        p += 2 * k;
-        let v = match typ {
-            1 => {
-                self.need(p, 1)?;
-                p += 1;
-                V::Bool(self.d[p - 1])
-            }
-            2 => {
-                self.need(p, 4)?;
-                p += 4;
-                V::Int(i32::from_le_bytes(self.d[p - 4..p].try_into().unwrap()) as i128)
-            }
-            3 => {
-                self.need(p, 4)?;
-                p += 4;
-                V::Int(le_u32(&self.d[p - 4..]) as i128)
-            }
-            4 => {
-                self.need(p, 8)?;
-                p += 8;
-                V::Int(i64::from_le_bytes(self.d[p - 8..p].try_into().unwrap()) as i128)
-            }
-            5 => {
-                self.need(p, 8)?;
-                p += 8;
-                V::Int(le_u64(&self.d[p - 8..]) as i128)
-            }
-            6 => {
-                self.need(p, 8)?;
-                p += 8;
-                V::F64(f64::from_le_bytes(self.d[p - 8..p].try_into().unwrap()))
-            }
-            7 => {
-                self.need(p, 8)?;
-                p += 8;
-                V::Ptr
-            }
-            8 => {
-                let mut units = Vec::new();
-                loop {
-                    self.need(p, 2)?;
-                    let u = u16::from_le_bytes([self.d[p], self.d[p + 1]]);
-                    p += 2;
-                    if u == 0 {
-                        break;
-                    }
-                    units.push(u);
-                }
-                V::Str(String::from_utf16_lossy(&units))
-            }
-            9 => {
-                self.need(p, 8)?;
-                let b = le_u64(&self.d[p..]);
-                p += 8;
-                if b > self.d.len() as u64 {
-                    rej!("LV byte array is truncated");
-                }
-                let b = b as usize;
-                self.need(p, b)?;
-                p += b;
-                V::Bytes(self.d[p - b..p].to_vec())
-            }
-            11 => {
-                self.need(p, 12)?;
-                let c = le_u32(&self.d[p..]) as u64;
-                let l = le_u64(&self.d[p + 4..]);
-                p += 12;
-                let mut recs = Vec::new();
-                for _ in 0..c {
-                    let (n, v, np) = self.record(p, depth + 1)?;
-                    recs.push((n, v));
-                    p = np;
-                }
-                if (p - start) as u64 != l {
-                    rej!("LV level ends at {} bytes from its start, not {l}", p - start);
-                }
-                let skip = 8 * c;
-                if skip > self.d.len() as u64 {
-                    rej!("LV level is truncated");
-                }
-                self.need(p, skip as usize)?;
-                p += skip as usize;
-                V::Level(recs)
-            }
-            t => rej!("LV record type {t} is not supported"),
-        };
-        Ok((name, v, p))
-    }
-
-    fn records(&self) -> R<Vec<(String, V)>> {
-        let mut p = 0;
-        let mut recs = Vec::new();
-        while p < self.d.len() {
-            let (n, v, np) = self.record(p, 0)?;
-            recs.push((n, v));
-            p = np;
-        }
-        Ok(recs)
-    }
+fn chunk_name(src: &mut Source, o: u64, h: &ChunkHeader) -> Res<Vec<u8>> {
+    src.read(o + 16, h.n)
 }
 
-/// Decodes a metadata chunk's data (handling the compressed record, type 76).
-fn decode_lv(data: &[u8]) -> R<V> {
-    if !data.is_empty() && data[0] == 76 {
-        if data.len() < 12 {
-            rej!("compressed LV record is truncated");
-        }
-        let stream = &data[12..];
-        let mut dec = flate2::read::ZlibDecoder::new(stream);
-        let mut out = Vec::new();
-        if let Err(e) = dec.read_to_end(&mut out) {
-            rej!("compressed LV record does not inflate: {e}");
-        }
-        if dec.total_in() != stream.len() as u64 {
-            rej!("zlib stream of compressed LV record does not end at the end of the chunk");
-        }
-        if !out.is_empty() && out[0] == 76 {
-            rej!("nested compressed LV record");
-        }
-        return Ok(V::Level(Lv { d: &out }.records()?));
-    }
-    Ok(V::Level(Lv { d: data }.records()?))
+fn chunk_data(src: &mut Source, o: u64, h: &ChunkHeader) -> Res<Vec<u8>> {
+    src.read(o + 16 + h.n, h.d)
 }
 
-// Value access (§4.2 "Values").
-
-fn is_list(recs: &[(String, V)]) -> bool {
-    !recs.is_empty() && recs.iter().all(|(n, _)| n.is_empty())
-}
-
-/// The member `name` of an object (last value of a repeated name).
-fn get<'a>(v: &'a V, name: &str) -> R<Option<&'a V>> {
-    match v {
-        V::Level(recs) => {
-            if is_list(recs) {
-                return Ok(None);
-            }
-            Ok(recs.iter().rev().find(|(n, _)| n == name).map(|(_, v)| v))
-        }
-        _ => rej!("cannot look up member {name:?} of a non-level value"),
-    }
-}
-
-fn path<'a>(v: &'a V, p: &str) -> R<Option<&'a V>> {
-    let mut cur = v;
-    for part in p.split('/') {
-        match get(cur, part)? {
-            Some(x) => cur = x,
-            None => return Ok(None),
-        }
-    }
-    Ok(Some(cur))
-}
-
-/// The members of an object or list (or the bytes of a byte array).
-fn members(v: &V) -> R<Vec<V>> {
-    match v {
-        V::Level(recs) => {
-            if is_list(recs) {
-                return Ok(recs.iter().map(|(_, v)| v.clone()).collect());
-            }
-            let mut order: Vec<&String> = Vec::new();
-            let mut last: HashMap<&String, &V> = HashMap::new();
-            for (n, v) in recs {
-                if !last.contains_key(n) {
-                    order.push(n);
-                }
-                last.insert(n, v);
-            }
-            Ok(order.into_iter().map(|n| last[n].clone()).collect())
-        }
-        V::Bytes(b) => Ok(b.iter().map(|&x| V::Byte(x)).collect()),
-        _ => rej!("value has no members"),
-    }
-}
-
-fn number(v: &V, what: &str) -> R<f64> {
-    match v {
-        V::Int(i) => Ok(*i as f64),
-        V::F64(f) => Ok(*f),
-        V::Byte(b) => Ok(*b as f64),
-        _ => rej!("{what} is not a number"),
-    }
-}
-
-/// A number used as a non-negative integer.
-fn integer(v: &V, what: &str) -> R<u64> {
-    match v {
-        V::Int(i) => {
-            if *i < 0 || *i > u64::MAX as i128 {
-                rej!("{what} = {i} is out of range");
-            }
-            Ok(*i as u64)
-        }
-        V::Byte(b) => Ok(*b as u64),
-        V::F64(f) => {
-            if !(f.is_finite() && *f >= 0.0 && f.fract() == 0.0 && *f <= MAX_SAFE as f64) {
-                rej!("{what} = {f} is not a non-negative integer");
-            }
-            Ok(*f as u64)
-        }
-        _ => rej!("{what} is not a number"),
-    }
-}
-
-fn flag(v: &V, what: &str) -> R<bool> {
-    match v {
-        V::Bool(b) => Ok(*b != 0),
-        V::Int(i) => Ok(*i != 0),
-        V::Byte(b) => Ok(*b != 0),
-        _ => rej!("{what} is not a flag"),
-    }
-}
-
-fn num_at(v: &V, p: &str, default: Option<f64>) -> R<f64> {
-    match path(v, p)? {
-        Some(x) => number(x, p),
-        None => match default {
-            Some(d) => Ok(d),
-            None => rej!("required member {p} is missing"),
-        },
-    }
-}
-
-fn int_at(v: &V, p: &str, default: Option<u64>) -> R<u64> {
-    match path(v, p)? {
-        Some(x) => integer(x, p),
-        None => match default {
-            Some(d) => Ok(d),
-            None => rej!("required member {p} is missing"),
-        },
-    }
-}
-
-// ------------------------------------------------------------------ chunks (§4.1)
-
-struct Nd2<'a> {
-    src: &'a Source,
-}
-
-const MAGIC: u32 = 0x0ABE_CEDA;
-
-impl Nd2<'_> {
-    /// Reads a chunk header: (name length n, data length d).
-    fn header(&self, o: u64) -> R<(u64, u64)> {
-        safe(o, "chunk offset")?;
-        let h = self.src.read(o, 16)?;
-        if le_u32(&h) != MAGIC {
-            rej!("no chunk magic at offset {o}");
-        }
-        let n = le_u32(&h[4..]) as u64;
-        let d = safe(le_u64(&h[8..]), "chunk data length")?;
-        Ok((n, d))
-    }
-
-    fn chunk_data(&self, o: u64) -> R<Vec<u8>> {
-        let (n, d) = self.header(o)?;
-        let start = o + 16 + n;
-        safe(start, "chunk data offset")?;
-        self.src.read(start, d)
-    }
-}
-
-const MAP_SIG: &[u8] = b"ND2 CHUNK MAP SIGNATURE 0000001!";
-
-// ------------------------------------------------------------------ main
-
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
     Time,
     Position,
     Z,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 struct Loop {
-    etype: u64,
     kind: Kind,
+    depth: u64,
     count: u64,
-    depth: usize,
-    /// Period (ms) for time loops, step (µm) for z loops.
-    param: f64,
+    param: f64, // period (ms) or z step
 }
 
-fn valid(validity: Option<&V>, i: usize, what: &str) -> R<bool> {
+fn valid(validity: Option<&Lv>, i: usize) -> Res<bool> {
     match validity {
         None => Ok(true),
+        Some(v) => match lv::members_of(v).get(i) {
+            None => Ok(false),
+            Some(&it) => lv::flag_item(it, "validity member"),
+        },
+    }
+}
+
+fn check_validity_list<'a>(v: Option<&'a Lv>, what: &str) -> Res<Option<&'a Lv>> {
+    match v {
+        None => Ok(None),
         Some(v) => {
-            let m = members(v)?;
-            match m.get(i) {
-                None => Ok(false),
-                Some(x) => flag(x, what),
+            let l = lv::list(v, what)?;
+            for it in lv::members_of(l) {
+                lv::flag_item(it, what)?;
             }
+            Ok(Some(l))
         }
     }
 }
 
-fn flatten(node: &V, depth: usize, loops: &mut Vec<Loop>) -> R<()> {
-    let et = int_at(node, "eType", None)?;
-    if !matches!(et, 1 | 2 | 4 | 6 | 8) {
-        rej!("experiment eType {et} is not supported");
+fn opt_int(o: &Lv, name: &str, default: u64) -> Res<u64> {
+    match lv::member(o, name)? {
+        Some(v) => lv::integer(v, name),
+        None => Ok(default),
     }
-    let pars = path(node, "uLoopPars")?;
-    let pars = match pars {
-        None => return Ok(()),
-        Some(p) => p,
+}
+
+fn opt_num(o: &Lv, name: &str, default: f64) -> Res<f64> {
+    match lv::member(o, name)? {
+        Some(v) => lv::number(v, name),
+        None => Ok(default),
+    }
+}
+
+/// Checks a node (and its subtree) and, when `visit`, appends loops (§4.3).
+fn walk(node: &Lv, depth: u64, visit: bool, loops: &mut Vec<Loop>) -> Res<()> {
+    let node = lv::object(node, "experiment node")?;
+    let etype = match lv::member(node, "eType")? {
+        Some(v) => lv::integer(v, "eType")?,
+        None => rej!("experiment node without eType"),
     };
-    let (count, param) = match et {
-        1 => (int_at(pars, "uiCount", Some(0))?, num_at(pars, "dPeriod", Some(0.0))?),
-        8 => {
-            let vv = path(pars, "pPeriodValid")?;
-            let mut sum = 0u64;
-            let mut period: Option<f64> = None;
-            if let Some(pp) = path(pars, "pPeriod")? {
-                for (i, p) in members(pp)?.iter().enumerate() {
-                    if valid(vv, i, "pPeriodValid member")? {
-                        sum = sum
-                            .checked_add(int_at(p, "uiCount", None)?)
-                            .ok_or_else(|| E::Reject("count overflows".into()))?;
+    if !matches!(etype, 1 | 2 | 4 | 6 | 8) {
+        rej!("experiment eType {etype}");
+    }
+    let pars = match lv::member(node, "uLoopPars")? {
+        Some(v) => Some(lv::object(v, "uLoopPars")?),
+        None => None,
+    };
+    let item_valid = check_validity_list(lv::member(node, "pItemValid")?, "pItemValid")?;
+    let children: Vec<Item> = match lv::member(node, "ppNextLevelEx")? {
+        Some(v) => lv::members_of(lv::object_or_list(v, "ppNextLevelEx")?),
+        None => Vec::new(),
+    };
+    let mut child_nodes = Vec::new();
+    for c in &children {
+        match c {
+            Item::V(v @ Lv::Obj(_)) => child_nodes.push(*v),
+            _ => rej!("ppNextLevelEx member is not an object"),
+        }
+    }
+    // (kind, count, param); kind None = spectral
+    let mut lp: Option<(Option<Kind>, u64, f64)> = None;
+    if let Some(p) = pars {
+        lp = Some(match etype {
+            1 => (Some(Kind::Time), opt_int(p, "uiCount", 0)?, opt_num(p, "dPeriod", 0.0)?),
+            8 => {
+                let pv = check_validity_list(lv::member(p, "pPeriodValid")?, "pPeriodValid")?;
+                let mems = match lv::member(p, "pPeriod")? {
+                    Some(v) => lv::members_of(lv::object_or_list(v, "pPeriod")?),
+                    None => Vec::new(),
+                };
+                let mut count: u128 = 0;
+                let mut period: Option<f64> = None;
+                for (i, m) in mems.iter().enumerate() {
+                    let m = match m {
+                        Item::V(v @ Lv::Obj(_)) => *v,
+                        _ => rej!("pPeriod member is not an object"),
+                    };
+                    if valid(pv, i)? {
+                        let c = match lv::member(m, "uiCount")? {
+                            Some(v) => lv::integer(v, "pPeriod/uiCount")?,
+                            None => rej!("pPeriod member without uiCount"),
+                        };
+                        count += c as u128;
+                        let d = opt_num(m, "dPeriod", 0.0)?;
                         if period.is_none() {
-                            period = Some(num_at(p, "dPeriod", Some(0.0))?);
+                            period = Some(d);
                         }
                     }
                 }
+                if count > MAX_SAFE as u128 {
+                    rej!("time loop count above 2^53-1");
+                }
+                (Some(Kind::Time), count as u64, period.unwrap_or(0.0))
             }
-            (sum, period.unwrap_or(0.0))
-        }
-        2 => {
-            let vv = path(node, "pItemValid")?;
-            let mut n = 0u64;
-            if let Some(pts) = path(pars, "Points")? {
-                for i in 0..members(pts)?.len() {
-                    if valid(vv, i, "pItemValid member")? {
-                        n += 1;
+            2 => {
+                let mems = match lv::member(p, "Points")? {
+                    Some(v) => lv::members_of(lv::object_or_list(v, "Points")?),
+                    None => Vec::new(),
+                };
+                let mut c = 0u64;
+                for i in 0..mems.len() {
+                    if valid(item_valid, i)? {
+                        c += 1;
                     }
                 }
+                (Some(Kind::Position), c, 0.0)
             }
-            (n, 0.0)
-        }
-        4 => {
-            let count = int_at(pars, "uiCount", Some(0))?;
-            let mut step = num_at(pars, "dZStep", Some(0.0))?.abs();
-            if step == 0.0 && count > 1 {
-                let hi = num_at(pars, "dZHigh", Some(0.0))?;
-                let lo = num_at(pars, "dZLow", Some(0.0))?;
-                step = finite((hi - lo).abs() / (count - 1) as f64, "z step")?;
+            4 => {
+                let count = opt_int(p, "uiCount", 0)?;
+                let step = opt_num(p, "dZStep", 0.0)?;
+                let low = opt_num(p, "dZLow", 0.0)?;
+                let high = opt_num(p, "dZHigh", 0.0)?;
+                let mut s = step.abs();
+                if s == 0.0 && count > 1 {
+                    s = check_finite((high - low).abs() / (count - 1) as f64, "z step")?;
+                }
+                (Some(Kind::Z), count, s)
             }
-            (count, finite(step, "z step")?)
-        }
-        _ => {
-            // 6: spectral
-            let c = match path(pars, "uiCount")? {
-                Some(v) => integer(v, "uiCount")?,
-                None => int_at(pars, "pPlanes/uiCount", Some(0))?,
-            };
-            (c, 0.0)
-        }
-    };
-    if count == 0 {
-        return Ok(());
+            6 => {
+                let c = match lv::member(p, "uiCount")? {
+                    Some(v) => lv::integer(v, "uiCount")?,
+                    None => match lv::member(p, "pPlanes")? {
+                        Some(pp) => opt_int(pp, "uiCount", 0)?,
+                        None => 0,
+                    },
+                };
+                (None, c, 0.0)
+            }
+            _ => unreachable!(),
+        });
     }
-    let child_depth = if et == 6 {
-        depth
-    } else {
-        let kind = match et {
-            1 | 8 => Kind::Time,
-            2 => Kind::Position,
-            _ => Kind::Z,
-        };
-        let lp = Loop { etype: et, kind, count, depth, param };
-        match loops.last() {
-            None => loops.push(lp),
-            Some(last) if last.depth < depth => loops.push(lp),
-            Some(last) if last.depth == depth && last.etype == et && last.count < count => {
-                *loops.last_mut().unwrap() = lp;
+    let mut child_visit = visit;
+    let mut child_depth = depth + 1;
+    match lp {
+        None => child_visit = false,
+        Some((_, 0, _)) => child_visit = false,
+        Some((None, _, _)) => child_depth = depth,
+        Some((Some(kind), count, param)) => {
+            if visit {
+                let lpv = Loop { kind, depth, count, param };
+                match loops.last() {
+                    None => loops.push(lpv),
+                    Some(l) if l.depth < depth => loops.push(lpv),
+                    Some(l) if l.depth == depth && l.kind == kind && l.count < count => {
+                        *loops.last_mut().unwrap() = lpv;
+                    }
+                    _ => {}
+                }
             }
-            _ => {}
         }
-        depth + 1
-    };
-    if let Some(next) = path(node, "ppNextLevelEx")? {
-        for child in members(next)? {
-            flatten(&child, child_depth, loops)?;
-        }
+    }
+    for c in child_nodes {
+        walk(c, child_depth, child_visit, loops)?;
     }
     Ok(())
 }
 
-fn hex_color(rgb: u32) -> String {
-    format!("{:06X}", rgb & 0xFFFFFF)
+struct Plane {
+    desc: String,
+    color: u32,
+    comps: u64,
 }
 
-pub fn virtualize(src: &Source, out: &mut Output) -> R<()> {
-    let nd = Nd2 { src };
-
-    // Signature.
-    let (n, d) = nd.header(0)?;
-    if n != 32 || d != 64 {
-        rej!("signature chunk has name length {n} and data length {d}");
+pub fn virtualize(src: &mut Source, out: &mut Output) -> Res<()> {
+    let size = src.size;
+    // Signature chunk
+    let h0 = header(src, 0)?;
+    if h0.n != 32 || h0.d != 64 {
+        rej!("signature chunk: name length {} / data length {}", h0.n, h0.d);
     }
-    let name = src.read(16, 32)?;
-    if name != b"ND2 FILE SIGNATURE CHUNK NAME01!" {
-        rej!("bad signature chunk name");
+    if chunk_name(src, 0, &h0)? != SIG_NAME {
+        rej!("signature chunk: wrong name");
     }
-    let sig = src.read(48, 64)?;
-    if !sig.starts_with(b"Ver") {
-        rej!("signature data does not start with Ver");
+    let sd = chunk_data(src, 0, &h0)?;
+    if !sd.starts_with(b"Ver") {
+        rej!("signature data does not start with 'Ver'");
     }
-    let digits: Vec<u8> = sig[3..].iter().take_while(|b| b.is_ascii_digit()).cloned().collect();
-    if digits.is_empty() || sig.get(3 + digits.len()) != Some(&b'.') {
-        rej!("signature version is malformed");
+    let digits = sd[3..].iter().take_while(|c| c.is_ascii_digit()).count();
+    if digits == 0 || sd.get(3 + digits) != Some(&b'.') {
+        rej!("signature data: bad version");
     }
-    let major = std::str::from_utf8(&digits).unwrap().parse::<u64>().unwrap_or(u64::MAX);
+    let major: u64 = std::str::from_utf8(&sd[3..3 + digits]).unwrap().trim_start_matches('0').parse().unwrap_or(
+        if sd[3..3 + digits].iter().all(|&c| c == b'0') { 0 } else { u64::MAX },
+    );
     if major < 3 {
-        rej!("ND2 version {major} is not supported");
+        rej!("ND2 version {major} < 3");
     }
-
-    // Chunk map.
-    if src.size < 40 {
+    // Chunk map
+    if size < 40 {
         rej!("file shorter than 40 bytes");
     }
-    let tail = src.read(src.size - 40, 40)?;
+    let tail = src.read(size - 40, 40)?;
     if &tail[..32] != MAP_SIG {
-        rej!("no chunk map signature at the end of the file");
+        rej!("missing chunk map signature");
     }
-    let m = le_u64(&tail[32..]);
-    safe(m, "chunk map offset")?;
-    let (mn, md) = nd.header(m)?;
-    let mname = src.read(m + 16, mn)?;
-    let trimmed: &[u8] = {
-        let mut e = mname.len();
-        while e > 0 && mname[e - 1] == 0 {
-            e -= 1;
-        }
-        &mname[..e]
-    };
-    if trimmed != b"ND2 FILEMAP SIGNATURE NAME 0001!" {
+    let m = u64le(&tail[32..]);
+    let mh = header(src, m)?;
+    let mut mname = chunk_name(src, m, &mh)?;
+    if let Some(p) = mname.iter().position(|&c| c == 0) {
+        mname.truncate(p);
+    }
+    if mname != FILEMAP_NAME {
         rej!("chunk map chunk has the wrong name");
     }
-    let mdata = src.read(m + 16 + mn, md)?;
+    let md = chunk_data(src, m, &mh)?;
     let mut map: HashMap<Vec<u8>, u64> = HashMap::new();
     let mut p = 0usize;
     loop {
-        let bang = match mdata[p..].iter().position(|&b| b == b'!') {
-            Some(i) => p + i,
-            None => rej!("chunk map is truncated"),
+        let e = match md[p..].iter().position(|&c| c == b'!') {
+            Some(e) => p + e + 1,
+            None => rej!("chunk map: record runs past the end / no terminating record"),
         };
-        let rname = mdata[p..=bang].to_vec();
-        p = bang + 1;
-        if rname == MAP_SIG {
+        let name = md[p..e].to_vec();
+        if name == MAP_SIG {
             break;
         }
-        if p + 16 > mdata.len() {
-            rej!("chunk map record is truncated");
+        if e + 16 > md.len() {
+            rej!("chunk map: record runs past the end of the data");
         }
-        let off = le_u64(&mdata[p..]);
-        p += 16;
-        map.insert(rname, off);
+        let off = u64le(&md[e..]);
+        map.insert(name, off);
+        p = e + 16;
     }
 
-    let lv_chunk = |name: &str| -> R<Option<V>> {
-        match map.get(name.as_bytes()) {
-            None => Ok(None),
-            Some(&o) => Ok(Some(decode_lv(&nd.chunk_data(o)?)?)),
+    // Attributes
+    let attr_off = match map.get(&b"ImageAttributesLV!"[..]) {
+        Some(&o) => o,
+        None => rej!("no ImageAttributesLV! chunk"),
+    };
+    let ah = header(src, attr_off)?;
+    let ad = chunk_data(src, attr_off, &ah)?;
+    let at = lv::parse_chunk(&ad)?;
+    if std::env::var("VZ_DEBUG").is_ok() {
+        eprintln!("ImageAttributesLV: {at:?}");
+        eprintln!("map: {:?}", map.iter().map(|(k, v)| (String::from_utf8_lossy(k).to_string(), *v)).collect::<Vec<_>>());
+    }
+    let a = match lv::member(&at, "SLxImageAttributes")? {
+        Some(v) => lv::object(v, "SLxImageAttributes")?,
+        None => rej!("no SLxImageAttributes"),
+    };
+    let req_int = |name: &str| -> Res<u64> {
+        match lv::member(a, name)? {
+            Some(v) => lv::integer(v, name),
+            None => rej!("SLxImageAttributes/{name} missing"),
         }
     };
-
-    // §4.3 attributes.
-    let attrs_lv = match lv_chunk("ImageAttributesLV!")? {
-        Some(v) => v,
-        None => rej!("ImageAttributesLV! chunk is missing"),
-    };
-    let a = match path(&attrs_lv, "SLxImageAttributes")? {
-        Some(a) => a,
-        None => rej!("SLxImageAttributes is missing"),
-    };
-    let width = int_at(a, "uiWidth", None)?;
-    let height = int_at(a, "uiHeight", None)?;
-    let width_bytes = int_at(a, "uiWidthBytes", None)?;
-    let comp = int_at(a, "uiComp", None)?;
-    let bpc = int_at(a, "uiBpcInMemory", None)?;
-    let bpc_sig = int_at(a, "uiBpcSignificant", None)?;
+    let width = req_int("uiWidth")?;
+    let height = req_int("uiHeight")?;
+    let width_bytes = req_int("uiWidthBytes")?;
+    let comp = req_int("uiComp")?;
+    let bpc = req_int("uiBpcInMemory")?;
     if width < 1 || height < 1 || comp < 1 {
-        rej!("uiWidth, uiHeight and uiComp must be at least 1");
+        rej!("uiWidth/uiHeight/uiComp must be at least 1");
     }
-    let ecomp = int_at(a, "eCompression", Some(2))?;
-    let tile_w = int_at(a, "uiTileWidth", Some(0))?;
-    let tile_h = int_at(a, "uiTileHeight", Some(0))?;
+    let bpc_sig = match lv::member(a, "uiBpcSignificant")? {
+        Some(v) => lv::number(v, "uiBpcSignificant")?,
+        None => rej!("uiBpcSignificant missing"),
+    };
+    let ecomp = opt_int(a, "eCompression", 2)?;
+    let tile_w = opt_int(a, "uiTileWidth", 0)?;
+    let tile_h = opt_int(a, "uiTileHeight", 0)?;
     let dtype = match bpc {
         8 => "uint8",
         16 => "uint16",
         32 => "float32",
-        b => rej!("uiBpcInMemory {b} is not supported"),
+        _ => rej!("uiBpcInMemory {bpc}"),
     };
     let compressed = match ecomp {
         2 => false,
         0 => true,
-        c => rej!("eCompression {c} is not supported"),
+        _ => rej!("eCompression {ecomp}"),
     };
     if (tile_w > 0 && tile_w != width) || (tile_h > 0 && tile_h != height) {
-        rej!("tiled ND2 files are not supported");
+        rej!("tiled image ({tile_w}x{tile_h})");
     }
 
-    // Experiment.
+    // Experiment
     let mut loops: Vec<Loop> = Vec::new();
-    if let Some(meta) = lv_chunk("ImageMetadataLV!")? {
-        let exp = match path(&meta, "SLxExperiment")? {
-            Some(e) => e,
-            None => rej!("SLxExperiment is missing"),
-        };
-        flatten(exp, 0, &mut loops)?;
+    if let Some(&o) = map.get(&b"ImageMetadataLV!"[..]) {
+        let h = header(src, o)?;
+        let d = chunk_data(src, o, &h)?;
+        let t = lv::parse_chunk(&d)?;
+        if std::env::var("VZ_DEBUG").is_ok() {
+            eprintln!("ImageMetadataLV: {t:?}");
+        }
+        if let Some(root) = lv::member(&t, "SLxExperiment")? {
+            walk(root, 0, true, &mut loops)?;
+        }
     }
-    for (i, l) in loops.iter().enumerate() {
-        if loops[..i].iter().any(|x| x.kind == l.kind) {
-            rej!("two {:?} loops", l.kind);
+    if std::env::var("VZ_DEBUG").is_ok() {
+        eprintln!("loops: {loops:?}");
+    }
+    for i in 0..loops.len() {
+        for j in i + 1..loops.len() {
+            if loops[i].kind == loops[j].kind {
+                rej!("two {:?} loops", loops[i].kind);
+            }
         }
     }
 
-    // Picture metadata.
-    let pic_lv = lv_chunk("ImageMetadataSeqLV|0!")?;
-    let pic = match &pic_lv {
-        Some(v) => path(v, "SLxPictureMetadata")?,
-        None => None,
-    };
-    let mut calibration: Option<(f64, f64)> = None;
-    let mut channels: Option<Vec<(String, String)>> = None;
-    if let Some(pm) = pic {
-        let cal = match path(pm, "bCalibrated")? {
-            Some(v) => flag(v, "bCalibrated")?,
-            None => false,
-        };
-        if cal {
-            if let Some(dc) = path(pm, "dCalibration")? {
-                let dc = number(dc, "dCalibration")?;
-                if dc > 0.0 {
-                    let mut asp = num_at(pm, "dAspect", Some(1.0))?;
-                    if !(asp > 0.0) {
-                        asp = 1.0;
-                    }
-                    calibration = Some((dc, asp));
-                }
-            }
+    // Picture metadata
+    let mut calibration: Option<f64> = None;
+    let mut aspect = 1.0;
+    let mut plane_count = 0u64;
+    let mut planes: HashMap<u64, Plane> = HashMap::new();
+    if let Some(&o) = map.get(&b"ImageMetadataSeqLV|0!"[..]) {
+        let h = header(src, o)?;
+        let d = chunk_data(src, o, &h)?;
+        let t = lv::parse_chunk(&d)?;
+        if std::env::var("VZ_DEBUG").is_ok() {
+            eprintln!("ImageMetadataSeqLV|0: {t:?}");
         }
-        let nplanes = int_at(pm, "sPicturePlanes/uiCount", Some(0))?;
-        if nplanes >= 1 {
-            let mut planes = Vec::new();
-            let mut all = true;
-            for i in 0..nplanes {
-                match path(pm, &format!("sPicturePlanes/sPlaneNew/a{i}"))? {
-                    Some(pl) => planes.push(pl),
-                    None => {
-                        all = false;
-                        break;
+        if let Some(pm) = lv::member(&t, "SLxPictureMetadata")? {
+            let pm = lv::object(pm, "SLxPictureMetadata")?;
+            let calibrated = match lv::member(pm, "bCalibrated")? {
+                Some(v) => lv::flag_item(Item::V(v), "bCalibrated")?,
+                None => false,
+            };
+            let dcal = match lv::member(pm, "dCalibration")? {
+                Some(v) => Some(lv::number(v, "dCalibration")?),
+                None => None,
+            };
+            let dasp = opt_num(pm, "dAspect", 1.0)?;
+            if calibrated {
+                if let Some(c) = dcal {
+                    if c > 0.0 {
+                        calibration = Some(c);
                     }
                 }
             }
-            if all {
-                let mut cc = Vec::new();
-                for pl in &planes {
-                    cc.push(int_at(pl, "uiCompCount", Some(1))?);
-                }
-                if cc.iter().all(|&c| c == 1 || c == 3) && cc.iter().sum::<u64>() == comp {
-                    let mut ch = Vec::new();
-                    for (pl, &c) in planes.iter().zip(&cc) {
-                        let desc = match path(pl, "sDescription")? {
-                            None => String::new(),
-                            Some(V::Str(s)) => s.clone(),
-                            Some(_) => rej!("sDescription is not a string"),
-                        };
-                        if c == 1 {
-                            let col = int_at(pl, "uiColor", Some(0xFFFFFF))?;
-                            if col > u32::MAX as u64 {
-                                rej!("uiColor is out of range");
+            aspect = if dasp > 0.0 { dasp } else { 1.0 };
+            if let Some(sp) = lv::member(pm, "sPicturePlanes")? {
+                let sp = lv::object(sp, "sPicturePlanes")?;
+                plane_count = opt_int(sp, "uiCount", 0)?;
+                if let Some(new) = lv::member(sp, "sPlaneNew")? {
+                    let new = lv::object(new, "sPlaneNew")?;
+                    if let Lv::Obj(ms) = new {
+                        for (name, v) in ms {
+                            let Some(ix) = name.strip_prefix('a') else { continue };
+                            if ix.is_empty()
+                                || !ix.bytes().all(|c| c.is_ascii_digit())
+                                || (ix.len() > 1 && ix.starts_with('0'))
+                                || ix.len() > 16
+                            {
+                                continue;
                             }
-                            let col = col as u32;
-                            let rgb = ((col & 0xFF) << 16) | (col & 0xFF00) | ((col >> 16) & 0xFF);
-                            ch.push((desc, hex_color(rgb)));
-                        } else {
-                            ch.push((format!("{desc} R"), "FF0000".into()));
-                            ch.push((format!("{desc} G"), "00FF00".into()));
-                            ch.push((format!("{desc} B"), "0000FF".into()));
+                            let i: u64 = ix.parse().unwrap();
+                            if i >= plane_count {
+                                continue;
+                            }
+                            let pl = lv::object(v, "plane")?;
+                            let desc = match lv::member(pl, "sDescription")? {
+                                Some(s) => lv::string(s, "sDescription")?.to_string(),
+                                None => String::new(),
+                            };
+                            let color = match lv::member(pl, "uiColor")? {
+                                Some(c) => lv::color(c, "uiColor")?,
+                                None => 0xFFFFFF,
+                            };
+                            let comps = opt_int(pl, "uiCompCount", 1)?;
+                            planes.insert(i, Plane { desc, color, comps });
                         }
                     }
-                    channels = Some(ch);
                 }
             }
         }
     }
-    let channels = channels.unwrap_or_else(|| (0..comp).map(|k| (format!("C{k}"), "FFFFFF".to_string())).collect());
 
-    // §4.4 frames.
-    let r = width
-        .checked_mul(comp)
-        .and_then(|v| v.checked_mul(bpc / 8))
-        .ok_or_else(|| E::Reject("row size overflows".into()))?;
+    // Frames (§4.4)
+    let r128 = (width as u128) * (comp as u128) * (bpc as u128) / 8;
+    if r128 > MAX_SAFE as u128 {
+        rej!("row length above 2^53-1");
+    }
+    let r = r128 as u64;
     if width_bytes < r {
-        rej!("uiWidthBytes {width_bytes} is less than {r}");
+        rej!("uiWidthBytes {width_bytes} < {r}");
     }
     if compressed && width_bytes != r {
-        rej!("uiWidthBytes {width_bytes} differs from {r} in a compressed file");
+        rej!("compressed frames with padded rows");
     }
-    let mut nframes: u128 = 1;
-    for l in &loops {
-        nframes = nframes.saturating_mul(l.count as u128);
-    }
+    let n_frames: u128 = loops.iter().fold(1u128, |acc, l| acc.saturating_mul(l.count as u128));
     let mut frames: Vec<(u64, u64)> = Vec::new(); // (f, chunk offset)
-    for (k, &o) in &map {
-        if let Some(rest) = k.strip_prefix(b"ImageDataSeq|".as_slice()) {
-            if let Some(num) = rest.strip_suffix(b"!".as_slice()) {
-                let canonical = !num.is_empty()
-                    && num.iter().all(|b| b.is_ascii_digit())
-                    && (num.len() == 1 || num[0] != b'0');
-                if canonical {
-                    if let Ok(f) = std::str::from_utf8(num).unwrap().parse::<u64>() {
-                        if (f as u128) < nframes {
-                            frames.push((f, o));
-                        }
-                    }
-                }
-            }
+    for (name, &o) in &map {
+        let Some(rest) = name.strip_prefix(&b"ImageDataSeq|"[..]) else { continue };
+        let Some(num) = rest.strip_suffix(b"!") else { continue };
+        if num.is_empty() || !num.iter().all(|c| c.is_ascii_digit()) || (num.len() > 1 && num[0] == b'0') {
+            continue;
         }
+        if num.len() > 30 {
+            continue;
+        }
+        let f: u128 = std::str::from_utf8(num).unwrap().parse().unwrap();
+        if f >= n_frames {
+            continue;
+        }
+        frames.push((f as u64, o));
     }
     frames.sort();
 
-    let mut frame_ranges: Vec<(u64, Vec<(u64, u64)>)> = Vec::new();
-    if !frames.is_empty() {
-        if !compressed {
-            let frame_bytes = height
-                .checked_mul(width_bytes)
-                .and_then(|v| v.checked_add(8))
-                .ok_or_else(|| E::Reject("frame size overflows".into()))?;
-            let (lo, hi) = (frames[0], *frames.last().unwrap());
-            let (n0, d0) = nd.header(lo.1)?;
-            let (n1, d1) = nd.header(hi.1)?;
-            if n0 != n1 {
-                rej!("frames {} and {} have different name lengths", lo.0, hi.0);
+    // Per-frame ranges
+    let mut frame_ranges: Vec<(u64, Vec<Vec<(u64, u64)>>)> = Vec::new(); // f -> blocks
+    let mut block_h = height;
+    if compressed {
+        for &(f, o) in &frames {
+            let h = header(src, o)?;
+            if h.d <= 8 {
+                rej!("compressed frame {f}: data length {}", h.d);
             }
-            if d0 < frame_bytes || d1 < frame_bytes {
-                rej!("frame data is shorter than {frame_bytes} bytes");
+            let start = o as u128 + 16 + h.n as u128 + 8;
+            if start > MAX_SAFE as u128 {
+                rej!("frame {f}: offset above 2^53-1");
             }
-            for &(f, o) in &frames {
-                let start = o
-                    .checked_add(16 + n0 + 8)
-                    .ok_or_else(|| E::Reject("offset overflows".into()))?;
-                let ranges = if width_bytes == r {
-                    vec![(start, height * r)]
-                } else {
-                    (0..height).map(|row| (start + row * width_bytes, r)).collect()
-                };
-                frame_ranges.push((f, ranges));
+            frame_ranges.push((f, vec![vec![(start as u64, h.d - 8)]]));
+        }
+    } else if !frames.is_empty() {
+        let lo = frames[0];
+        let hi = *frames.last().unwrap();
+        let hl = header(src, lo.1)?;
+        let hh = header(src, hi.1)?;
+        if hl.n != hh.n {
+            rej!("frames {} and {} have different name lengths", lo.0, hi.0);
+        }
+        let need = 8u128 + (height as u128) * (width_bytes as u128);
+        if (hl.d as u128) < need || (hh.d as u128) < need {
+            rej!("frame data shorter than {need} bytes");
+        }
+        let n = hl.n;
+        let mut starts = Vec::new();
+        for &(f, o) in &frames {
+            let start = o as u128 + 16 + n as u128 + 8;
+            let last_end = start + (height as u128 - 1) * width_bytes as u128 + r as u128;
+            if last_end > size as u128 {
+                rej!("frame {f} extends past the end of the file");
+            }
+            starts.push((f, start as u64));
+        }
+        if width_bytes == r {
+            for &(f, s) in &starts {
+                frame_ranges.push((f, vec![vec![(s, height * r)]]));
             }
         } else {
-            for &(f, o) in &frames {
-                let (n, d) = nd.header(o)?;
-                if d <= 8 {
-                    rej!("compressed frame {f} has data length {d}");
+            // largest divisor h of height with every block payload <= 65519
+            let mut divisors: Vec<u64> = Vec::new();
+            let mut i = 1u64;
+            while i * i <= height {
+                if height % i == 0 {
+                    divisors.push(i);
+                    if i != height / i {
+                        divisors.push(height / i);
+                    }
                 }
-                frame_ranges.push((f, vec![(o + 16 + n + 8, d - 8)]));
+                i += 1;
+            }
+            divisors.sort_unstable_by(|a, b| b.cmp(a));
+            let mut chosen = 1;
+            'div: for &dv in &divisors {
+                if dv == 1 {
+                    break;
+                }
+                // quick lower bound: each element >= 1 + 1 + 2 + 2
+                if dv * 6 > MAX_PAYLOAD {
+                    continue;
+                }
+                for &(_, s) in &starts {
+                    let mut row = 0;
+                    while row < height {
+                        let mut sum = 0u64;
+                        for k in row..row + dv {
+                            sum += concat_elem_len(s + k * width_bytes, r);
+                        }
+                        if sum > MAX_PAYLOAD {
+                            continue 'div;
+                        }
+                        row += dv;
+                    }
+                }
+                chosen = dv;
+                break;
+            }
+            block_h = chosen;
+            for &(f, s) in &starts {
+                let mut blocks = Vec::new();
+                for j in 0..height / chosen {
+                    blocks.push((j * chosen..(j + 1) * chosen).map(|k| (s + k * width_bytes, r)).collect());
+                }
+                frame_ranges.push((f, blocks));
             }
         }
     }
 
-    // §4.6 output.
-    let time = loops.iter().find(|l| l.kind == Kind::Time);
-    let pos = loops.iter().find(|l| l.kind == Kind::Position);
-    let zl = loops.iter().find(|l| l.kind == Kind::Z);
-    let npos = pos.map(|l| l.count).unwrap_or(1);
+    // Channels (§4.5)
+    let mut channels: Vec<(String, String)> = Vec::new();
+    let planes_ok = plane_count >= 1
+        && (0..plane_count).all(|i| planes.get(&i).map(|p| p.comps == 1 || p.comps == 3).unwrap_or(false))
+        && (0..plane_count).map(|i| planes[&i].comps as u128).sum::<u128>() == comp as u128;
+    if planes_ok {
+        for i in 0..plane_count {
+            let p = &planes[&i];
+            if p.comps == 1 {
+                let c = p.color;
+                channels.push((
+                    p.desc.clone(),
+                    format!("{:02X}{:02X}{:02X}", c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF),
+                ));
+            } else {
+                for (suf, col) in [("R", "FF0000"), ("G", "00FF00"), ("B", "0000FF")] {
+                    channels.push((format!("{} {}", p.desc, suf), col.to_string()));
+                }
+            }
+        }
+    } else {
+        for k in 0..comp {
+            channels.push((format!("C{k}"), "FFFFFF".to_string()));
+        }
+    }
+    let b = if bpc_sig.fract() == 0.0 && bpc_sig >= 1.0 && bpc_sig <= bpc as f64 { bpc_sig as u64 } else { bpc };
+    let vmax = (1u64 << b) - 1;
+    let omero = obj(vec![(
+        "channels",
+        J::Arr(
+            channels
+                .iter()
+                .map(|(label, color)| {
+                    let mut m = vec![("label", J::s(label)), ("color", J::s(color)), ("active", J::Bool(true))];
+                    if bpc != 32 {
+                        m.push((
+                            "window",
+                            obj(vec![
+                                ("min", J::Int(0)),
+                                ("max", J::UInt(vmax)),
+                                ("start", J::Int(0)),
+                                ("end", J::UInt(vmax)),
+                            ]),
+                        ));
+                    }
+                    obj(m)
+                })
+                .collect(),
+        ),
+    )]);
+
+    // Output (§4.6)
+    let time = loops.iter().position(|l| l.kind == Kind::Time);
+    let pos = loops.iter().position(|l| l.kind == Kind::Position);
+    let zl = loops.iter().position(|l| l.kind == Kind::Z);
+    let n_pos = pos.map(|i| loops[i].count).unwrap_or(1);
+    let has_c = comp > 1;
+    let mut dims: Vec<&str> = Vec::new();
+    let mut axes = Vec::new();
+    let mut scale = Vec::new();
+    let mut shape = Vec::new();
+    let mut chunk = Vec::new();
+    if let Some(i) = time {
+        dims.push("t");
+        let per = loops[i].param;
+        if per > 0.0 {
+            axes.push(Axis { name: "t", unit: Some("second") });
+            scale.push(per / 1000.0);
+        } else {
+            axes.push(Axis { name: "t", unit: None });
+            scale.push(1.0);
+        }
+        shape.push(loops[i].count);
+        chunk.push(1);
+    }
+    if has_c {
+        dims.push("c");
+        axes.push(Axis { name: "c", unit: None });
+        scale.push(1.0);
+        shape.push(comp);
+        chunk.push(comp);
+    }
+    if let Some(i) = zl {
+        dims.push("z");
+        let st = loops[i].param;
+        if st > 0.0 {
+            axes.push(Axis { name: "z", unit: Some("micrometer") });
+            scale.push(st);
+        } else {
+            axes.push(Axis { name: "z", unit: None });
+            scale.push(1.0);
+        }
+        shape.push(loops[i].count);
+        chunk.push(1);
+    }
+    dims.push("y");
+    dims.push("x");
+    if let Some(c) = calibration {
+        axes.push(Axis { name: "y", unit: Some("micrometer") });
+        axes.push(Axis { name: "x", unit: Some("micrometer") });
+        scale.push(check_finite(c * aspect, "y scale")?);
+        scale.push(c);
+    } else {
+        axes.push(Axis { name: "y", unit: None });
+        axes.push(Axis { name: "x", unit: None });
+        scale.push(1.0);
+        scale.push(1.0);
+    }
+    shape.push(height);
+    shape.push(width);
+    chunk.push(block_h);
+    chunk.push(width);
+    let mut codecs = Vec::new();
+    if has_c {
+        codecs.push(transpose_codec(&dims));
+    }
+    codecs.push(bytes_codec(bpc / 8, true));
+    if compressed {
+        codecs.push(zlib_codec());
+    }
 
     out.json(
         "zarr.json",
         obj(vec![
-            ("zarr_format", J::U(3)),
-            ("node_type", s("group")),
+            ("zarr_format", J::Int(3)),
+            ("node_type", J::s("group")),
             (
                 "attributes",
-                obj(vec![("ome", obj(vec![("version", s("0.5")), ("bioformats2raw.layout", J::U(3))]))]),
+                obj(vec![("ome", obj(vec![("version", J::s("0.5")), ("bioformats2raw.layout", J::Int(3))]))]),
             ),
         ]),
     );
     out.json(
         "OME/zarr.json",
         obj(vec![
-            ("zarr_format", J::U(3)),
-            ("node_type", s("group")),
+            ("zarr_format", J::Int(3)),
+            ("node_type", J::s("group")),
             (
                 "attributes",
                 obj(vec![(
                     "ome",
                     obj(vec![
-                        ("version", s("0.5")),
-                        ("series", J::A((0..npos).map(|p| J::S(p.to_string())).collect())),
+                        ("version", J::s("0.5")),
+                        ("series", J::Arr((0..n_pos).map(|p| J::Str(p.to_string())).collect())),
                     ]),
                 )]),
             ),
         ]),
     );
-
-    let mut axes = Vec::new();
-    let mut scale = Vec::new();
-    let mut shape = Vec::new();
-    let mut chunk = Vec::new();
-    if let Some(t) = time {
-        let pos_period = t.param > 0.0;
-        axes.push(Axis { name: "t", unit: if pos_period { Some("second") } else { None } });
-        scale.push(if pos_period { finite(t.param / 1000.0, "time scale")? } else { 1.0 });
-        shape.push(t.count);
-        chunk.push(1);
-    }
-    let c_axis = comp > 1;
-    if c_axis {
-        axes.push(Axis { name: "c", unit: None });
-        scale.push(1.0);
-        shape.push(comp);
-        chunk.push(comp);
-    }
-    if let Some(z) = zl {
-        let pos_step = z.param > 0.0;
-        axes.push(Axis { name: "z", unit: if pos_step { Some("micrometer") } else { None } });
-        scale.push(if pos_step { z.param } else { 1.0 });
-        shape.push(z.count);
-        chunk.push(1);
-    }
-    match calibration {
-        Some((dc, asp)) => {
-            axes.push(Axis { name: "y", unit: Some("micrometer") });
-            scale.push(finite(dc * asp, "y scale")?);
-            axes.push(Axis { name: "x", unit: Some("micrometer") });
-            scale.push(dc);
-        }
-        None => {
-            axes.push(Axis { name: "y", unit: None });
-            scale.push(1.0);
-            axes.push(Axis { name: "x", unit: None });
-            scale.push(1.0);
-        }
-    }
-    shape.extend([height, width]);
-    chunk.extend([height, width]);
-    let dims: Vec<&str> = axes.iter().map(|a| a.name).collect();
-
-    let mut codecs = Vec::new();
-    if c_axis {
-        codecs.push(transpose_codec(axes.len(), time.is_some() as usize));
-    }
-    codecs.push(bytes_codec((bpc / 8) as u32, true));
-    if compressed {
-        codecs.push(zlib_codec());
-    }
-
-    let b = if bpc_sig >= 1 && bpc_sig <= bpc { bpc_sig } else { bpc };
-    let omero_channels: Vec<J> = channels
-        .iter()
-        .map(|(label, color)| {
-            let mut m = vec![("label", s(label)), ("color", s(color)), ("active", J::Bool(true))];
-            if dtype != "float32" {
-                let v = (1u64 << b) - 1;
-                m.push((
-                    "window",
-                    obj(vec![("min", J::U(0)), ("max", J::U(v)), ("start", J::U(0)), ("end", J::U(v))]),
-                ));
-            }
-            obj(m)
-        })
-        .collect();
-    let omero = obj(vec![("channels", J::A(omero_channels))]);
-
-    for p in 0..npos {
+    let arr = array_json(&shape, dtype, &chunk, codecs, &dims);
+    for p in 0..n_pos {
         out.json(
-            &format!("{p}/zarr.json"),
-            image_json(Some(format!("position {p}")), &axes, &[scale.clone()], Some(omero.clone())),
+            format!("{p}/zarr.json"),
+            image_group(Some(&format!("position {p}")), &axes, &[scale.clone()], Some(omero.clone())),
         );
-        out.json(&format!("{p}/0/zarr.json"), array_json(&shape, dtype, &chunk, codecs.clone(), &dims));
+        out.json(format!("{p}/0/zarr.json"), arr.clone());
     }
-
-    for (f, ranges) in frame_ranges {
-        // Row-major index over the loops (last fastest).
+    for (f, blocks) in frame_ranges {
+        // coordinates, last loop fastest
+        let mut coords = vec![0u64; loops.len()];
         let mut rem = f;
-        let mut idx = vec![0u64; loops.len()];
-        for (i, l) in loops.iter().enumerate().rev() {
-            idx[i] = rem % l.count;
-            rem /= l.count;
+        for i in (0..loops.len()).rev() {
+            coords[i] = rem % loops[i].count;
+            rem /= loops[i].count;
         }
-        let get_idx = |k: Kind| loops.iter().position(|l| l.kind == k).map(|i| idx[i]);
-        let p = get_idx(Kind::Position).unwrap_or(0);
-        let mut coords = Vec::new();
-        if let Some(tt) = get_idx(Kind::Time) {
-            coords.push(tt);
+        let p = pos.map(|i| coords[i]).unwrap_or(0);
+        let mut prefix = format!("{p}/0/c");
+        if let Some(i) = time {
+            prefix.push_str(&format!("/{}", coords[i]));
         }
-        if c_axis {
-            coords.push(0);
+        if has_c {
+            prefix.push_str("/0");
         }
-        if let Some(z) = get_idx(Kind::Z) {
-            coords.push(z);
+        if let Some(i) = zl {
+            prefix.push_str(&format!("/{}", coords[i]));
         }
-        coords.extend([0, 0]);
-        let key = format!(
-            "{p}/0/c/{}",
-            coords.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("/")
-        );
-        out.refs(key, ranges, src.size)?;
+        for (j, rs) in blocks.into_iter().enumerate() {
+            out.ranges(format!("{prefix}/{j}/0"), rs)?;
+        }
     }
     Ok(())
 }

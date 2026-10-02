@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Builds (if needed) and runs the Rust virtualizer: virtualize <url> <out.json>
 set -euo pipefail
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-bin="$here/target/release/virtualize"
-if [[ ! -x "$bin" ]] || [[ -n "$(find "$here/src" "$here/Cargo.toml" -newer "$bin" 2>/dev/null)" ]]; then
-  cargo build --release --offline --quiet --manifest-path "$here/Cargo.toml" >&2
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN="$DIR/target/release/virtualize"
+if [ ! -x "$BIN" ] || [ -n "$(find "$DIR/src" "$DIR/Cargo.toml" -newer "$BIN" 2>/dev/null | head -1)" ]; then
+  (cd "$DIR" && cargo build --release --offline --quiet) >&2
 fi
-exec "$bin" "$@"
+exec "$BIN" "$@"

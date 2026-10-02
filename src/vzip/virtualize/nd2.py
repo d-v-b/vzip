@@ -128,6 +128,8 @@ def _node_loop(node: dict):
         raise Rejected(f"unsupported experiment loop type {typ}")
     pars = obj(node.get("uLoopPars"), "uLoopPars", None)
     item_valid = lst(node.get("pItemValid"), "pItemValid", None)
+    for x in item_valid or []:
+        flag(x, "pItemValid entry")
     if pars is None:
         return None
     if typ == 1:
@@ -137,6 +139,8 @@ def _node_loop(node: dict):
         periods = [obj(p, "pPeriod member") for p in members(pars.get("pPeriod"), "pPeriod")]
         valid = _valid(periods, pars.get("pPeriodValid"), "pPeriodValid")
         count = sum(integer(p.get("uiCount"), "uiCount") for p in valid)
+        if count > MAX_SAFE:
+            raise Rejected("the time loop's count is more than 2^53 - 1")
         periods_ms = [number(p.get("dPeriod"), "dPeriod", 0) for p in valid]
         loop = ("t", count, periods_ms[0] if periods_ms else 0)
     elif typ == 2:
@@ -179,8 +183,15 @@ def flatten_experiment(root) -> list[dict]:
         for child in members(node.get("ppNextLevelEx"), "ppNextLevelEx"):
             visit(obj(child, "experiment node"), child_depth)
 
+    def check(node: dict) -> None:
+        # Every node is checked, whether or not the flattening visits it.
+        _node_loop(node)
+        for child in members(node.get("ppNextLevelEx"), "ppNextLevelEx"):
+            check(obj(child, "experiment node"))
+
     if root is not None:
-        visit(obj(root, "SLxExperiment"), 0)
+        check(obj(root, "SLxExperiment"))
+        visit(root, 0)
     kinds = [l["kind"] for l in loops]
     if len(set(kinds)) != len(kinds):
         raise Rejected(f"repeated loop kinds {kinds}")
@@ -323,6 +334,8 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
     total = 1
     for l in loops:
         total *= l["count"]
+    if total > MAX_SAFE:
+        raise Rejected("more than 2^53 - 1 frames")
     offset = {}
     for cname, o in chunks.items():
         m = FRAME.fullmatch(cname)

@@ -410,6 +410,40 @@ def revision3() -> None:
         write(name, f, {})
 
 
+def revision4() -> None:
+    """Whole-tree checks, validity lists everywhere, and nesting (§4.2, §4.3)."""
+    h, w = 3, 4
+
+    def write_case(name: str, exp: bytes | None = None, attrs: bytes | None = None, accept: bool = False) -> None:
+        f = Nd2()
+        f.chunk("ImageAttributesLV!", attrs or attributes(w, h, 1, 16, sequence=1))
+        if exp is not None:
+            f.chunk("ImageMetadataLV!", exp)
+        px = rng.integers(0, 200, (h, w, 1)).astype(np.uint16)
+        f.chunk("ImageDataSeq|0!", frame_bytes(px, w * 2, False))
+        write(name, f, {"0/0/c/0/0": px[:, :, 0]} if accept else {})
+
+    def nested(depth: int) -> bytes:
+        """SLxImageAttributes with an unused member nested `depth` levels below it."""
+        inner = lv("x", 1)
+        for _ in range(depth):
+            inner = level("d", [inner])
+        return level("SLxImageAttributes", [lv("uiWidth", w), lv("uiHeight", h), lv("uiWidthBytes", w * 2),
+                                            lv("uiComp", 1), lv("uiBpcInMemory", 16), lv("uiBpcSignificant", 16), inner])
+
+    # pPlanes is not read when the spectral node has uiCount.
+    write_case("nd2_edge_spectral_unread_pplanes",
+               experiment(node(6, {"uiCount": 2, "pPlanes": {"uiCount": "x"}})), accept=True)
+    # Records at depth 100 and 101 (SLxImageAttributes is at 0, its members at 1).
+    write_case("nd2_edge_nesting_100", attrs=nested(99), accept=True)
+    write_case("nd2_reject_nesting_101", attrs=nested(100))
+    # A node under a count-0 node is not visited but is still checked.
+    write_case("nd2_reject_skipped_bad_etype", experiment(node(1, {"uiCount": 0}, [node(7, {"uiCount": 2})])))
+    # pItemValid holds flags on every node, not only position loops.
+    write_case("nd2_reject_itemvalid_on_time",
+               experiment({"eType": 1, "uLoopPars": {"uiCount": 1}, "pItemValid": ["x"]}))
+
+
 if __name__ == "__main__":
     OUT.mkdir(exist_ok=True)
     tz_uint16()
@@ -419,5 +453,6 @@ if __name__ == "__main__":
     rejected()
     edges()
     revision3()
+    revision4()
     for p in sorted(OUT.glob("nd2_*.nd2")):
         print(p.name, p.stat().st_size)

@@ -1,6 +1,6 @@
 # Virtualizing image files as OME-Zarr in vzip
 
-Profiles version: 0 (**draft**) · Revision: 4
+Profiles version: 0 (**draft**) · Revision: 3
 
 ## 1. Introduction
 
@@ -192,8 +192,7 @@ The input is a TIFF (magic 42) or BigTIFF (magic 43, offset size 8 and
 reserved word 0), in either byte order.
 
 - **IFDs:** the virtualizer reads the chain of image file directories (IFDs)
-  from the header (the **main chain**, which ends at a next-IFD offset of 0;
-  it MUST have at least one IFD).
+  from the header (the **main chain**, which ends at a next-IFD offset of 0).
   Then, for every main-chain IFD in order, it reads the IFDs whose offsets
   that IFD's `SubIFDs` tag (330) lists, in order. Only the listed offsets are
   read: a SubIFD's own next-IFD offset and SubIFDs are ignored. A `SubIFDs`
@@ -229,8 +228,7 @@ read (whether or not that IFD is used):
   BigTIFF defines (1–12, 16–18), or 13 (IFD). Every other tag MUST have an
   unsigned integer type: BYTE (1), SHORT (3), LONG (4), IFD (13), LONG8
   (16) or IFD8 (18), in either TIFF variant. Any other type rejects.
-- **Value:** its value MUST lie within the file, and each of its values
-  of an integer type MUST be at most 2^53 − 1 in magnitude.
+- **Value:** its value MUST lie within the file.
 - **Count:** a scalar tag MUST have at least one value (only the first is
   used). An array tag may have any count; BitsPerSample and SampleFormat
   with no values reject when they are used.
@@ -275,8 +273,7 @@ document:
    - processing instructions, `<?` to the next `?>`;
    - other declarations, `<!` to the next `>`.
 
-   The search for the end starts after the whole start marker (so `<!-->`
-   does not end itself). A section without an end runs to the end of `X`.
+   A section without an end runs to the end of `X`.
 2. **Tags:** outside skipped sections, a tag is a match of this grammar
    starting at a `<` (whitespace and digits as in §1.3):
 
@@ -317,7 +314,7 @@ From `X` the virtualizer uses:
   after it and before the next `TiffData` end tag, `TiffData` start tag or
   `Pixels` end tag:
   - its `FileName` attribute;
-  - its **text**: empty if it is self-closing; otherwise the characters of `X` from the
+  - its **text**: if it is not self-closing, the characters of `X` from the
     end of the `UUID` tag to the start of the next tag, with skipped
     sections removed, references decoded as in attribute values, and
     leading and trailing whitespace removed.
@@ -327,8 +324,7 @@ are no `TiffData` tags.
 
 **Values.**
 
-- **Integer attributes** (`SizeZ`, `SizeC`, `SizeT`, `First*`, `IFD`,
-  `PlaneCount`; `SizeX` and `SizeY` are not used): the whole
+- **Integer attributes** (`Size*`, `First*`, `IFD`, `PlaneCount`): the whole
   value MUST be one or more digits, optionally preceded and followed by
   whitespace, and at most 2^53 − 1. `SizeZ`, `SizeC`, `SizeT` and
   `PlaneCount` MUST be at least 1. Otherwise the input is rejected.
@@ -504,10 +500,6 @@ a single **compressed** record, type 76: the type byte, a name-length byte
 inflates to the chunk's LV structure (which MUST NOT itself start with a
 compressed record).
 
-Levels MUST NOT be nested more than 100 deep: a chunk's top-level records
-are at depth 0, and the records of a level at depth `d` are at depth
-`d + 1`.
-
 **Values.** All integers are little-endian. A level with at least one
 record, all with empty names, is a **list** of their values. Any other level
 (including an empty one) is an **object**: its members are its records by
@@ -558,15 +550,11 @@ its value ends up in the output.
     rejected.
 - **Experiment** (chunk `ImageMetadataLV!`, member `SLxExperiment`; if the
   chunk or the member is absent there are no loops) is a tree of objects
-  (any other value rejects). **Every node of the tree** (the root, and the
-  children of every node) is checked, whether or not the flattening below
-  visits it: its `eType` MUST be one of those in the table, and its members
-  are read as the table says.
+  (any other value rejects).
   - A **node** has:
     - `eType` (integer, required);
     - `uLoopPars` (object, default absent);
-    - `pItemValid` (a list of flags, default absent), a member of the node
-      itself, checked on every node;
+    - `pItemValid` (list, default absent), a member of the node itself;
     - children, the members of `ppNextLevelEx` (object or list, default
       none), each of which MUST be an object.
   - Each node's loop has a **kind** and a count. Its members are in
@@ -578,35 +566,35 @@ its value ends up in the output.
     | 8 | time | the members `p` of `pPeriod` (object or list, default none) MUST be objects. The count is the sum of integer `p/uiCount` (required) over the valid `p`. The period is number `p/dPeriod` (default 0) of the first valid `p`, or 0 if none is valid. |
     | 2 | position | the number of valid members of `Points` (object or list, default none) |
     | 4 | z | integer `uiCount` (default 0); numbers `dZStep`, `dZLow`, `dZHigh` (default 0); step `abs(dZStep)`, or if that is 0 and the count is more than 1, `abs(dZHigh − dZLow) / (count − 1)` |
-    | 6 | (spectral) | integer `uiCount`; if it is absent, integer `pPlanes/uiCount` (`pPlanes` is read only then); if that is absent, 0 |
+    | 6 | (spectral) | integer `uiCount`; if it is absent, integer `pPlanes/uiCount`; if that is absent, 0 |
 
-    For eType 8, `uiCount` and `dPeriod` are read from every valid member,
-    and only from those; the sum MUST be at most 2^53 − 1.
+    For eType 8, `uiCount` and `dPeriod` are read only from valid members.
   - **Validity:** the `i`-th member of `pPeriod` (of `Points`) is
     **valid** if the list `uLoopPars/pPeriodValid` (for `Points`: the node's
     `pItemValid`, not a member of `uLoopPars`) is absent, or if its `i`-th
     member exists and is true. Every member of a validity list is a flag.
 
-  The tree is flattened into a list of loops
+  Any other `eType` is rejected. The tree is flattened into a list of loops
   by visiting nodes depth first, each node before its children. The root has
   depth 0 and children are one deeper than their node, except that the
   children of a spectral node have the spectral node's depth. A loop is its
   kind, depth, count, and period or step. For each node visited, in this
   order:
-  1. without `uLoopPars`, or with a count of 0 (spectral nodes included): the
-     node and its children are skipped (not visited, though still checked);
-  2. spectral: the node is skipped and its children are visited (its planes
+  1. its `eType` is checked;
+  2. without `uLoopPars`, or with a count of 0 (spectral nodes included): the
+     node and its children are skipped (not visited);
+  3. spectral: the node is skipped and its children are visited (its planes
      are pixel components, not a loop of the output);
-  3. otherwise: if the list is empty or the last loop's depth is less than
+  4. otherwise: if the list is empty or the last loop's depth is less than
      the node's, the node's loop is appended. If the last loop has the same
      depth and kind, and its count is less than the node's count, the node's
      loop (with its period or step) replaces it. Otherwise the node's loop is
      dropped. Either way its children are visited.
 
-  Rule 3 merges sibling branches that repeat one loop. A time loop with two
+  Rule 4 merges sibling branches that repeat one loop. A time loop with two
   position-loop children of 25 and 25 points gives [time, position]; the
   second position loop is dropped, and its children are still visited one
-  level deeper. Rule 3 compares only with the last loop: if the first
+  level deeper. Rule 4 compares only with the last loop: if the first
   position loop had a z-loop child, the last loop is that z loop when the
   second position loop is visited, so the second is dropped whatever its
   count.
@@ -631,7 +619,7 @@ its value ends up in the output.
 ### 4.4 Frames
 
 The frames are numbered `0 ≤ f < N`, where `N` is the product of the loops'
-counts (1 if there are none), which MUST be at most 2^53 − 1. Frame `f`'s coordinates are its row-major
+counts (1 if there are none). Frame `f`'s coordinates are its row-major
 index over the loops in list order (the last loop fastest). Frame `f` is the
 chunk named `ImageDataSeq|<f>!` (`f` in decimal, without leading zeros); a
 frame absent from the chunk map is missing (no entry). Other chunk names,
