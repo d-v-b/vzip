@@ -66,13 +66,15 @@ def expected_levels(path: Path) -> list[tuple[np.ndarray, str]]:
         series = tf.series[0]
         if path.name.startswith("svs_like"):
             return [(tf.pages[i].asarray(), "YX") for i in (0, 2)]
+        if path.suffix == ".ndpi":  # the levels: pages with a positive magnification (65421)
+            return [(p.asarray(), "YXS") for p in tf.pages if p.tags[65421].value > 0]
         return [(level.asarray(), series.axes) for level in series.levels]
 
 
 def main() -> int:
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
-        for tiff in sorted((HERE / "fixtures").glob("*.tif")):
+        for tiff in sorted([*(HERE / "fixtures").glob("*.tif"), *(HERE / "fixtures").glob("*.ndpi")]):
             out = Path(tmp) / (tiff.stem + ".vzip")
             p = subprocess.run(CLI + [str(tiff), str(out), tiff.resolve().as_uri()],
                                capture_output=True, text=True)

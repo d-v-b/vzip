@@ -298,3 +298,36 @@ The result is a complete standard JPEG, with no pixel data copied.
 - Real slides: OpenSlide's Aperio samples (CC0) are now in the comparison
   corpus (`corpus_tiff.txt`). Every pyramid level of CMU-1 and
   CMU-1-Small-Region matches tifffile.
+
+## Revision 8: NDPI
+
+Revision 8 adds a rule; it does not come from a spec round. It adds §3.7,
+Hamamatsu NDPI, a variant of the TIFF profile.
+
+**Reading.** NDPI's 64-bit extension is the 8-byte header offset, 8-byte
+next-IFD offsets, and a high word per IFD entry. NDPI is detected by probing
+the 8-byte header offset for an IFD with tag 65420, a test that cannot
+mistake a classic TIFF for NDPI. File extensions are not used.
+
+**Chunks.** Each level is one JPEG strip with restart markers. A chunk is up
+to 1024 × 1024 px of restart intervals, rebuilt as a JPEG stream from ranges
+of the file:
+- the strip's header, with a literal frame header for the chunk's size;
+- the intervals, each followed by a literal restart marker numbered for the
+  new stream;
+- EOI.
+
+Chunks at the right and bottom edges repeat the last intervals; those pixels
+fall outside the array. Pixel size comes from XResolution/YResolution.
+
+**Tests.**
+- Synthetic files (`web/test/ndpi_fixtures.py`) are cut from CMU-1.ndpi's
+  restart intervals: a 3-level file whose level 0 has padded edge chunks, a
+  single-strip level and a skipped macro image, plus four rejections.
+- Pixels: both implementations match tifffile pixel for pixel on the
+  synthetic file, and on every level checked of three OpenSlide NDPI slides
+  (CC0), including the edges.
+- Real slides: CMU-1, Hamamatsu-1 (6.9 GB, offsets above 4 GiB) and
+  Hamamatsu-2 are in the comparison corpus.
+- Neuroglancer: the fork renders the rebuilt streams to within 0.5 grey
+  levels of tifffile, across a chunk boundary.

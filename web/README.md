@@ -60,15 +60,21 @@ TIFF:
 - Samples per pixel stored planar (one chunk per channel) or interleaved
   (through a `transpose` codec).
 - Compression: none, DEFLATE (`zlib`), zstd, JPEG 2000 (`imagecodecs_jpeg2k`),
-  without a predictor.
+  and JPEG (`imagecodecs_jpeg`), without a predictor. JPEG tiles that keep
+  their tables in `JPEGTables`, as in Aperio SVS, become complete JPEG streams
+  through references that prepend the tables and a colour marker.
+- Hamamatsu NDPI, including files over 4 GB: each level's single JPEG strip is
+  cut at its restart markers into chunks of about 1024 × 1024 pixels, each a
+  JPEG stream rebuilt from byte ranges of the file.
 
-Not supported, and refused with HTTP 422: images in strips, LZW, JPEG,
-predictors, and multi-file OME-TIFF.
+Not supported, and refused with HTTP 422: images in strips (other than NDPI),
+LZW, old-style JPEG, predictors, multi-file OME-TIFF, and NDPI focal planes.
 
 ND2 (format version 3 and later):
 
 - Time (including multi-phase), stage-position and Z loops; positions become
-  a bioformats2raw layout with one image per position.
+  a bioformats2raw layout with one image per position, placed at its stage
+  coordinates.
 - Channels and RGB components, with names, colours and contrast windows in
   `omero`; pixel size, Z step and time step as scales.
 - Uncompressed frames (padded rows become one range per row, dropping the
