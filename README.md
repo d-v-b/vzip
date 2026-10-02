@@ -49,4 +49,8 @@ licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/):
   embed the image's OME-XML metadata;
 - the screenshots in `ng_idr/` and `web_demo/` show the image.
 
+`experiments/out/nd2/` holds virtualizations of public Nikon ND2 files from
+the BioImage Archive and Zenodo, some under CC BY 4.0; its
+[README](experiments/out/nd2/README.md) credits each source.
+
 These files are not covered by the licenses above.
