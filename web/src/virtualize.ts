@@ -1,61 +1,122 @@
 // Describing a tiled (OME-)TIFF as an OME-NGFF 0.5 multiscale image whose
-// chunks are vzip references to the TIFF's tiles.
-//
-// Supported: tiled images; pyramid levels as SubIFDs (OME-TIFF) or, without
-// OME-XML, as later main-chain IFDs of decreasing size (e.g. SVS); OME planes
-// over Z, C and T in any DimensionOrder (single-file); samples per pixel
-// stored planar or interleaved; uncompressed, DEFLATE, zstd and JPEG 2000
-// tiles without a predictor.
+// chunks are vzip references to the TIFF's tiles: the TIFF profile of
+// VIRTUALIZE.md (§3).
 
 import type { Range, Source } from "./protobuf.ts";
 import { type ByteReader, type Ifd, num, nums, readTiff, Tag, TiffError } from "./tiff.ts";
 import type { ArchiveDesc, EntryDesc } from "./writer.ts";
 
 const JPEG2000 = new Set([33003, 33004, 33005, 34712]);
+const reject = (message: string): never => {
+  throw new TiffError(message);
+};
 
-interface Pixels {
+// ---- OME-XML (§3.2)
+
+interface XmlTag {
+  start: number;
+  end: number;
+  closing: boolean;
+  name: string; // without namespace prefix
   attrs: Record<string, string>;
-  tiffData: Record<string, string>[];
-  name?: string;
+  selfClosing: boolean;
 }
 
+const SKIP = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<![^>]*>/g;
+const TAG = /<(\/?)(?:[\w.-]+:)?([\w.-]+)((?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)>/g;
+const ATTR = /([^\s=/>]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+const DECIMAL = /^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$/;
+
 function decodeXml(s: string): string {
-  return s.replace(/&(?:#x([0-9a-fA-F]+)|#(\d+)|(amp|lt|gt|quot|apos));/g, (_, hex, dec, named) =>
+  return s.replace(/&(?:#x([0-9a-fA-F]+)|#([0-9]+)|(lt|gt|amp|quot|apos));/g, (_, hex, dec, named) =>
     hex ? String.fromCodePoint(parseInt(hex, 16))
       : dec ? String.fromCodePoint(Number(dec))
       : ({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" } as Record<string, string>)[named]);
 }
 
-function attributes(tag: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const m of tag.matchAll(/([\w:]+)\s*=\s*"([^"]*)"/g)) out[m[1]] = decodeXml(m[2]);
-  return out;
+function xmlTags(xml: string): XmlTag[] {
+  const text = xml.replace(SKIP, (m) => " ".repeat(m.length));
+  return [...text.matchAll(TAG)].map((m) => {
+    const attrs: Record<string, string> = {};
+    for (const a of m[3].matchAll(ATTR)) attrs[a[1]] = decodeXml(a[2] ?? a[3]);
+    return { start: m.index!, end: m.index! + m[0].length, closing: m[1] === "/", name: m[2], attrs, selfClosing: m[4] === "/" };
+  });
 }
 
-/** The first image's Pixels element of an OME-XML document. */
-export function parseOmePixels(xml: string): Pixels | undefined {
-  const image = xml.match(/<(?:\w+:)?Image\b[^>]*>/);
-  const start = xml.search(/<(?:\w+:)?Pixels\b/);
-  if (start < 0) return undefined;
-  const end = xml.indexOf("Pixels>", start);
-  const body = xml.slice(start, end < 0 ? undefined : end);
-  const tag = body.match(/^<(?:\w+:)?Pixels\b[^>]*>/)![0];
-  const tiffData = [...body.matchAll(/<(?:\w+:)?TiffData\b[^>]*?(\/>|>[\s\S]*?<\/(?:\w+:)?TiffData>)/g)].map(
-    (m) => {
-      const attrs = attributes(m[0].match(/^<[^>]*>/)![0]);
-      const uuid = m[0].match(/<(?:\w+:)?UUID\b[^>]*>/);
-      if (uuid && attributes(uuid[0]).FileName !== undefined) attrs.FileName = attributes(uuid[0]).FileName;
-      return attrs;
-    },
-  );
-  return { attrs: attributes(tag), tiffData, name: image ? attributes(image[0]).Name : undefined };
+interface TiffData {
+  attrs: Record<string, string>;
+  uuid?: string;
+}
+
+interface Ome {
+  name?: string;
+  pixels: Record<string, string>;
+  tiffData: TiffData[];
+}
+
+export function parseOme(xml: string): Ome | undefined {
+  const tags = xmlTags(xml);
+  if (!tags.some((t) => !t.closing && t.name === "OME")) return undefined;
+  const image = tags.find((t) => !t.closing && t.name === "Image");
+  const pi = tags.findIndex((t) => !t.closing && t.name === "Pixels");
+  const name = image?.attrs.Name;
+  if (pi < 0) return { name, pixels: {}, tiffData: [] };
+  const inside: XmlTag[] = [];
+  if (!tags[pi].selfClosing) {
+    for (const t of tags.slice(pi + 1)) {
+      if (t.closing && t.name === "Pixels") break;
+      inside.push(t);
+    }
+  }
+  const tiffData: TiffData[] = [];
+  inside.forEach((t, i) => {
+    if (t.closing || t.name !== "TiffData") return;
+    const td: TiffData = { attrs: t.attrs };
+    if (!t.selfClosing) {
+      for (let j = i + 1; j < inside.length; j++) {
+        const u = inside[j];
+        if (u.closing && u.name === "TiffData") break;
+        if (!u.closing && u.name === "UUID") {
+          let text = "";
+          if (!u.selfClosing) {
+            const end = j + 1 < inside.length ? inside[j + 1].start : xml.length;
+            text = decodeXml(xml.slice(u.end, end).replace(SKIP, "")).trim();
+          }
+          td.uuid = u.attrs.FileName ?? text;
+          break;
+        }
+      }
+    }
+    tiffData.push(td);
+  });
+  return { name, pixels: tags[pi].attrs, tiffData };
+}
+
+function intAttr(attrs: Record<string, string>, key: string, fallback: number, minimum = 0): number {
+  const v = attrs[key];
+  if (v === undefined) return fallback;
+  const s = v.trim();
+  if (!/^[0-9]+$/.test(s)) reject(`${key}="${v}" is not an integer`);
+  const n = Number(s);
+  if (!Number.isSafeInteger(n)) reject(`${key}="${v}" is too large`);
+  if (n < minimum) reject(`${key}="${v}" is less than ${minimum}`);
+  return n;
+}
+
+function physical(attrs: Record<string, string>, d: string): number | undefined {
+  const v = attrs[`PhysicalSize${d}`];
+  if (v === undefined || !DECIMAL.test(v)) return undefined;
+  const x = Number(v);
+  return Number.isFinite(x) && x > 0 ? x : undefined;
 }
 
 const UNITS: Record<string, string> = {
   "µm": "micrometer", "um": "micrometer", "μm": "micrometer", "nm": "nanometer",
-  "mm": "millimeter", "cm": "centimeter", "m": "meter", "Å": "angstrom", "pm": "picometer",
-  "in": "inch", "ft": "foot", "s": "second", "ms": "millisecond", "min": "minute", "h": "hour",
+  "mm": "millimeter", "cm": "centimeter", "m": "meter", "Å": "angstrom", "Å": "angstrom",
+  "pm": "picometer", "in": "inch", "ft": "foot", "s": "second", "ms": "millisecond", "min": "minute", "h": "hour",
 };
+
+// ---- profile
 
 interface Level {
   width: number;
@@ -68,13 +129,17 @@ interface Level {
 
 function format(ifd: Ifd) {
   const bits = nums(ifd, Tag.BitsPerSample);
+  if (bits.some((b) => b !== bits[0])) reject("samples of different sizes");
+  const formats = (ifd.tags.get(Tag.SampleFormat) as number[] | undefined) ?? [1];
+  if (formats.some((f) => f !== formats[0])) reject("samples of different SampleFormats");
   const spp = num(ifd, Tag.SamplesPerPixel, 1);
-  if (bits.some((b) => b !== bits[0])) throw new TiffError("samples of different sizes");
+  const planar = spp > 1 ? num(ifd, Tag.PlanarConfiguration, 1) : 1;
+  if (planar !== 1 && planar !== 2) reject(`PlanarConfiguration ${planar}`);
   return {
     bits: bits[0],
     spp,
-    sampleFormat: num(ifd, Tag.SampleFormat, 1),
-    planar: spp > 1 ? num(ifd, Tag.PlanarConfiguration, 1) : 1,
+    sampleFormat: formats[0],
+    planar,
     compression: num(ifd, Tag.Compression, 1),
     predictor: num(ifd, Tag.Predictor, 1),
   };
@@ -87,7 +152,7 @@ function level(ifds: Ifd[]): Level {
   const [first] = ifds;
   const stripped = ifds.find((i) => !tiled(i));
   if (stripped !== undefined) {
-    throw new TiffError(`only tiled TIFFs are supported; the image at ${stripped.offset} is stored in strips`);
+    reject(`only tiled TIFFs are supported; the image at ${stripped.offset} is stored in strips`);
   }
   const l = {
     width: num(first, Tag.ImageWidth),
@@ -102,16 +167,16 @@ function level(ifds: Ifd[]): Level {
       num(ifd, Tag.TileWidth) !== l.tileWidth || num(ifd, Tag.TileLength) !== l.tileHeight ||
       !sameFormat(ifd, first)
     ) {
-      throw new TiffError("planes of one pyramid level differ in size, tiling or format");
+      reject("planes of one pyramid level differ in size, tiling or format");
     }
   }
   return l;
 }
 
 function dtype(bits: number, sampleFormat: number): string {
-  const kind = { 1: "uint", 2: "int", 3: "float" }[sampleFormat];
+  const kind = ({ 1: "uint", 2: "int", 3: "float" } as Record<number, string>)[sampleFormat];
   if (kind === undefined || ![8, 16, 32, 64].includes(bits) || (kind === "float" && bits < 32)) {
-    throw new TiffError(`unsupported sample type: ${bits}-bit, SampleFormat ${sampleFormat}`);
+    reject(`unsupported sample type: ${bits}-bit, SampleFormat ${sampleFormat}`);
   }
   return `${kind}${bits}`;
 }
@@ -132,92 +197,102 @@ export async function virtualizeTiff(
 ): Promise<Virtualized> {
   const tiff = await readTiff(read, fileSize);
   const [ifd0] = tiff.ifds;
-  if (ifd0 === undefined) throw new TiffError("no images");
-  const description = ifd0.tags.get(Tag.ImageDescription);
-  const xml = typeof description === "string" && description.includes("<OME") ? description : undefined;
-  const ome = xml === undefined ? undefined : parseOmePixels(xml);
-  const f = format(ifd0);
-  if (!JPEG2000.has(f.compression) && f.predictor !== 1) {
-    throw new TiffError(`unsupported predictor ${f.predictor}`);
-  }
+  if (ifd0 === undefined) reject("no images");
 
-  // Planes, in (t, c, z) order, as indices into the main IFD chain.
-  const sizeZ = Number(ome?.attrs.SizeZ ?? 1);
-  const sizeT = Number(ome?.attrs.SizeT ?? 1);
-  let sizeC = Number(ome?.attrs.SizeC ?? f.spp);
+  // §3.2: OME-XML in IFD 0's ImageDescription (type ASCII, valid UTF-8).
+  const description = ifd0.tags.get(Tag.ImageDescription);
+  let raw: Uint8Array | undefined;
+  let ome: Ome | undefined;
+  if (ifd0.types.get(Tag.ImageDescription) === 2 && description instanceof Uint8Array) {
+    const nul = description.indexOf(0);
+    const d = nul < 0 ? description : description.subarray(0, nul);
+    let text: string | undefined;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(d);
+    } catch {
+      text = undefined;
+    }
+    if (text !== undefined) {
+      ome = parseOme(text);
+      if (ome !== undefined) raw = d;
+    }
+  }
+  const f = format(ifd0);
+  if (!JPEG2000.has(f.compression) && f.predictor !== 1) reject(`unsupported predictor ${f.predictor}`);
+
+  // §3.3: planes, in (t, c, z) order, as main-chain IFD indices.
+  const px = ome?.pixels ?? {};
+  const sizeZ = intAttr(px, "SizeZ", 1, 1);
+  const sizeT = intAttr(px, "SizeT", 1, 1);
+  let sizeC = intAttr(px, "SizeC", f.spp, 1);
+  const order = px.DimensionOrder ?? "XYZCT";
+  if (ome && !/^XY(ZCT|ZTC|CZT|CTZ|TZC|TCZ)$/.test(order)) reject(`DimensionOrder ${order}`);
   if (f.spp > 1 && sizeC !== f.spp) {
     if (sizeC === 1) sizeC = f.spp;
-    else throw new TiffError(`SizeC ${sizeC} with ${f.spp} samples per pixel is not supported`);
+    else reject(`SizeC ${sizeC} with ${f.spp} samples per pixel is not supported`);
   }
-  const planeC = f.spp > 1 ? 1 : sizeC; // channels stored as separate planes
+  const planeC = f.spp > 1 ? 1 : sizeC;
   const plane = (t: number, c: number, z: number) => (t * planeC + c) * sizeZ + z;
   const planeIfd = new Array<number>(sizeT * planeC * sizeZ).fill(-1);
   if (ome === undefined) {
     planeIfd[0] = 0;
   } else {
-    const order = (ome.attrs.DimensionOrder ?? "XYZCT").slice(2); // e.g. "ZCT"
     const size = { Z: sizeZ, C: planeC, T: sizeT } as Record<string, number>;
-    const step = (pos: Record<string, number>) => {
-      for (const d of order) {
-        if (++pos[d] < size[d]) return true;
-        pos[d] = 0;
-      }
-      return false;
-    };
-    const entries = ome.tiffData.length > 0 ? ome.tiffData : [{}];
+    const entries: TiffData[] = ome.tiffData.length > 0 ? ome.tiffData : [{ attrs: {} }];
+    const files = new Set(entries.flatMap((td) => (td.uuid === undefined ? [] : [td.uuid])));
+    if (files.size > 1) reject("multi-file OME-TIFF is not supported");
     for (const td of entries) {
-      if (td.FileName !== undefined) throw new TiffError("multi-file OME-TIFF is not supported");
-      const pos = { Z: Number(td.FirstZ ?? 0), C: Number(td.FirstC ?? 0), T: Number(td.FirstT ?? 0) };
-      let ifd = Number(td.IFD ?? 0);
-      let count = Number(td.PlaneCount ?? (entries.length === 1 && td.IFD === undefined ? planeIfd.length : 1));
+      const a = td.attrs;
+      const pos = { Z: intAttr(a, "FirstZ", 0), C: intAttr(a, "FirstC", 0), T: intAttr(a, "FirstT", 0) } as Record<string, number>;
+      if ("ZCT".split("").some((d) => pos[d] >= size[d])) reject("TiffData starts outside the planes");
+      let ifd = intAttr(a, "IFD", 0);
+      let count = intAttr(a, "PlaneCount", entries.length === 1 && a.IFD === undefined ? planeIfd.length : 1, 1);
       while (count-- > 0) {
         planeIfd[plane(pos.T, pos.C, pos.Z)] = ifd++;
-        if (!step(pos)) break;
+        let stepped = false;
+        for (const d of order.slice(2)) {
+          if (++pos[d] < size[d]) {
+            stepped = true;
+            break;
+          }
+          pos[d] = 0;
+        }
+        if (!stepped) break;
       }
     }
   }
-  if (planeIfd.some((i) => i < 0 || i >= tiff.ifds.length)) {
-    throw new TiffError("OME-XML planes do not match the TIFF's images");
-  }
+  if (planeIfd.some((i) => i < 0 || i >= tiff.ifds.length)) reject("OME-XML planes do not match the TIFF's images");
   const planes = planeIfd.map((i) => tiff.ifds[i]);
 
-  // Pyramid levels.
+  // §3.4: pyramid levels.
   const levels: Level[] = [];
   if (ifd0.subIfds.length > 0) {
-    for (let k = -1; k < ifd0.subIfds.length; k++) {
-      levels.push(level(planes.map((p) => (k < 0 ? p : p.subIfds[k]))));
+    const s = ifd0.subIfds.length;
+    for (const p of planes) {
+      if (p.subIfds.length < s) reject(`the IFD at ${p.offset} has fewer SubIFDs than IFD 0`);
     }
+    for (let k = -1; k < s; k++) levels.push(level(planes.map((p) => (k < 0 ? p : p.subIfds[k]))));
   } else {
     levels.push(level(planes));
     if (ome === undefined) {
       for (const ifd of tiff.ifds.slice(1)) {
         const prev = levels[levels.length - 1];
-        if (
-          tiled(ifd) && sameFormat(ifd, ifd0) &&
-          num(ifd, Tag.ImageWidth) < prev.width && num(ifd, Tag.ImageLength) < prev.height
-        ) {
+        if (!tiled(ifd) || !ifd.tags.has(Tag.BitsPerSample)) continue;
+        if (sameFormat(ifd, ifd0) && num(ifd, Tag.ImageWidth) < prev.width && num(ifd, Tag.ImageLength) < prev.height) {
           levels.push(level([ifd]));
         }
       }
     }
   }
   for (const l of levels) {
-    if (!l.ifds.every(tiled)) throw new TiffError("only tiled TIFFs are supported");
-    if (!l.ifds.every((i) => sameFormat(i, ifd0))) {
-      throw new TiffError("pyramid levels differ in sample format or compression");
-    }
+    if (!l.ifds.every((i) => sameFormat(i, ifd0))) reject("pyramid levels differ in sample format or compression");
   }
 
-  // Axes: t, c, z (when larger than 1), y, x.
+  // §3.5: data type and codecs.
   const contig = f.spp > 1 && f.planar === 1;
   const axes: { name: string; type: string; unit?: string; size: number }[] = [];
-  const physical = (d: string) => {
-    const v = ome?.attrs[`PhysicalSize${d}`];
-    return v === undefined ? undefined : Number(v);
-  };
   const unit = (d: string) =>
-    physical(d) === undefined ? undefined
-      : UNITS[ome?.attrs[`PhysicalSize${d}Unit`] ?? "µm"] ?? undefined;
+    physical(px, d) === undefined ? undefined : UNITS[px[`PhysicalSize${d}Unit`] ?? "µm"];
   if (sizeT > 1) axes.push({ name: "t", type: "time", size: sizeT });
   if (sizeC > 1) axes.push({ name: "c", type: "channel", size: sizeC });
   if (sizeZ > 1) axes.push({ name: "z", type: "space", unit: unit("Z"), size: sizeZ });
@@ -246,15 +321,16 @@ export async function virtualizeTiff(
     } else if (f.compression === 1) {
       codecName = "bytes";
     } else {
-      throw new TiffError(`unsupported compression ${f.compression}`);
+      return reject(`unsupported compression ${f.compression}`);
     }
   }
   if (contig) {
     // Tiles hold [y, x, sample]; move the channel axis last.
-    const order = [...axes.keys()].filter((i) => i !== cAxis).concat([cAxis]);
-    codecs.unshift({ name: "transpose", configuration: { order } });
+    const stored = [...axes.keys()].filter((i) => i !== cAxis).concat([cAxis]);
+    codecs.unshift({ name: "transpose", configuration: { order: stored } });
   }
 
+  // §3.6: output.
   const sources: Source[] = [{ url }];
   const entries: EntryDesc[] = [];
   const meta: EntryDesc[] = [];
@@ -263,6 +339,7 @@ export async function virtualizeTiff(
   const datasets = [];
   let references = 0;
   const shapes: number[][] = [];
+  const [base] = levels;
   for (const [li, l] of levels.entries()) {
     const shape = axes.map((a) => a.size);
     shape[shape.length - 2] = l.height;
@@ -296,13 +373,14 @@ export async function virtualizeTiff(
           const offsets = nums(ifd, Tag.TileOffsets);
           const counts = nums(ifd, Tag.TileByteCounts);
           const samples = f.spp > 1 && !contig ? f.spp : 1;
-          if (offsets.length !== samples * perSample || counts.length !== offsets.length) {
-            throw new TiffError(`IFD at ${ifd.offset} has ${offsets.length} tiles, expected ${samples * perSample}`);
+          if (offsets.length !== samples * perSample || counts.length !== samples * perSample) {
+            reject(`IFD at ${ifd.offset} has ${offsets.length} tiles, expected ${samples * perSample}`);
           }
           for (let s = 0; s < samples; s++) {
             for (let j = 0; j < perSample; j++) {
               const k = s * perSample + j;
               if (counts[k] === 0) continue; // missing tile: fill value
+              if (offsets[k] + counts[k] > fileSize) reject(`tile ${k} of the IFD at ${ifd.offset} is outside the file`);
               const coords: number[] = [];
               if (sizeT > 1) coords.push(t);
               if (sizeC > 1) coords.push(f.spp > 1 ? (contig ? 0 : s) : c);
@@ -316,16 +394,15 @@ export async function virtualizeTiff(
         }
       }
     }
-    const [base] = levels;
     const scale = axes.map((a) => {
-      if (a.name === "y") return (physical("Y") ?? 1) * (base.height / l.height);
-      if (a.name === "x") return (physical("X") ?? 1) * (base.width / l.width);
-      if (a.name === "z") return physical("Z") ?? 1;
+      if (a.name === "y") return (physical(px, "Y") ?? 1) * (base.height / l.height);
+      if (a.name === "x") return (physical(px, "X") ?? 1) * (base.width / l.width);
+      if (a.name === "z") return physical(px, "Z") ?? 1;
       return 1;
     });
     datasets.push({ path: String(li), coordinateTransformations: [{ type: "scale", scale }] });
   }
-  const name = ome?.name;
+  const name = ome?.name || undefined;
   meta.push({
     key: "zarr.json",
     bytes: json({
@@ -343,9 +420,7 @@ export async function virtualizeTiff(
       },
     }),
   });
-  if (xml !== undefined) {
-    meta.push({ key: "OME/METADATA.ome.xml", bytes: utf8.encode(xml), compress: true });
-  }
+  if (raw !== undefined) meta.push({ key: "OME/METADATA.ome.xml", bytes: raw.slice(), compress: true });
   return {
     sources,
     entries: [...entries, ...meta],

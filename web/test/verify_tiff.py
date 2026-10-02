@@ -76,7 +76,9 @@ def main() -> int:
             out = Path(tmp) / (tiff.stem + ".vzip")
             p = subprocess.run(CLI + [str(tiff), str(out), tiff.resolve().as_uri()],
                                capture_output=True, text=True)
-            if tiff.name.startswith("unsupported"):
+            if tiff.name.startswith("edge_") and not tiff.name.startswith("edge_reject"):
+                continue  # compared between implementations by conformance/virtualize/compare.py
+            if tiff.name.startswith(("unsupported", "edge_reject")):
                 ok = p.returncode == 1 and not out.exists()
                 failures += not ok
                 print(f"{tiff.name:42s} {'refused: ' + p.stderr.strip() if ok else 'NOT REFUSED'}")
