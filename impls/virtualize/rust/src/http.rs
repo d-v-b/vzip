@@ -1,46 +1,39 @@
-//! Minimal HTTP/1.1 client with a block cache, for range reads of one URL.
-use crate::common::{Error, MAX_SAFE, Res};
+// Minimal HTTP/1.1 client with block cache (plain http only).
+
+use crate::common::{E, R};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-const BLOCK: u64 = 1 << 16;
+const BS: u64 = 1 << 16;
 
-pub struct Source {
+pub struct Reader {
     host: String,
     port: u16,
     path: String,
     pub size: u64,
     cache: HashMap<u64, Vec<u8>>,
+    pub requests: u64,
 }
 
-fn fail<T>(m: impl Into<String>) -> Res<T> {
-    Err(Error::Fail(m.into()))
+fn fail<T>(msg: impl Into<String>) -> R<T> {
+    Err(E::Fail(msg.into()))
 }
 
-struct Response {
+struct Resp {
     status: u16,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
 }
 
-impl Response {
-    fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v.as_str())
-    }
-}
-
-impl Source {
-    pub fn open(url: &str) -> Res<Source> {
+impl Reader {
+    pub fn open(url: &str) -> R<Reader> {
         let rest = match url.strip_prefix("http://") {
             Some(r) => r,
-            None => return fail(format!("only http:// URLs are supported: {url}")),
+            None => return fail(format!("only http:// URLs are supported: {}", url)),
         };
-        let (auth, path) = match rest.find('/') {
+        let (authority, path) = match rest.find('/') {
             Some(i) => (&rest[..i], &rest[i..]),
             None => (rest, "/"),
         };
@@ -48,194 +41,153 @@ impl Source {
             Some(i) => &path[..i],
             None => path,
         };
-        let (host, port) = match auth.rfind(':') {
-            Some(i) if !auth.ends_with(']') => {
-                let p: u16 = match auth[i + 1..].parse() {
+        let (host, port) = match authority.rfind(':') {
+            Some(i) if !authority[i + 1..].contains(']') => {
+                let p: u16 = match authority[i + 1..].parse() {
                     Ok(p) => p,
                     Err(_) => return fail("bad port"),
                 };
-                (auth[..i].to_string(), p)
+                (&authority[..i], p)
             }
-            _ => (auth.to_string(), 80),
+            _ => (authority, 80),
         };
-        let mut s = Source { host, port, path: path.to_string(), size: 0, cache: HashMap::new() };
-        let r = s.request("HEAD", None)?;
-        if r.status != 200 {
-            return fail(format!("HEAD returned {}", r.status));
+        let mut r = Reader {
+            host: host.to_string(),
+            port,
+            path: path.to_string(),
+            size: 0,
+            cache: HashMap::new(),
+            requests: 0,
+        };
+        let resp = r.request("HEAD", None)?;
+        if resp.status != 200 {
+            return fail(format!("HEAD returned status {}", resp.status));
         }
-        s.size = match r.header("content-length").and_then(|v| v.trim().parse::<u64>().ok()) {
-            Some(n) => n,
+        let cl = header(&resp.headers, "content-length");
+        r.size = match cl.and_then(|v| v.trim().parse::<u64>().ok()) {
+            Some(v) => v,
             None => return fail("HEAD without Content-Length"),
         };
-        Ok(s)
+        Ok(r)
     }
 
-    fn request(&self, method: &str, range: Option<(u64, u64)>) -> Res<Response> {
-        let mut last_err = String::new();
-        for attempt in 0..3 {
+    fn request(&mut self, method: &str, range: Option<(u64, u64)>) -> R<Resp> {
+        let mut last = String::new();
+        for attempt in 0..4 {
             if attempt > 0 {
-                std::thread::sleep(Duration::from_millis(500));
+                std::thread::sleep(Duration::from_millis(500 << attempt));
             }
             match self.request_once(method, range) {
                 Ok(r) => return Ok(r),
-                Err(e) => last_err = e,
+                Err(e) => last = e,
             }
         }
-        fail(last_err)
+        fail(format!("{} request failed: {}", method, last))
     }
 
-    fn request_once(&self, method: &str, range: Option<(u64, u64)>) -> Result<Response, String> {
-        let mut st = TcpStream::connect((self.host.as_str(), self.port)).map_err(|e| e.to_string())?;
-        st.set_read_timeout(Some(Duration::from_secs(1800))).ok();
+    fn request_once(&mut self, method: &str, range: Option<(u64, u64)>) -> Result<Resp, String> {
+        self.requests += 1;
+        let mut s = TcpStream::connect((self.host.as_str(), self.port)).map_err(|e| e.to_string())?;
+        s.set_read_timeout(Some(Duration::from_secs(600))).map_err(|e| e.to_string())?;
+        let hosthdr = if self.port == 80 { self.host.clone() } else { format!("{}:{}", self.host, self.port) };
         let mut req = format!(
-            "{method} {} HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\nAccept-Encoding: identity\r\n",
-            self.path, self.host, self.port
+            "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nAccept-Encoding: identity\r\n",
+            method, self.path, hosthdr
         );
         if let Some((a, b)) = range {
-            req.push_str(&format!("Range: bytes={a}-{b}\r\n"));
+            req.push_str(&format!("Range: bytes={}-{}\r\n", a, b));
         }
         req.push_str("\r\n");
-        st.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+        s.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
         let mut buf = Vec::new();
-        let mut tmp = [0u8; 65536];
-        let hdr_end = loop {
-            if let Some(p) = find(&buf, b"\r\n\r\n") {
-                break p;
-            }
-            let n = st.read(&mut tmp).map_err(|e| e.to_string())?;
-            if n == 0 {
-                return Err("connection closed in headers".into());
-            }
-            buf.extend_from_slice(&tmp[..n]);
-        };
-        let head = String::from_utf8_lossy(&buf[..hdr_end]).to_string();
+        s.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+        let hend = buf
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .ok_or("no end of headers")?;
+        let head = String::from_utf8_lossy(&buf[..hend]).to_string();
         let mut lines = head.split("\r\n");
-        let status_line = lines.next().unwrap_or("");
+        let status_line = lines.next().ok_or("empty response")?;
         let status: u16 = status_line
             .split_whitespace()
             .nth(1)
-            .and_then(|s| s.parse().ok())
+            .and_then(|v| v.parse().ok())
             .ok_or("bad status line")?;
         let headers: Vec<(String, String)> = lines
-            .filter_map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
+            .filter_map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string())))
             .collect();
-        let mut resp = Response { status, headers, body: Vec::new() };
-        if method == "HEAD" {
-            return Ok(resp);
-        }
-        let mut body = buf[hdr_end + 4..].to_vec();
-        let chunked = resp
-            .header("transfer-encoding")
-            .map(|v| v.to_ascii_lowercase().contains("chunked"))
-            .unwrap_or(false);
-        if chunked {
-            loop {
-                let n = st.read(&mut tmp).map_err(|e| e.to_string())?;
-                if n == 0 {
-                    break;
+        let mut body = buf[hend + 4..].to_vec();
+        if method != "HEAD" {
+            if let Some(te) = header(&headers, "transfer-encoding") {
+                if te.to_ascii_lowercase().contains("chunked") {
+                    return Err("chunked transfer encoding not supported".into());
                 }
-                body.extend_from_slice(&tmp[..n]);
             }
-            resp.body = dechunk(&body)?;
-        } else if let Some(cl) = resp.header("content-length").and_then(|v| v.parse::<usize>().ok()) {
-            while body.len() < cl {
-                let n = st.read(&mut tmp).map_err(|e| e.to_string())?;
-                if n == 0 {
-                    return Err("connection closed in body".into());
+            if let Some(cl) = header(&headers, "content-length").and_then(|v| v.parse::<usize>().ok()) {
+                if body.len() < cl {
+                    return Err("truncated body".into());
                 }
-                body.extend_from_slice(&tmp[..n]);
+                body.truncate(cl);
             }
-            body.truncate(cl);
-            resp.body = body;
         } else {
-            loop {
-                let n = st.read(&mut tmp).map_err(|e| e.to_string())?;
-                if n == 0 {
-                    break;
-                }
-                body.extend_from_slice(&tmp[..n]);
-            }
-            resp.body = body;
+            body.clear();
         }
-        Ok(resp)
+        Ok(Resp { status, headers, body })
     }
 
-    fn fetch(&self, a: u64, b_incl: u64) -> Res<Vec<u8>> {
-        let r = self.request("GET", Some((a, b_incl)))?;
-        if r.status != 206 {
-            return fail(format!("GET range {a}-{b_incl} returned {}", r.status));
+    fn fetch(&mut self, b0: u64, b1: u64) -> R<()> {
+        let start = b0 * BS;
+        let end = ((b1 + 1) * BS).min(self.size);
+        let resp = self.request("GET", Some((start, end - 1)))?;
+        if resp.status != 206 {
+            return fail(format!("GET returned status {}", resp.status));
         }
-        if r.body.len() as u64 != b_incl - a + 1 {
-            return fail(format!("GET range {a}-{b_incl}: got {} bytes", r.body.len()));
+        if resp.body.len() as u64 != end - start {
+            return fail("short range response");
         }
-        Ok(r.body)
+        for b in b0..=b1 {
+            let s = (b * BS - start) as usize;
+            let e = (((b + 1) * BS).min(self.size) - start) as usize;
+            self.cache.insert(b, resp.body[s..e].to_vec());
+        }
+        Ok(())
     }
 
-    /// Reads `len` bytes at `off`; a read outside the file rejects the input.
-    pub fn read(&mut self, off: u64, len: u64) -> Res<Vec<u8>> {
-        if off > MAX_SAFE || len > MAX_SAFE {
-            crate::rej!("read at {off} (+{len}): offset or length above 2^53-1");
-        }
-        if off + len > self.size {
-            crate::rej!("read at {off} (+{len}) outside the file (size {})", self.size);
+    /// Read `len` bytes at `off`; a read outside the file rejects the input.
+    pub fn read(&mut self, off: u64, len: u64) -> R<Vec<u8>> {
+        match off.checked_add(len) {
+            Some(e) if e <= self.size => {}
+            _ => return Err(E::Reject(format!("read outside the file: {} bytes at {}", len, off))),
         }
         if len == 0 {
             return Ok(Vec::new());
         }
-        let first = off / BLOCK;
-        let last = (off + len - 1) / BLOCK;
-        // fetch missing runs
-        let mut b = first;
-        while b <= last {
+        let b0 = off / BS;
+        let b1 = (off + len - 1) / BS;
+        let mut b = b0;
+        while b <= b1 {
             if self.cache.contains_key(&b) {
                 b += 1;
                 continue;
             }
-            let mut e = b;
-            while e < last && !self.cache.contains_key(&(e + 1)) {
-                e += 1;
+            let s = b;
+            while b <= b1 && !self.cache.contains_key(&b) && b - s < 256 {
+                b += 1;
             }
-            let a = b * BLOCK;
-            let end = ((e + 1) * BLOCK).min(self.size);
-            let data = self.fetch(a, end - 1)?;
-            for (i, blk) in (b..=e).enumerate() {
-                let s = i * BLOCK as usize;
-                let t = (s + BLOCK as usize).min(data.len());
-                self.cache.insert(blk, data[s..t].to_vec());
-            }
-            b = e + 1;
+            self.fetch(s, b - 1)?;
         }
         let mut out = Vec::with_capacity(len as usize);
-        for blk in first..=last {
-            let d = &self.cache[&blk];
-            let bstart = blk * BLOCK;
-            let s = off.max(bstart) - bstart;
-            let e = (off + len).min(bstart + d.len() as u64) - bstart;
-            out.extend_from_slice(&d[s as usize..e as usize]);
+        for b in b0..=b1 {
+            let blk = &self.cache[&b];
+            let bs = b * BS;
+            let s = off.max(bs) - bs;
+            let e = (off + len).min(bs + blk.len() as u64) - bs;
+            out.extend_from_slice(&blk[s as usize..e as usize]);
         }
         Ok(out)
     }
 }
 
-fn find(h: &[u8], n: &[u8]) -> Option<usize> {
-    h.windows(n.len()).position(|w| w == n)
-}
-
-fn dechunk(b: &[u8]) -> Result<Vec<u8>, String> {
-    let mut out = Vec::new();
-    let mut p = 0;
-    loop {
-        let le = find(&b[p..], b"\r\n").ok_or("bad chunked body")? + p;
-        let line = std::str::from_utf8(&b[p..le]).map_err(|e| e.to_string())?;
-        let sz = usize::from_str_radix(line.split(';').next().unwrap().trim(), 16).map_err(|e| e.to_string())?;
-        p = le + 2;
-        if sz == 0 {
-            return Ok(out);
-        }
-        if p + sz > b.len() {
-            return Err("truncated chunk".into());
-        }
-        out.extend_from_slice(&b[p..p + sz]);
-        p += sz + 2;
-    }
+fn header<'a>(h: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    h.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
 }

@@ -29,6 +29,8 @@ def _header(read: Reader, offset: int) -> tuple[int, int, bytes]:
     magic, name_length, data_length = struct.unpack("<IIQ", read(offset, 16))
     if magic != CHUNK_MAGIC:
         raise Rejected(f"no ND2 chunk at {offset}")
+    if data_length > MAX_SAFE:
+        raise Rejected("chunk length too large")
     return name_length, data_length, read(offset + 16, name_length).split(b"\0", 1)[0]
 
 
@@ -153,6 +155,8 @@ def _node_loop(node: dict):
         low = number(pars.get("dZLow"), "dZLow", 0)
         if step == 0 and count > 1:
             step = abs(high - low) / (count - 1)
+            if not math.isfinite(step):
+                raise Rejected("the z step is not finite")
         loop = ("z", count, step)
     else:
         count = integer(pars.get("uiCount"), "uiCount", None)
@@ -270,8 +274,8 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
     compression = integer(attrs.get("eCompression"), "eCompression", 2)
     tile_width = integer(attrs.get("uiTileWidth"), "uiTileWidth", 0)
     tile_height = integer(attrs.get("uiTileHeight"), "uiTileHeight", 0)
-    if min(width, height, comp) < 1:
-        raise Rejected("image width, height and components must be at least 1")
+    if min(width, height, comp) < 1 or comp > 1024:
+        raise Rejected("image width and height must be at least 1, and components from 1 to 1024")
     data_type = {8: "uint8", 16: "uint16", 32: "float32"}.get(bpc)
     if data_type is None:
         raise Rejected(f"unsupported bits per component {bpc}")

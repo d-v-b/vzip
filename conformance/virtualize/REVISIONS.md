@@ -211,3 +211,33 @@ New synthetic files cover each rule (`nd2_reject_skipped_bad_etype`,
 `nd2_edge_nesting_100`, `nd2_reject_nesting_101`, `edge_reject_big_offset`,
 `edge_xml_comment_marker`, `edge_reject_uuid_self_closing`,
 `edge_reject_no_ifds`).
+
+## Round 4 (revision 4): converged
+
+**Result.** The round-4 implementations agree with both maintained ones on
+every input, with no difference:
+- the 317-input corpus: 252 accepted and 65 rejected by all five;
+- 950 corrupted copies with mutation seed 1;
+- 950 corrupted copies with mutation seed 2.
+
+All three sets of notes (`notes/r4/`) call the document precise for real
+files. The points they still raise concern only malformed input, and none
+splits the implementations on the corpus. They led to two fixes in the
+maintained implementations, which they had missed:
+- an overflowing z step on a node that the flattening skips is now
+  rejected;
+- the Python one now rejects an ND2 chunk length above 2^53 − 1.
+
+**Revision 5** states the remaining points explicitly:
+- a level record at depth 100 rejects even if empty;
+- reading a chunk header means its 16 bytes and its name;
+- a SubIFD's next-IFD field lies within the file but its value is not used;
+- the XML scan is a single left-to-right pass;
+- UUID text drops CDATA content;
+- frame chunks need not end within the file, only their ranges;
+- `uiComp` is at most 1024 (a frameless file could otherwise demand an
+  unbounded `omero` channel list).
+
+New synthetic files: `nd2_reject_too_many_components`,
+`nd2_reject_z_step_overflow` and `edge_subifd_next_ignored`. The round-4
+implementations differ only on the first, which is the one new rule.

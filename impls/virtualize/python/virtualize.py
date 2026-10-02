@@ -1,8 +1,11 @@
-#!/usr/bin/env python3
-"""virtualize <url> <out.json>: VIRTUALIZE.md (profiles version 0, revision 3).
+"""virtualize <url> <out.json>: VIRTUALIZE.md (revision 4), standard library only.
 
-Standard library only. Exit 0 on success, 3 on rejection, 1 on read failure.
+Exit status: 0 on success, 3 when the specification rejects the input, other
+values when reading fails (or on an internal error).
 """
+
+from __future__ import annotations
+
 import base64
 import http.client
 import json
@@ -13,104 +16,97 @@ import sys
 import urllib.parse
 import zlib
 
-MAXI = 2**53 - 1
+MAX = 2**53 - 1
 MAX_PAYLOAD = 65519
+WS = " \t\r\n"
 
 
 class Reject(Exception):
     pass
 
 
-class Fail(Exception):
+class ReadError(Exception):
     pass
 
 
-def reject(msg):
-    raise Reject(msg)
+def need(cond, msg):
+    if not cond:
+        raise Reject(msg)
 
 
-# ---------------------------------------------------------------------------
-# Reading
+# --------------------------------------------------------------------------
+# Remote source with a block cache
 
 
 class Source:
     BLOCK = 1 << 16
 
-    def __init__(self, url):
+    def __init__(self, url: str) -> None:
         u = urllib.parse.urlsplit(url)
-        if u.scheme != "http" or not u.hostname:
-            raise Fail("only http:// URLs are supported")
+        if u.scheme != "http":
+            raise ReadError(f"unsupported URL scheme: {u.scheme}")
         self.host = u.hostname
         self.port = u.port or 80
-        self.path = (u.path or "/") + ("?" + u.query if u.query else "")
+        self.path = (u.path or "/") + (("?" + u.query) if u.query else "")
         self.conn = None
-        self.cache = {}
-        self.size = self._head()
+        self.cache: dict[int, bytes] = {}
+        st, hdrs, _ = self._request("HEAD", {})
+        if st != 200:
+            raise ReadError(f"HEAD status {st}")
+        cl = hdrs.get("content-length")
+        if cl is None or not cl.isdigit():
+            raise ReadError("HEAD without Content-Length")
+        self.size = int(cl)
 
     def _request(self, method, headers):
-        last = None
-        for _ in range(3):
+        for attempt in range(3):
             try:
                 if self.conn is None:
-                    self.conn = http.client.HTTPConnection(self.host, self.port, timeout=120)
+                    self.conn = http.client.HTTPConnection(self.host, self.port, timeout=600)
                 self.conn.request(method, self.path, headers=headers)
                 r = self.conn.getresponse()
                 body = r.read()
-                return r, body
+                return r.status, {k.lower(): v for k, v in r.getheaders()}, body
             except (OSError, http.client.HTTPException) as e:
-                last = e
-                try:
-                    self.conn.close()
-                except Exception:
-                    pass
                 self.conn = None
-        raise Fail(f"network error: {last}")
+                if attempt == 2:
+                    raise ReadError(str(e)) from e
 
-    def _head(self):
-        r, _ = self._request("HEAD", {})
-        if r.status != 200:
-            raise Fail(f"HEAD status {r.status}")
-        cl = r.getheader("Content-Length")
-        if cl is None or not cl.isdigit():
-            raise Fail("no Content-Length")
-        return int(cl)
+    def _fetch(self, first: int, last: int) -> None:
+        start = first * self.BLOCK
+        end = min(self.size, (last + 1) * self.BLOCK)
+        st, _, body = self._request("GET", {"Range": f"bytes={start}-{end - 1}"})
+        if st != 206 or len(body) != end - start:
+            raise ReadError(f"GET status {st}, {len(body)} bytes")
+        for b in range(first, last + 1):
+            self.cache[b] = body[(b - first) * self.BLOCK : (b - first + 1) * self.BLOCK]
 
-    def _get(self, a, n):
-        r, body = self._request("GET", {"Range": f"bytes={a}-{a + n - 1}"})
-        if r.status != 206 or len(body) != n:
-            raise Fail(f"GET {a}+{n}: status {r.status}, {len(body)} bytes")
-        return body
-
-    def read(self, off, n):
-        if off < 0 or n < 0 or off > MAXI or n > MAXI or off + n > self.size:
-            reject(f"read outside the file ({off}+{n} > {self.size})")
+    def read(self, off: int, n: int) -> bytes:
+        if off < 0 or n < 0 or off > MAX or n > MAX or off + n > self.size:
+            raise Reject(f"read outside the file ({off}+{n} > {self.size})")
         if n == 0:
             return b""
-        B = self.BLOCK
-        if n > 8 * B:
-            return self._get(off, n)
-        b0, b1 = off // B, (off + n - 1) // B
-        parts = []
-        missing = [b for b in range(b0, b1 + 1) if b not in self.cache]
-        if missing:
-            m0, m1 = missing[0], missing[-1]
-            start = m0 * B
-            end = min((m1 + 1) * B, self.size)
-            data = self._get(start, end - start)
-            for b in range(m0, m1 + 1):
-                self.cache[b] = data[(b - m0) * B:(b - m0 + 1) * B]
-        for b in range(b0, b1 + 1):
-            parts.append(self.cache[b])
-        buf = b"".join(parts)
-        s = off - b0 * B
-        return buf[s:s + n]
+        first, last = off // self.BLOCK, (off + n - 1) // self.BLOCK
+        b = first
+        while b <= last:
+            if b in self.cache:
+                b += 1
+                continue
+            e = b
+            while e + 1 <= last and e + 1 not in self.cache:
+                e += 1
+            self._fetch(b, e)
+            b = e + 1
+        out = b"".join(self.cache[b] for b in range(first, last + 1))
+        s = off - first * self.BLOCK
+        return out[s : s + n]
 
 
-# ---------------------------------------------------------------------------
-# Common output helpers
+# --------------------------------------------------------------------------
+# Output helpers
 
 
-def varint_len(v):
+def varint_len(v: int) -> int:
     n = 1
     while v >= 0x80:
         v >>= 7
@@ -118,52 +114,53 @@ def varint_len(v):
     return n
 
 
-def range_msg_len(o, n):
-    k = 0
+def range_msg_len(o: int, n: int) -> int:
+    ln = 0
     if o > 0:
-        k += 1 + varint_len(o)
+        ln += 1 + varint_len(o)
     if n > 0:
-        k += 1 + varint_len(n)
-    return k
+        ln += 1 + varint_len(n)
+    return ln
 
 
-def payload_len(ranges):
+def payload_len(ranges) -> int:
     if len(ranges) == 1:
         return range_msg_len(ranges[0][1], ranges[0][2])
-    t = 0
+    tot = 0
     for _, o, n in ranges:
-        L = range_msg_len(o, n)
-        t += 1 + varint_len(L) + L
-    return t
+        r = range_msg_len(o, n)
+        tot += 1 + varint_len(r) + r
+    return tot
 
 
-class Out:
-    def __init__(self, src):
-        self.src = src
-        self.entries = {}
-
-    def ref(self, key, ranges):
-        for _, o, n in ranges:
-            if o < 0 or n < 0 or o + n > self.src.size:
-                reject(f"range ({o}, {n}) of {key} lies outside the file")
-        if payload_len(ranges) > MAX_PAYLOAD:
-            reject(f"payload of {key} exceeds {MAX_PAYLOAD} bytes")
-        self.entries[key] = {"ranges": [[0, o, n] for _, o, n in ranges]}
+class Output:
+    def __init__(self, url: str, size: int) -> None:
+        self.url = url
+        self.size = size
+        self.entries: dict[str, dict] = {}
 
     def json(self, key, value):
         self.entries[key] = {"json": value}
 
-    def raw(self, key, data):
+    def bytes(self, key, data: bytes):
         self.entries[key] = {"base64": base64.b64encode(data).decode("ascii")}
 
+    def ref(self, key, ranges):
+        for _, o, n in ranges:
+            need(o >= 0 and n >= 0 and o + n <= self.size, f"{key}: range ({o}, {n}) outside the file")
+        need(payload_len(ranges) <= MAX_PAYLOAD, f"{key}: payload too large")
+        self.entries[key] = {"ranges": [[0, o, n] for _, o, n in ranges]}
 
-def finite(x):
-    if math.isinf(x) or math.isnan(x):
-        reject("computed number is infinite or NaN")
+    def dump(self) -> str:
+        return json.dumps({"sources": [self.url], "entries": self.entries}, allow_nan=False)
+
+
+def finite(x: float, what: str) -> float:
+    need(math.isfinite(x), f"{what} is not finite")
     return x
 
 
-def array_meta(shape, dtype, chunk_shape, codecs, dims):
+def array_json(shape, dtype, chunk_shape, codecs, dims):
     return {
         "zarr_format": 3,
         "node_type": "array",
@@ -178,668 +175,611 @@ def array_meta(shape, dtype, chunk_shape, codecs, dims):
     }
 
 
-AXIS_TYPE = {"t": "time", "c": "channel", "z": "space", "y": "space", "x": "space"}
-
-
-def axis_objs(dims, units):
-    out = []
-    for d in dims:
-        a = {"name": d, "type": AXIS_TYPE[d]}
-        if units.get(d) is not None:
-            a["unit"] = units[d]
-        out.append(a)
-    return out
-
-
 def transpose_codec(dims):
     order = [i for i, d in enumerate(dims) if d != "c"] + [dims.index("c")]
     return {"name": "transpose", "configuration": {"order": order}}
 
 
-UNITS = {
-    "µm": "micrometer", "μm": "micrometer", "um": "micrometer",
-    "nm": "nanometer", "mm": "millimeter", "cm": "centimeter", "m": "meter",
-    "Å": "angstrom", "Å": "angstrom", "pm": "picometer",
-    "in": "inch", "ft": "foot", "s": "second", "ms": "millisecond",
-    "min": "minute", "h": "hour",
-}
+def bytes_codec(itemsize, endian):
+    if itemsize == 1:
+        return {"name": "bytes"}
+    return {"name": "bytes", "configuration": {"endian": endian}}
 
 
-# ---------------------------------------------------------------------------
-# TIFF profile
-
-TYPE_SIZE = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4,
-             12: 8, 13: 4, 16: 8, 17: 8, 18: 8}
-UINT_FMT = {1: "B", 3: "H", 4: "I", 13: "I", 16: "Q", 18: "Q"}
-USED = {256: "s", 257: "s", 258: "a", 259: "s", 270: "t", 277: "s", 284: "s",
-        317: "s", 322: "s", 323: "s", 324: "a", 325: "a", 330: "a", 339: "a"}
+AXIS_TYPE = {"t": "time", "c": "channel", "z": "space", "y": "space", "x": "space"}
 
 
-class Tag:
-    __slots__ = ("type", "count", "inline", "offset")
+def axis_json(name, unit):
+    a = {"name": name, "type": AXIS_TYPE[name]}
+    if unit is not None:
+        a["unit"] = unit
+    return a
+
+
+# --------------------------------------------------------------------------
+# TIFF profile (§3)
+
+TYPE_SIZE = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4, 16: 8, 17: 8, 18: 8}
+INT_FMT = {1: "B", 3: "H", 4: "I", 13: "I", 16: "Q", 18: "Q", 6: "b", 8: "h", 9: "i", 17: "q"}
+UNSIGNED_TYPES = {1, 3, 4, 13, 16, 18}
+DESC_TYPES = set(range(1, 13)) | {13, 16, 17, 18}
+SCALAR_TAGS = {256, 257, 259, 277, 284, 317, 322, 323}
+ARRAY_TAGS = {258, 324, 325, 330, 339}
+TEXT_TAG = 270
+TABLE_TAGS = SCALAR_TAGS | ARRAY_TAGS | {TEXT_TAG}
+MAX_IFDS = 100000
 
 
 class IFD:
     def __init__(self, offset):
         self.offset = offset
-        self.tags = {}
+        self.tags: dict[int, tuple] = {}  # tag -> (type, count, values or None, data offset)
         self.next = 0
+        self.subs: list[IFD] = []
+
+    def has(self, tag):
+        return tag in self.tags
+
+    def scalar(self, tag, default=None):
+        if tag not in self.tags:
+            return default
+        return self.tags[tag][2][0]
+
+    def array(self, tag):
+        return self.tags[tag][2] if tag in self.tags else None
 
 
 class Tiff:
-    def __init__(self, src):
+    def __init__(self, src: Source, out: Output) -> None:
         self.src = src
+        self.out = out
         h = src.read(0, 4)
-        self.e = "<" if h[:2] == b"II" else ">"
-        magic = struct.unpack(self.e + "H", h[2:4])[0]
+        self.bo = "<" if h[:2] == b"II" else ">"
+        magic = struct.unpack(self.bo + "H", h[2:4])[0]
         self.big = magic == 43
         if self.big:
-            bs, res, first = struct.unpack(self.e + "HHQ", src.read(4, 12))
-            if bs != 8 or res != 0:
-                reject("BigTIFF offset size not 8 or reserved word not 0")
-            self.minoff = 16
+            osz, res, first = struct.unpack(self.bo + "HHQ", src.read(4, 12))
+            need(osz == 8, "BigTIFF offset size is not 8")
+            need(res == 0, "BigTIFF reserved word is not 0")
         else:
-            first = struct.unpack(self.e + "I", src.read(4, 4))[0]
-            self.minoff = 8
-        self.first = first
-        self.seen = set()
+            first = struct.unpack(self.bo + "I", src.read(4, 4))[0]
+        need(first <= MAX, "IFD offset above 2^53-1")
+        self.seen: set[int] = set()
         self.nread = 0
+        self.main: list[IFD] = []
+        off = first
+        while off != 0:
+            ifd = self.read_ifd(off, True)
+            self.main.append(ifd)
+            off = ifd.next
+        need(self.main, "no IFDs")
+        for ifd in self.main:
+            for o in ifd.array(330) or []:
+                ifd.subs.append(self.read_ifd(o, False))
 
-    def u(self, fmt, data):
-        return struct.unpack(self.e + fmt, data)
-
-    def check_ifd_offset(self, off):
-        if off < self.minoff:
-            reject(f"IFD offset {off} below {self.minoff}")
-        if off > MAXI:
-            reject("IFD offset above 2^53-1")
-        if off in self.seen:
-            reject(f"IFD offset {off} read twice (cycle or shared SubIFD)")
+    def read_ifd(self, off: int, main: bool) -> IFD:
+        need(off >= (16 if self.big else 8), f"IFD offset {off} too small")
+        need(off <= MAX, "IFD offset above 2^53-1")
+        need(off not in self.seen, f"IFD offset {off} read twice")
         self.seen.add(off)
         self.nread += 1
-        if self.nread > 100000:
-            reject("more than 100000 IFDs")
-
-    def read_ifd(self, off):
-        self.check_ifd_offset(off)
-        src = self.src
-        ifd = IFD(off)
+        need(self.nread <= MAX_IFDS, "more than 100000 IFDs")
+        bo = self.bo
         if self.big:
-            n = self.u("Q", src.read(off, 8))[0]
-            esz, inl, p = 20, 8, off + 8
+            count = struct.unpack(bo + "Q", self.src.read(off, 8))[0]
+            esz, base, inl = 20, off + 8, 8
         else:
-            n = self.u("H", src.read(off, 2))[0]
-            esz, inl, p = 12, 4, off + 2
-        body = src.read(p, n * esz + inl)
-        for i in range(n):
-            e = body[i * esz:(i + 1) * esz]
+            count = struct.unpack(bo + "H", self.src.read(off, 2))[0]
+            esz, base, inl = 12, off + 2, 4
+        need(count <= MAX, "IFD entry count too large")
+        raw = self.src.read(base, count * esz)
+        ifd = IFD(off)
+        if main:
+            # A SubIFD's next-IFD offset is ignored (§3.1), so it is not read.
+            nxt = self.src.read(base + count * esz, inl)
+            ifd.next = struct.unpack(bo + ("Q" if self.big else "I"), nxt)[0]
+            need(ifd.next <= MAX, "next IFD offset above 2^53-1")
+        for i in range(count):
+            e = raw[i * esz : (i + 1) * esz]
             if self.big:
-                tag, typ, cnt = self.u("HHQ", e[:12])
-                vf = e[12:20]
+                tag, typ, cnt = struct.unpack(bo + "HHQ", e[:12])
+                field = e[12:20]
             else:
-                tag, typ, cnt = self.u("HHI", e[:8])
-                vf = e[8:12]
-            kind = USED.get(tag)
-            if kind is None or tag in ifd.tags:
+                tag, typ, cnt = struct.unpack(bo + "HHI", e[:8])
+                field = e[8:12]
+            if tag not in TABLE_TAGS or tag in ifd.tags:
                 continue
-            if kind == "t":
-                if typ not in TYPE_SIZE:
-                    reject(f"tag {tag} has field type {typ}")
-            elif typ not in UINT_FMT:
-                reject(f"tag {tag} has field type {typ}")
-            if kind == "s" and cnt < 1:
-                reject(f"scalar tag {tag} has no values")
-            t = Tag()
-            t.type, t.count = typ, cnt
-            nb = cnt * TYPE_SIZE[typ]
-            if nb <= inl:
-                t.inline, t.offset = vf[:nb], None
+            if tag == TEXT_TAG:
+                need(typ in DESC_TYPES, f"ImageDescription has field type {typ}")
             else:
-                vo = self.u("Q" if self.big else "I", vf)[0]
-                if vo > MAXI or vo + nb > src.size:
-                    reject(f"value of tag {tag} lies outside the file")
-                t.inline, t.offset = None, vo
-            ifd.tags[tag] = t
-        ifd.next = self.u("Q" if self.big else "I", body[n * esz:])[0]
+                need(typ in UNSIGNED_TYPES, f"tag {tag} has field type {typ}")
+            need(cnt <= MAX, f"tag {tag} count above 2^53-1")
+            nbytes = cnt * TYPE_SIZE[typ]
+            if nbytes <= inl:
+                data_off = base + i * esz + (12 if self.big else 8)
+                data = field[:nbytes]
+            else:
+                data_off = struct.unpack(bo + ("Q" if self.big else "I"), field)[0]
+                need(data_off <= MAX and nbytes <= MAX, f"tag {tag} value offset above 2^53-1")
+                need(data_off + nbytes <= self.src.size, f"tag {tag} value outside the file")
+                data = None
+            values = None
+            if typ in INT_FMT:
+                if data is None:
+                    data = self.src.read(data_off, nbytes)
+                values = list(struct.unpack(f"{bo}{cnt}{INT_FMT[typ]}", data))
+                if typ in (16, 17, 18):
+                    for v in values:
+                        need(abs(v) <= MAX, f"tag {tag} value above 2^53-1")
+            if tag in SCALAR_TAGS:
+                need(cnt >= 1, f"scalar tag {tag} has no value")
+            ifd.tags[tag] = (typ, cnt, values, data_off)
         return ifd
 
-    def raw(self, t):
-        if t.inline is not None:
-            return t.inline
-        return self.src.read(t.offset, t.count * TYPE_SIZE[t.type])
+    # ---- §3.1 derived values
 
-    def values(self, ifd, tag):
-        t = ifd.tags.get(tag)
-        if t is None:
-            return None
-        f = UINT_FMT[t.type]
-        return list(struct.unpack(f"{self.e}{t.count}{f}", self.raw(t)))
-
-    def scalar(self, ifd, tag, default=None):
-        t = ifd.tags.get(tag)
-        if t is None:
-            return default
-        sz = TYPE_SIZE[t.type]
-        if t.inline is not None:
-            b = t.inline[:sz]
-        else:
-            b = self.src.read(t.offset, sz)
-        v = self.u(UINT_FMT[t.type], b)[0]
-        if v > MAXI:
-            reject(f"tag {tag} value above 2^53-1")
-        return v
-
-    def read_all(self):
-        main = []
-        off = self.first
-        while off != 0:
-            ifd = self.read_ifd(off)
-            main.append(ifd)
-            off = ifd.next
-        if not main:
-            reject("no IFDs")
-        for ifd in main:
-            subs = self.values(ifd, 330) or []
-            ifd.subs = []
-            for so in subs:
-                ifd.subs.append(self.read_ifd(so))
-        self.main = main
-
-    # --- format / size
-
-    def fmt(self, ifd):
-        bps = self.values(ifd, 258)
-        if not bps:
-            reject("BitsPerSample missing or empty")
-        if any(b != bps[0] for b in bps) or bps[0] < 1:
-            reject("BitsPerSample values differ or are 0")
-        spp = self.scalar(ifd, 277, 1)
-        if spp < 1:
-            reject("SamplesPerPixel 0")
-        sf = self.values(ifd, 339)
+    def fmt(self, ifd: IFD):
+        bps = ifd.array(258)
+        need(bps is not None and len(bps) >= 1, "BitsPerSample missing or empty")
+        need(all(b == bps[0] for b in bps) and bps[0] >= 1, "BitsPerSample values differ or are 0")
+        spp = ifd.scalar(277, 1)
+        need(spp >= 1, "SamplesPerPixel is 0")
+        sf = ifd.array(339)
         if sf is None:
             sfv = 1
         else:
-            if not sf:
-                reject("SampleFormat with no values")
-            if any(v != sf[0] for v in sf):
-                reject("SampleFormat values differ")
+            need(len(sf) >= 1, "SampleFormat has no values")
+            need(all(v == sf[0] for v in sf), "SampleFormat values differ")
             sfv = sf[0]
-        pc = self.scalar(ifd, 284, 1)
         if spp == 1:
-            pc = 1
-        elif pc not in (1, 2):
-            reject(f"PlanarConfiguration {pc}")
-        comp = self.scalar(ifd, 259, 1)
-        pred = self.scalar(ifd, 317, 1)
-        return (bps[0], spp, sfv, pc, comp, pred)
+            planar = 1
+        else:
+            planar = ifd.scalar(284, 1)
+            need(planar in (1, 2), f"PlanarConfiguration {planar}")
+        return (bps[0], spp, sfv, planar, ifd.scalar(259, 1), ifd.scalar(317, 1))
 
-    def size(self, ifd):
-        w = self.scalar(ifd, 256)
-        h = self.scalar(ifd, 257)
-        if w is None or h is None:
-            reject("ImageWidth or ImageLength missing")
-        if w < 1 or h < 1:
-            reject("ImageWidth or ImageLength 0")
-        return w, h
+    @staticmethod
+    def tiled(ifd: IFD) -> bool:
+        return ifd.has(322) and ifd.has(324)
 
-    def tiled(self, ifd):
-        return 322 in ifd.tags and 324 in ifd.tags
+    def check_size(self, ifd: IFD):
+        need(ifd.has(256) and ifd.has(257), "ImageWidth or ImageLength missing")
+        need(ifd.scalar(256) >= 1 and ifd.scalar(257) >= 1, "ImageWidth or ImageLength is 0")
+        if self.tiled(ifd):
+            need(all(ifd.has(t) for t in (322, 323, 324, 325)), "tile tags missing")
+            need(ifd.scalar(322) >= 1 and ifd.scalar(323) >= 1, "tile size is 0")
 
-    def tile_size(self, ifd):
-        if not self.tiled(ifd):
-            reject("image is not tiled")
-        if not all(t in ifd.tags for t in (322, 323, 324, 325)):
-            reject("tiled image misses a tile tag")
-        tw, tl = self.scalar(ifd, 322), self.scalar(ifd, 323)
-        if tw < 1 or tl < 1:
-            reject("TileWidth or TileLength 0")
-        return tw, tl
+    def description(self, ifd: IFD):
+        t = ifd.tags.get(TEXT_TAG)
+        if t is None or t[0] != 2:
+            return None
+        _, cnt, _, data_off = t
+        data = self.src.read(data_off, cnt)  # inline values point into the IFD entry
+        z = data.find(b"\0")
+        return data if z < 0 else data[:z]
+
+    # ---- driver
+
+    def run(self):
+        ifd0 = self.main[0]
+        fmt0 = self.fmt(ifd0)
+        bits, spp, sf, planar, comp, pred = fmt0
+        D = self.description(ifd0)
+        ome = None
+        if D is not None:
+            try:
+                X = D.decode("utf-8")
+            except UnicodeDecodeError:
+                X = None
+            if X is not None:
+                ome = parse_ome(X)
+                if ome is None:
+                    D = None
+            else:
+                D = None
+
+        # §3.3 planes
+        if ome is None:
+            SZ, SC, ST = 1, spp, 1
+            Cp = 1
+            plane_ifd = {(0, 0, 0): 0}
+            positions = [(0, 0, 0)]
+        else:
+            px = ome["pixels"]
+            SZ = px.get("SizeZ", 1)
+            ST = px.get("SizeT", 1)
+            SC = px.get("SizeC", spp)
+            if spp > 1:
+                if SC == 1:
+                    SC = spp
+                need(SC == spp, f"SizeC {SC} differs from SamplesPerPixel {spp}")
+                Cp = 1
+            else:
+                Cp = SC
+            total = SZ * Cp * ST
+            need(total <= 100000, "more than 100000 planes")
+            order = px.get("DimensionOrder", "XYZCT")[2:]
+            sizes = {"Z": SZ, "C": Cp, "T": ST}
+            tds = ome["tiffdata"] or [{}]
+            files = set()
+            for td in ome["tiffdata"]:
+                if td.get("_file") is not None:
+                    files.add(td["_file"])
+            need(len(files) <= 1, "multi-file dataset")
+            mapping: dict[int, int] = {}
+            for td in tds:
+                fz, fc, ft = td.get("FirstZ", 0), td.get("FirstC", 0), td.get("FirstT", 0)
+                need(fz < SZ and fc < Cp and ft < ST, "TiffData First* out of range")
+                first = {"Z": fz, "C": fc, "T": ft}
+                lin = 0
+                mul = 1
+                for L in order:
+                    lin += first[L] * mul
+                    mul *= sizes[L]
+                ifdi = td.get("IFD", 0)
+                if "PlaneCount" in td:
+                    pc = td["PlaneCount"]
+                elif len(tds) == 1 and "IFD" not in td:
+                    pc = total
+                else:
+                    pc = 1
+                for i in range(min(pc, total - lin)):
+                    mapping[lin + i] = ifdi + i
+            positions = []
+            plane_ifd = {}
+            for lin in range(total):
+                need(lin in mapping and mapping[lin] < len(self.main), f"plane {lin} not mapped to an IFD")
+                rem = lin
+                pos = {}
+                for L in order:
+                    pos[L] = rem % sizes[L]
+                    rem //= sizes[L]
+                key = (pos["Z"], pos["C"], pos["T"])
+                plane_ifd[key] = mapping[lin]
+            positions = sorted(plane_ifd)
+
+        # §3.4 levels: list of {pos: IFD}
+        levels: list[dict] = [{p: self.main[plane_ifd[p]] for p in positions}]
+        if ifd0.array(330):
+            s = len(ifd0.array(330))
+            for p in positions:
+                need(len(levels[0][p].subs) >= s, "plane IFD has fewer SubIFDs than IFD 0")
+            for k in range(1, s + 1):
+                levels.append({p: levels[0][p].subs[k - 1] for p in positions})
+        elif ome is None:
+            last = ifd0
+            for ifd in self.main[1:]:
+                if not (self.tiled(ifd) and ifd.has(258)):
+                    continue
+                f = self.fmt(ifd)
+                self.check_size(ifd)
+                if f == fmt0 and ifd.scalar(256) < last.scalar(256) and ifd.scalar(257) < last.scalar(257):
+                    levels.append({(0, 0, 0): ifd})
+                    last = ifd
+
+        geo = []
+        for lv in levels:
+            g = None
+            for p in positions:
+                ifd = lv[p]
+                f = self.fmt(ifd)
+                self.check_size(ifd)
+                need(self.tiled(ifd), "image is not tiled")
+                need(f == fmt0, "image format differs from IFD 0")
+                gi = (ifd.scalar(256), ifd.scalar(257), ifd.scalar(322), ifd.scalar(323))
+                need(g is None or g == gi, "planes of a level differ")
+                g = gi
+            geo.append(g)
+
+        # §3.5 data type and codecs
+        need(sf in (1, 2, 3), f"SampleFormat {sf}")
+        need(bits in ((32, 64) if sf == 3 else (8, 16, 32, 64)), f"BitsPerSample {bits}")
+        dtype = {1: "uint", 2: "int", 3: "float"}[sf] + str(bits)
+        endian = "little" if self.bo == "<" else "big"
+        interleaved = spp > 1 and planar == 1
+        if comp in (33003, 33004, 33005, 34712):
+            a2b, compressor = {"name": "imagecodecs_jpeg2k"}, None
+        else:
+            need(pred == 1, f"Predictor {pred}")
+            if comp == 1:
+                compressor = None
+            elif comp in (8, 32946):
+                compressor = {"name": "zlib", "configuration": {"level": 1}}
+            elif comp == 50000:
+                compressor = {"name": "zstd", "configuration": {"level": 0, "checksum": False}}
+            else:
+                raise Reject(f"Compression {comp}")
+            a2b = bytes_codec(bits // 8, endian)
+
+        # §3.6 output
+        nchan = SC
+        dims = []
+        if ST > 1:
+            dims.append("t")
+        if nchan > 1:
+            dims.append("c")
+        if SZ > 1:
+            dims.append("z")
+        dims += ["y", "x"]
+        codecs = []
+        if interleaved:
+            codecs.append(transpose_codec(dims))
+        codecs.append(a2b)
+        if compressor:
+            codecs.append(compressor)
+
+        px = ome["pixels"] if ome else {}
+        PX = px.get("PhysicalSizeX")
+        PY = px.get("PhysicalSizeY")
+        PZ = px.get("PhysicalSizeZ")
+        units = {}
+        if ome:
+            for ax, P in (("x", PX), ("y", PY), ("z", PZ)):
+                if P is not None:
+                    units[ax] = UNITS.get(px.get(f"PhysicalSize{ax.upper()}Unit", "µm"))
+        W0, H0 = geo[0][0], geo[0][1]
+        datasets = []
+        for L, (W, H, TW, TL) in enumerate(geo):
+            sc = {
+                "t": 1,
+                "c": 1,
+                "z": PZ if PZ is not None else 1,
+                "y": finite((PY if PY is not None else 1) * (H0 / H), "scale"),
+                "x": finite((PX if PX is not None else 1) * (W0 / W), "scale"),
+            }
+            datasets.append(
+                {"path": str(L), "coordinateTransformations": [{"type": "scale", "scale": [sc[d] for d in dims]}]}
+            )
+        ms = {}
+        if ome and ome.get("name"):
+            ms["name"] = ome["name"]
+        ms["axes"] = [axis_json(d, units.get(d)) for d in dims]
+        ms["datasets"] = datasets
+        self.out.json("zarr.json", {"zarr_format": 3, "node_type": "group", "attributes": {"ome": {"version": "0.5", "multiscales": [ms]}}})
+
+        nsp = spp if (spp > 1 and planar == 2) else 1
+        for L, (W, H, TW, TL) in enumerate(geo):
+            full = {"t": ST, "c": nchan, "z": SZ, "y": H, "x": W}
+            chunk = {"t": 1, "c": spp if interleaved else 1, "z": 1, "y": TL, "x": TW}
+            self.out.json(f"{L}/zarr.json", array_json([full[d] for d in dims], dtype, [chunk[d] for d in dims], codecs, dims))
+            across = -(-W // TW)
+            T = -(-H // TL) * across
+            for p in positions:
+                ifd = levels[L][p]
+                offs, cnts = ifd.array(324), ifd.array(325)
+                need(len(offs) == T * nsp and len(cnts) == T * nsp, "TileOffsets/TileByteCounts count")
+                z, c, t = p
+                for k in range(T * nsp):
+                    n = cnts[k]
+                    if n == 0:
+                        continue
+                    s, j = divmod(k, T)
+                    cc = c if spp == 1 else (s if planar == 2 else 0)
+                    coord = {"t": t, "c": cc, "z": z, "y": j // across, "x": j % across}
+                    key = f"{L}/c/" + "/".join(str(coord[d]) for d in dims)
+                    self.out.ref(key, [(0, offs[k], n)])
+        if ome is not None:
+            self.out.bytes("OME/METADATA.ome.xml", D)
 
 
-# --- OME-XML tag scan
+UNITS = {
+    "\u00b5m": "micrometer",
+    "\u03bcm": "micrometer",
+    "um": "micrometer",
+    "nm": "nanometer",
+    "mm": "millimeter",
+    "cm": "centimeter",
+    "m": "meter",
+    "pm": "picometer",
+    "in": "inch",
+    "ft": "foot",
+    "s": "second",
+    "ms": "millisecond",
+    "min": "minute",
+    "h": "hour",
+    "\u00c5": "angstrom",
+    "\u212b": "angstrom",
+}
 
-WS = " \t\r\n"
-_name = r"[A-Za-z0-9_.\-]+"
-_ws = r"[ \t\r\n]"
-TAG_RE = re.compile(
-    r"<(/?)(?:" + _name + r":)?(" + _name + r")"
-    r"((?:" + _ws + r"+[^ \t\r\n=/>\"'<]+" + _ws + r"*=" + _ws + r"*(?:\"[^\"]*\"|'[^']*'))*)"
-    + _ws + r"*(/?)>")
-ATTR_RE = re.compile(
-    _ws + r"+([^ \t\r\n=/>\"'<]+)" + _ws + r"*=" + _ws + r"*(?:\"([^\"]*)\"|'([^']*)')")
+# ---- §3.2 tag scan
+
+_NAME = r"[A-Za-z0-9_.\-]+"
+_WSC = r"[ \t\r\n]"
+_ATTR = _WSC + r"+([^ \t\r\n=/>\"'<]+)" + _WSC + r"*=" + _WSC + r"*(?:\"([^\"]*)\"|'([^']*)')"
+_ATTR_NC = _WSC + r"+[^ \t\r\n=/>\"'<]+" + _WSC + r"*=" + _WSC + r"*(?:\"[^\"]*\"|'[^']*')"
+TAG_RE = re.compile(r"<(/?)(?:" + _NAME + r":)?(" + _NAME + r")((?:" + _ATTR_NC + r")*)" + _WSC + r"*(/?)>")
+ATTR_RE = re.compile(_ATTR)
 REF_RE = re.compile(r"&(lt|gt|amp|quot|apos);|&#([0-9]+);|&#x([0-9A-Fa-f]+);")
 ENT = {"lt": "<", "gt": ">", "amp": "&", "quot": '"', "apos": "'"}
+INT_RE = re.compile(r"[ \t\r\n]*([0-9]+)[ \t\r\n]*")
+FLOAT_RE = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
+DIM_ORDERS = {"XY" + a + b + c for a, b, c in ("ZCT", "ZTC", "CZT", "CTZ", "TZC", "TCZ")}
 
 
-def decode_refs(s):
+def decode_refs(s: str) -> str:
     def rep(m):
         if m.group(1):
             return ENT[m.group(1)]
-        cp = int(m.group(2)) if m.group(2) else int(m.group(3), 16)
-        if cp == 0 or 0xD800 <= cp <= 0xDFFF or cp > 0x10FFFF:
+        v = int(m.group(2)) if m.group(2) is not None else int(m.group(3), 16)
+        if v == 0 or 0xD800 <= v <= 0xDFFF or v > 0x10FFFF:
             return m.group(0)
-        return chr(cp)
+        return chr(v)
+
     return REF_RE.sub(rep, s)
 
 
-class XTag:
-    __slots__ = ("start", "end", "is_end", "name", "attrs", "selfclosing")
+class Tag:
+    __slots__ = ("start", "end", "is_end", "name", "attrs", "self_closing")
 
 
-def scan_tags(X):
-    tags, skips = [], []
-    i, n = 0, len(X)
+def scan_tags(X: str):
+    tags = []
+    skips = []
+    n = len(X)
+    i = 0
     while True:
         j = X.find("<", i)
         if j < 0:
             break
-        end = None
-        for opener, closer in (("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>"), ("<!", ">")):
-            if X.startswith(opener, j):
-                e = X.find(closer, j + len(opener))
-                end = n if e < 0 else e + len(closer)
+        end_marker = None
+        for start_m, end_m in (("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>"), ("<!", ">")):
+            if X.startswith(start_m, j):
+                end_marker = (start_m, end_m)
                 break
-        if end is not None:
-            skips.append((j, end))
-            i = end
+        if end_marker:
+            e = X.find(end_marker[1], j + len(end_marker[0]))
+            e = n if e < 0 else e + len(end_marker[1])
+            skips.append((j, e))
+            i = e
             continue
         m = TAG_RE.match(X, j)
-        if m:
-            t = XTag()
-            t.start, t.end = j, m.end()
-            t.is_end = m.group(1) == "/"
-            t.name = m.group(2)
-            t.selfclosing = m.group(4) == "/"
-            attrs = {}
-            for am in ATTR_RE.finditer(m.group(3)):
-                k = am.group(1)
-                if k not in attrs:
-                    v = am.group(2) if am.group(2) is not None else am.group(3)
-                    attrs[k] = decode_refs(v)
-            t.attrs = attrs
-            tags.append(t)
-            i = m.end()
+        if m is None:
+            i = j + 1
             continue
-        i = j + 1
+        t = Tag()
+        t.start, t.end = j, m.end()
+        t.is_end = m.group(1) == "/"
+        t.name = m.group(2)
+        t.self_closing = m.group(4) == "/"
+        attrs = {}
+        for a in ATTR_RE.finditer(m.group(3)):
+            if a.group(1) not in attrs:
+                attrs[a.group(1)] = a.group(2) if a.group(2) is not None else a.group(3)
+        t.attrs = attrs
+        tags.append(t)
+        i = m.end()
     return tags, skips
 
 
-INT_RE = re.compile(r"[ \t\r\n]*([0-9]+)[ \t\r\n]*")
-FLOAT_RE = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
-
-
-def int_attr(attrs, name, minimum=0):
-    v = attrs.get(name)
-    if v is None:
-        return None
+def int_attr(v: str, name: str, min1: bool) -> int:
     m = INT_RE.fullmatch(v)
-    if not m:
-        reject(f"attribute {name}={v!r} is not an integer")
+    need(m is not None, f"{name}={v!r} is not an integer")
     x = int(m.group(1))
-    if x > MAXI or x < minimum:
-        reject(f"attribute {name}={v!r} out of range")
+    need(x <= MAX, f"{name} above 2^53-1")
+    need(not min1 or x >= 1, f"{name} is 0")
     return x
 
 
-def phys_attr(attrs, name):
-    v = attrs.get(name)
-    if v is None or not FLOAT_RE.fullmatch(v):
-        return None
-    x = float(v)
-    if math.isinf(x) or math.isnan(x) or x <= 0:
-        return None
-    return x
-
-
-class OME:
-    pass
-
-
-def parse_ome(X):
+def parse_ome(X: str):
     tags, skips = scan_tags(X)
-    if not any(t.name == "OME" and not t.is_end for t in tags):
+    if not any(not t.is_end and t.name == "OME" for t in tags):
         return None
-    o = OME()
-    o.image_name = None
+    res = {"name": None, "pixels": {}, "tiffdata": []}
     for t in tags:
-        if t.name == "Image" and not t.is_end:
-            o.image_name = t.attrs.get("Name")
+        if not t.is_end and t.name == "Image":
+            nm = t.attrs.get("Name")
+            res["name"] = decode_refs(nm) if nm is not None else None
             break
-    pi = None
-    for idx, t in enumerate(tags):
-        if t.name == "Pixels" and not t.is_end:
-            pi = idx
+    pi = next((i for i, t in enumerate(tags) if not t.is_end and t.name == "Pixels"), None)
+    if pi is None:
+        return res
+    pt = tags[pi]
+    a = {k: decode_refs(v) for k, v in pt.attrs.items()}
+    px = res["pixels"]
+    for k in ("SizeZ", "SizeC", "SizeT"):
+        if k in a:
+            px[k] = int_attr(a[k], k, True)
+    if "DimensionOrder" in a:
+        need(a["DimensionOrder"] in DIM_ORDERS, f"DimensionOrder {a['DimensionOrder']!r}")
+        px["DimensionOrder"] = a["DimensionOrder"]
+    for ax in "XYZ":
+        v = a.get(f"PhysicalSize{ax}")
+        if v is not None and FLOAT_RE.fullmatch(v):
+            f = float(v)
+            if math.isfinite(f) and f > 0:
+                px[f"PhysicalSize{ax}"] = f
+        u = a.get(f"PhysicalSize{ax}Unit")
+        if u is not None:
+            px[f"PhysicalSize{ax}Unit"] = u
+    if pt.self_closing:
+        return res
+    # TiffData tags up to the first Pixels end tag
+    end = len(tags)
+    for i in range(pi + 1, len(tags)):
+        if tags[i].is_end and tags[i].name == "Pixels":
+            end = i
             break
-    o.pixels = tags[pi].attrs if pi is not None else {}
-    o.tiffdata = []  # list of (attrs, uuid identifier or None)
-    if pi is not None and not tags[pi].selfclosing:
-        stop = len(tags)
-        for k in range(pi + 1, len(tags)):
-            if tags[k].name == "Pixels" and tags[k].is_end:
-                stop = k
-                break
-        for k in range(pi + 1, stop):
-            t = tags[k]
-            if t.name != "TiffData" or t.is_end:
-                continue
-            ident = None
-            if not t.selfclosing:
-                for q in range(k + 1, len(tags)):
-                    u = tags[q]
-                    if u.name == "TiffData" or (u.name == "Pixels" and u.is_end):
-                        break
-                    if u.name == "UUID" and not u.is_end:
-                        if "FileName" in u.attrs:
-                            ident = u.attrs["FileName"]
-                        elif u.selfclosing:
-                            ident = ""
-                        else:
-                            a = u.end
-                            b = tags[q + 1].start if q + 1 < len(tags) else len(X)
-                            parts, p = [], a
-                            for s0, s1 in skips:
-                                if s1 <= a or s0 >= b:
-                                    continue
-                                parts.append(X[p:max(p, s0)])
-                                p = max(p, min(s1, b))
-                            parts.append(X[p:b])
-                            ident = decode_refs("".join(parts)).strip(WS)
-                        break
-            o.tiffdata.append((t.attrs, ident))
-    return o
+    for i in range(pi + 1, end):
+        t = tags[i]
+        if t.is_end or t.name != "TiffData":
+            continue
+        ta = {k: decode_refs(v) for k, v in t.attrs.items()}
+        td = {}
+        for k in ("IFD", "FirstZ", "FirstC", "FirstT", "PlaneCount"):
+            if k in ta:
+                td[k] = int_attr(ta[k], k, k == "PlaneCount")
+        td["_file"] = None
+        if not t.self_closing:
+            for k in range(i + 1, len(tags)):
+                u = tags[k]
+                if (u.is_end and u.name in ("TiffData", "Pixels")) or (not u.is_end and u.name == "TiffData"):
+                    break
+                if not u.is_end and u.name == "UUID":
+                    if "FileName" in u.attrs:
+                        td["_file"] = decode_refs(u.attrs["FileName"])
+                    elif u.self_closing:
+                        td["_file"] = ""
+                    else:
+                        stop = tags[k + 1].start if k + 1 < len(tags) else len(X)
+                        td["_file"] = uuid_text(X, u.end, stop, skips)
+                    break
+        res["tiffdata"].append(td)
+    return res
 
 
-def tiff_profile(src, url):
-    T = Tiff(src)
-    T.read_all()
-    main = T.main
-    ifd0 = main[0]
-    fmt0 = T.fmt(ifd0)
-    bps, spp, sf, pc, comp, pred = fmt0
-
-    # OME-XML
-    D = None
-    ome = None
-    t270 = ifd0.tags.get(270)
-    if t270 is not None and t270.type == 2:
-        raw = T.raw(t270)
-        nul = raw.find(b"\0")
-        cand = raw if nul < 0 else raw[:nul]
-        try:
-            X = cand.decode("utf-8")
-        except UnicodeDecodeError:
-            X = None
-        if X is not None:
-            ome = parse_ome(X)
-            if ome is not None:
-                D = cand
-
-    # Planes
-    if ome is None:
-        SZ, SC, ST, Cp = 1, spp, 1, 1
-        planes = {(0, 0, 0): 0}
-        PX = PY = PZ = None
-        units = {}
-    else:
-        px = ome.pixels
-        SZ = int_attr(px, "SizeZ", 1)
-        SC = int_attr(px, "SizeC", 1)
-        ST = int_attr(px, "SizeT", 1)
-        SZ = 1 if SZ is None else SZ
-        ST = 1 if ST is None else ST
-        SC = spp if SC is None else SC
-        order = px.get("DimensionOrder", "XYZCT")
-        if not (len(order) == 5 and order[:2] == "XY" and sorted(order[2:]) == ["C", "T", "Z"]):
-            reject(f"DimensionOrder {order!r}")
-        if spp > 1:
-            if SC == 1:
-                SC = spp
-            elif SC != spp:
-                reject(f"SizeC {SC} differs from SamplesPerPixel {spp}")
-            Cp = 1
-        else:
-            Cp = SC
-        total = SZ * Cp * ST
-        if total > 100000:
-            reject(f"{total} planes")
-        tds = []
-        for attrs, ident in ome.tiffdata:
-            td = {
-                "IFD": int_attr(attrs, "IFD"),
-                "FirstZ": int_attr(attrs, "FirstZ"),
-                "FirstC": int_attr(attrs, "FirstC"),
-                "FirstT": int_attr(attrs, "FirstT"),
-                "PlaneCount": int_attr(attrs, "PlaneCount", 1),
-                "ident": ident,
-            }
-            tds.append(td)
-        files = {td["ident"] for td in tds if td["ident"] is not None}
-        if len(files) > 1:
-            reject("TiffData elements name more than one file")
-        if not tds:
-            tds = [{"IFD": None, "FirstZ": None, "FirstC": None, "FirstT": None,
-                    "PlaneCount": None, "ident": None}]
-        sizes = {"Z": SZ, "C": Cp, "T": ST}
-        letters = order[2:]
-        mapping = {}
-        for td in tds:
-            fz = td["FirstZ"] or 0
-            fc = td["FirstC"] or 0
-            ft = td["FirstT"] or 0
-            if fz >= SZ or fc >= Cp or ft >= ST:
-                reject("TiffData First* out of range")
-            ifd_i = td["IFD"] or 0
-            pcnt = td["PlaneCount"]
-            if pcnt is None:
-                pcnt = total if (len(tds) == 1 and td["IFD"] is None) else 1
-            first = {"Z": fz, "C": fc, "T": ft}
-            # linear index, first letter fastest
-            lin, mul = 0, 1
-            for L in letters:
-                lin += first[L] * mul
-                mul *= sizes[L]
-            for i in range(min(pcnt, total - lin)):
-                p = lin + i
-                pos = {}
-                for L in letters:
-                    pos[L] = p % sizes[L]
-                    p //= sizes[L]
-                mapping[(pos["Z"], pos["C"], pos["T"])] = ifd_i + i
-        planes = {}
-        for z in range(SZ):
-            for c in range(Cp):
-                for t in range(ST):
-                    k = mapping.get((z, c, t))
-                    if k is None or k >= len(main):
-                        reject(f"plane z={z} c={c} t={t} is not mapped to an IFD")
-                    planes[(z, c, t)] = k
-        PX = phys_attr(px, "PhysicalSizeX")
-        PY = phys_attr(px, "PhysicalSizeY")
-        PZ = phys_attr(px, "PhysicalSizeZ")
-        units = {}
-        for ax, P in (("x", PX), ("y", PY), ("z", PZ)):
-            if P is not None:
-                sym = px.get("PhysicalSize" + ax.upper() + "Unit", "µm")
-                units[ax] = UNITS.get(sym)
-
-    # Levels: each level is a dict plane -> IFD
-    levels = [{k: main[i] for k, i in planes.items()}]
-    s0 = T.values(ifd0, 330) or []
-    if s0:
-        s = len(s0)
-        for k in range(1, s + 1):
-            lv = {}
-            for key, ifd in levels[0].items():
-                if len(ifd.subs) < s:
-                    reject("plane IFD has fewer SubIFDs than IFD 0")
-                lv[key] = ifd.subs[k - 1]
-            levels.append(lv)
-    elif ome is None:
-        lw, lh = T.size(ifd0)
-        for ifd in main[1:]:
-            if not (T.tiled(ifd) and 258 in ifd.tags):
-                continue
-            f = T.fmt(ifd)
-            w, h = T.size(ifd)
-            T.tile_size(ifd)
-            if f == fmt0 and w < lw and h < lh:
-                levels.append({(0, 0, 0): ifd})
-                lw, lh = w, h
-
-    # Check levels
-    linfo = []
-    for lv in levels:
-        ref = None
-        for key, ifd in lv.items():
-            f = T.fmt(ifd)
-            w, h = T.size(ifd)
-            tw, tl = T.tile_size(ifd)
-            if f != fmt0:
-                reject("level image format differs from IFD 0")
-            info = (w, h, tw, tl)
-            if ref is None:
-                ref = info
-            elif info != ref:
-                reject("planes of a level differ in size or tile size")
-        linfo.append(ref)
-
-    # Data type and codecs
-    if sf not in (1, 2, 3):
-        reject(f"SampleFormat {sf}")
-    if bps not in ((32, 64) if sf == 3 else (8, 16, 32, 64)):
-        reject(f"BitsPerSample {bps} for SampleFormat {sf}")
-    dtype = {1: "uint", 2: "int", 3: "float"}[sf] + str(bps)
-    interleaved = spp > 1 and pc == 1
-    planar = spp > 1 and pc == 2
-    if comp in (33003, 33004, 33005, 34712):
-        a2b, compressor = {"name": "imagecodecs_jpeg2k"}, None
-    elif pred != 1:
-        reject(f"Predictor {pred}")
-    elif comp == 1:
-        a2b, compressor = None, None
-    elif comp in (8, 32946):
-        a2b, compressor = None, {"name": "zlib", "configuration": {"level": 1}}
-    elif comp == 50000:
-        a2b, compressor = None, {"name": "zstd", "configuration": {"level": 0, "checksum": False}}
-    else:
-        reject(f"Compression {comp}")
-    if a2b is None:
-        if bps == 8:
-            a2b = {"name": "bytes"}
-        else:
-            a2b = {"name": "bytes", "configuration": {"endian": "little" if T.e == "<" else "big"}}
-
-    nchan = SC
-    dims = []
-    if ST > 1:
-        dims.append("t")
-    if nchan > 1:
-        dims.append("c")
-    if SZ > 1:
-        dims.append("z")
-    dims += ["y", "x"]
-    codecs = []
-    if interleaved:
-        codecs.append(transpose_codec(dims))
-    codecs.append(a2b)
-    if compressor:
-        codecs.append(compressor)
-
-    out = Out(src)
-    W0, H0 = linfo[0][0], linfo[0][1]
-    datasets = []
-    nsp = spp if planar else 1
-    for L, (lv, (W, H, TW, TL)) in enumerate(zip(levels, linfo)):
-        shape, chunks = [], []
-        for d in dims:
-            if d == "t":
-                shape.append(ST); chunks.append(1)
-            elif d == "c":
-                shape.append(nchan); chunks.append(spp if interleaved else 1)
-            elif d == "z":
-                shape.append(SZ); chunks.append(1)
-        shape += [H, W]
-        chunks += [TL, TW]
-        out.json(f"{L}/zarr.json", array_meta(shape, dtype, chunks, codecs, dims))
-        sy = finite((PY if PY is not None else 1) * finite(H0 / H))
-        sx = finite((PX if PX is not None else 1) * finite(W0 / W))
-        scale = []
-        for d in dims:
-            scale.append({"t": 1, "c": 1, "z": PZ if PZ is not None else 1, "y": sy, "x": sx}[d])
-        datasets.append({"path": str(L), "coordinateTransformations": [{"type": "scale", "scale": scale}]})
-        rows, cols = -(-H // TL), -(-W // TW)
-        Tn = rows * cols
-        for (z, c, t), ifd in lv.items():
-            offs = T.values(ifd, 324)
-            cnts = T.values(ifd, 325)
-            if len(offs) != Tn * nsp or len(cnts) != Tn * nsp:
-                reject("TileOffsets/TileByteCounts count mismatch")
-            for sidx in range(nsp):
-                for j in range(Tn):
-                    k = sidx * Tn + j
-                    n = cnts[k]
-                    if n == 0:
-                        continue
-                    o = offs[k]
-                    if o > MAXI or n > MAXI:
-                        reject("tile offset or length above 2^53-1")
-                    coords = []
-                    for d in dims:
-                        if d == "t":
-                            coords.append(t)
-                        elif d == "c":
-                            coords.append(sidx if planar else (0 if interleaved else c))
-                        elif d == "z":
-                            coords.append(z)
-                    coords += [j // cols, j % cols]
-                    out.ref(f"{L}/c/" + "/".join(map(str, coords)), [(0, o, n)])
-    ms = {}
-    if ome is not None and ome.image_name:
-        ms["name"] = ome.image_name
-    ms["axes"] = axis_objs(dims, units if ome is not None else {})
-    ms["datasets"] = datasets
-    out.json("zarr.json", {"zarr_format": 3, "node_type": "group",
-                           "attributes": {"ome": {"version": "0.5", "multiscales": [ms]}}})
-    if D is not None:
-        out.raw("OME/METADATA.ome.xml", D)
-    return out
+def uuid_text(X, a, b, skips):
+    parts = []
+    pos = a
+    for s, e in skips:
+        if e <= a or s >= b:
+            continue
+        if s > pos:
+            parts.append(X[pos:s])
+        pos = max(pos, e)
+    if pos < b:
+        parts.append(X[pos:b])
+    return decode_refs("".join(parts)).strip(WS)
 
 
-# ---------------------------------------------------------------------------
-# ND2 profile
+# --------------------------------------------------------------------------
+# ND2 profile (§4)
 
 CHUNK_MAGIC = 0x0ABECEDA
+SIG_NAME = b"ND2 FILE SIGNATURE CHUNK NAME01!"
 MAP_SIG = b"ND2 CHUNK MAP SIGNATURE 0000001!"
 FILEMAP_NAME = b"ND2 FILEMAP SIGNATURE NAME 0001!"
-FILE_SIG = b"ND2 FILE SIGNATURE CHUNK NAME01!"
 
 
-def chunk_header(src, o):
-    if o > MAXI:
-        reject("chunk offset above 2^53-1")
-    magic, n, d = struct.unpack("<IIQ", src.read(o, 16))
-    if magic != CHUNK_MAGIC:
-        reject(f"no chunk magic at {o}")
-    if d > MAXI:
-        reject("chunk data length above 2^53-1")
-    return n, d
+class LVObj:
+    __slots__ = ("m",)
+
+    def __init__(self, m):
+        self.m = m
 
 
-def chunk_data(src, o):
-    n, d = chunk_header(src, o)
-    return src.read(o + 16 + n, d)
+class LVList:
+    __slots__ = ("items",)
+
+    def __init__(self, items):
+        self.items = items
 
 
-# --- LV values: ("s", type, value) | ("o", dict) | ("l", list) | ("b", bytes)
+class Scalar:
+    __slots__ = ("t", "v")
+
+    def __init__(self, t, v):
+        self.t = t
+        self.v = v
 
 
-def utf16_units(data, a, b):
-    units = struct.unpack(f"<{(b - a) // 2}H", data[a:b])
-    out, i = [], 0
-    while i < len(units):
+def utf16(units_bytes: bytes) -> str:
+    units = struct.unpack(f"<{len(units_bytes) // 2}H", units_bytes)
+    out = []
+    i = 0
+    n = len(units)
+    while i < n:
         u = units[i]
-        if 0xD800 <= u <= 0xDBFF and i + 1 < len(units) and 0xDC00 <= units[i + 1] <= 0xDFFF:
+        if 0xD800 <= u <= 0xDBFF and i + 1 < n and 0xDC00 <= units[i + 1] <= 0xDFFF:
             out.append(chr(0x10000 + ((u - 0xD800) << 10) + (units[i + 1] - 0xDC00)))
             i += 2
             continue
@@ -848,574 +788,580 @@ def utf16_units(data, a, b):
     return "".join(out)
 
 
-SCALAR_FMT = {2: ("<i", 4), 3: ("<I", 4), 4: ("<q", 8), 5: ("<Q", 8), 6: ("<d", 8), 7: ("<Q", 8)}
+MAX_DEPTH = 100
 
 
-def parse_record(data, pos, end):
-    if pos + 2 > end:
-        reject("LV record truncated")
-    typ, k = data[pos], data[pos + 1]
-    p = pos + 2
-    if p + 2 * k > end:
-        reject("LV name truncated")
-    nb = data[p:p + 2 * k]
-    z = 0
-    while z < k and nb[2 * z:2 * z + 2] != b"\0\0":
-        z += 1
-    name = utf16_units(nb, 0, 2 * z)
-    p += 2 * k
-    if typ == 1:
-        if p + 1 > end:
-            reject("LV value truncated")
-        return name, ("s", 1, data[p]), p + 1
-    if typ in SCALAR_FMT:
-        f, sz = SCALAR_FMT[typ]
-        if p + sz > end:
-            reject("LV value truncated")
-        return name, ("s", typ, struct.unpack(f, data[p:p + sz])[0]), p + sz
-    if typ == 8:
-        q = p
-        while True:
-            idx = data.find(b"\0\0", q, end)
-            if idx < 0:
-                reject("LV string without terminator")
-            if (idx - p) % 2:
-                q = idx + 1
-                continue
-            break
-        return name, ("s", 8, utf16_units(data, p, idx)), idx + 2
-    if typ == 9:
-        if p + 8 > end:
-            reject("LV byte array truncated")
-        b = struct.unpack("<Q", data[p:p + 8])[0]
-        p += 8
-        if p + b > end:
-            reject("LV byte array truncated")
-        return name, ("b", data[p:p + b]), p + b
-    if typ == 11:
-        if p + 12 > end:
-            reject("LV level truncated")
-        c, L = struct.unpack("<IQ", data[p:p + 12])
-        p += 12
+class LVParser:
+    def __init__(self, data: bytes):
+        self.d = data
+        self.n = len(data)
+
+    def take(self, pos, k):
+        need(pos + k <= self.n, "LV record runs past the end of the data")
+        return self.d[pos : pos + k]
+
+    def record(self, pos, depth):
+        need(depth <= MAX_DEPTH, "LV levels nested more than 100 deep")
+        start = pos
+        typ, k = self.take(pos, 2)
+        pos += 2
+        nb = self.take(pos, 2 * k)
+        pos += 2 * k
+        z = 0
+        while z < k and nb[2 * z : 2 * z + 2] != b"\0\0":
+            z += 1
+        name = utf16(nb[: 2 * z])
+        if typ == 1:
+            v = Scalar(1, self.take(pos, 1)[0])
+            pos += 1
+        elif typ in (2, 3):
+            v = Scalar(typ, struct.unpack("<i" if typ == 2 else "<I", self.take(pos, 4))[0])
+            pos += 4
+        elif typ in (4, 5, 7):
+            v = Scalar(typ, struct.unpack("<q" if typ == 4 else "<Q", self.take(pos, 8))[0])
+            pos += 8
+        elif typ == 6:
+            v = Scalar(6, struct.unpack("<d", self.take(pos, 8))[0])
+            pos += 8
+        elif typ == 8:
+            e = pos
+            while True:
+                need(e + 2 <= self.n, "LV string without terminator")
+                if self.d[e] == 0 and self.d[e + 1] == 0:
+                    break
+                e += 2
+            v = Scalar(8, utf16(self.d[pos:e]))
+            pos = e + 2
+        elif typ == 9:
+            b = struct.unpack("<Q", self.take(pos, 8))[0]
+            pos += 8
+            v = LVList([Scalar(3, x) for x in self.take(pos, b)])
+            pos += b
+        elif typ == 11:
+            c, L = struct.unpack("<IQ", self.take(pos, 12))
+            pos += 12
+            recs = []
+            for _ in range(c):
+                pos, r = self.record(pos, depth + 1)
+                recs.append(r)
+            need(pos == start + L, "LV level length mismatch")
+            self.take(pos, 8 * c)
+            pos += 8 * c
+            v = make_level(recs)
+        else:
+            raise Reject(f"LV record type {typ}")
+        return pos, (name, v)
+
+    def top(self):
+        pos = 0
         recs = []
-        for _ in range(c):
-            nm, v, p = parse_record(data, p, end)
-            recs.append((nm, v))
-        if p != pos + L:
-            reject("LV level does not end at its length")
-        p += 8 * c
-        if p > end:
-            reject("LV level offset table truncated")
-        if recs and all(nm == "" for nm, _ in recs):
-            return name, ("l", [v for _, v in recs]), p
-        return name, make_object(recs), p
-    reject(f"LV record type {typ}")
+        while pos < self.n:
+            pos, r = self.record(pos, 0)
+            recs.append(r)
+        m = {}
+        for name, v in recs:
+            m[name] = v
+        return LVObj(m)
 
 
-def make_object(recs):
-    d = {}
-    for nm, v in recs:
-        d[nm] = v
-    return ("o", d)
+def make_level(recs):
+    if recs and all(name == "" for name, _ in recs):
+        return LVList([v for _, v in recs])
+    m = {}
+    for name, v in recs:
+        m[name] = v
+    return LVObj(m)
 
 
-def parse_lv(data):
-    if len(data) >= 1 and data[0] == 76:
-        if len(data) < 12:
-            reject("compressed LV record truncated")
-        dec = zlib.decompressobj()
+def parse_lv_chunk(data: bytes) -> LVObj:
+    if data[:1] == b"\x4c":
+        need(len(data) >= 12, "compressed LV record too short")
+        d = zlib.decompressobj()
         try:
-            inner = dec.decompress(data[12:]) + dec.flush()
+            inner = d.decompress(data[12:])
         except zlib.error as e:
-            reject(f"bad zlib stream in LV: {e}")
-        if not dec.eof or dec.unused_data:
-            reject("zlib stream does not end exactly at the end of the chunk data")
-        data = inner
-        if len(data) >= 1 and data[0] == 76:
-            reject("nested compressed LV record")
-    recs, p = [], 0
-    while p < len(data):
-        nm, v, p = parse_record(data, p, len(data))
-        recs.append((nm, v))
-    return make_object(recs)
+            raise Reject(f"bad zlib stream in LV chunk: {e}")
+        need(d.eof and not d.unused_data, "zlib stream does not end at the end of the chunk")
+        need(inner[:1] != b"\x4c", "nested compressed LV record")
+        return LVParser(inner).top()
+    return LVParser(data).top()
 
 
 MISSING = object()
+REQUIRED = object()
+
+
+def get(obj, path, default=REQUIRED):
+    cur = obj
+    for step in path.split("/"):
+        need(isinstance(cur, LVObj), f"path step {step!r} from a non-object")
+        if step not in cur.m:
+            need(default is not REQUIRED, f"required member {path} missing")
+            return default
+        cur = cur.m[step]
+    return cur
+
+
+def as_number(v, what):
+    need(isinstance(v, Scalar) and 2 <= v.t <= 6, f"{what} is not a number")
+    x = float(v.v)
+    need(math.isfinite(x), f"{what} is not finite")
+    return x
+
+
+def as_integer(v, what):
+    x = as_number(v, what)
+    need(x == int(x) and 0 <= x <= MAX, f"{what} is not an integer in range")
+    return int(x)
+
+
+def as_color(v, what):
+    x = as_number(v, what)
+    need(x == int(x) and -(2**31) <= x <= 2**32 - 1, f"{what} is not a color")
+    return int(x) % 2**32
+
+
+def as_flag(v, what):
+    need(isinstance(v, Scalar) and 1 <= v.t <= 5, f"{what} is not a flag")
+    return v.v != 0
+
+
+def as_string(v, what):
+    need(isinstance(v, Scalar) and v.t == 8, f"{what} is not a string")
+    return v.v
+
+
+def as_object(v, what):
+    need(isinstance(v, LVObj), f"{what} is not an object")
+    return v
+
+
+def as_list(v, what):
+    need(isinstance(v, LVList), f"{what} is not a list")
+    return v
 
 
 def members(v):
-    if v[0] == "o":
-        return list(v[1].values())
-    if v[0] == "l":
-        return v[1]
-    if v[0] == "b":
-        return [("s", 3, x) for x in v[1]]
-    reject("not an object or list")
+    return list(v.m.values()) if isinstance(v, LVObj) else list(v.items)
 
 
-def conv(v, kind, path):
-    if kind in ("number", "integer", "color"):
-        if v[0] != "s" or v[1] not in (2, 3, 4, 5, 6):
-            reject(f"{path} is not a number")
-        x = float(v[2])
-        if math.isinf(x) or math.isnan(x):
-            reject(f"{path} is not finite")
-        if kind == "number":
-            return x
-        if x != math.floor(x):
-            reject(f"{path} is not integral")
-        if kind == "integer":
-            if x < 0 or x > MAXI:
-                reject(f"{path} out of range")
-            return int(x)
-        if x < -2**31 or x > 2**32 - 1:
-            reject(f"{path} out of color range")
-        return int(x) % 2**32
-    if kind == "flag":
-        if v[0] != "s" or v[1] not in (1, 2, 3, 4, 5):
-            reject(f"{path} is not a flag")
-        return v[2] != 0
-    if kind == "string":
-        if v[0] != "s" or v[1] != 8:
-            reject(f"{path} is not a string")
-        return v[2]
-    if kind == "object":
-        if v[0] != "o":
-            reject(f"{path} is not an object")
-        return v
-    if kind == "list":
-        if v[0] not in ("l", "b"):
-            reject(f"{path} is not a list")
-        return v
-    if kind == "objlist":
-        if v[0] not in ("o", "l", "b"):
-            reject(f"{path} is not an object or list")
-        return v
-    raise AssertionError(kind)
+def opt(obj, path, conv, default):
+    v = get(obj, path, MISSING)
+    if v is MISSING:
+        return default
+    return conv(v, path)
 
 
-def get(obj, path, kind, default=MISSING):
-    cur = obj
-    for step in path.split("/"):
-        if cur[0] != "o":
-            reject(f"path {path} steps through a non-object")
-        if step not in cur[1]:
-            if default is MISSING:
-                reject(f"required member {path} missing")
-            return default
-        cur = cur[1][step]
-    return conv(cur, kind, path)
+def as_obj_or_list(v, what):
+    need(isinstance(v, (LVObj, LVList)), f"{what} is not an object or a list")
+    return v
 
 
-def validity(lst):
-    if lst is None:
-        return None
-    return [conv(m, "flag", "validity") for m in members(lst)]
-
-
-def is_valid(vl, i):
-    return vl is None or (i < len(vl) and vl[i])
+def validity(lst, what):
+    """Return a function i -> valid, given an optional validity list."""
+    if lst is MISSING:
+        return lambda i: True
+    flags = [as_flag(x, what) for x in members(as_list(lst, what))]
+    return lambda i: i < len(flags) and flags[i]
 
 
 class Node:
     pass
 
 
-def node_info(v):
-    if v[0] != "o":
-        reject("experiment node is not an object")
-    nd = Node()
-    nd.etype = get(v, "eType", "integer")
-    pars = get(v, "uLoopPars", "object", None)
-    item_valid = validity(get(v, "pItemValid", "list", None))
-    nxt = get(v, "ppNextLevelEx", "objlist", None)
-    kids = members(nxt) if nxt is not None else []
-    for kd in kids:
-        if kd[0] != "o":
-            reject("child node is not an object")
-    if nd.etype not in (1, 2, 4, 6, 8):
-        reject(f"eType {nd.etype}")
-    nd.has_pars = pars is not None
-    nd.count, nd.param, nd.kind = 0, 0.0, None
-    if pars is not None:
-        e = nd.etype
-        if e == 1:
-            nd.kind = "time"
-            nd.count = get(pars, "uiCount", "integer", 0)
-            nd.param = get(pars, "dPeriod", "number", 0.0)
-        elif e == 8:
-            nd.kind = "time"
-            pp = get(pars, "pPeriod", "objlist", None)
-            pms = members(pp) if pp is not None else []
-            for m in pms:
-                if m[0] != "o":
-                    reject("pPeriod member is not an object")
-            pv = validity(get(pars, "pPeriodValid", "list", None))
-            period = None
-            for i, m in enumerate(pms):
-                if is_valid(pv, i):
-                    nd.count += get(m, "uiCount", "integer")
-                    dp = get(m, "dPeriod", "number", 0.0)
-                    if period is None:
-                        period = dp
-            nd.param = period if period is not None else 0.0
-        elif e == 2:
-            nd.kind = "position"
-            pts = get(pars, "Points", "objlist", None)
-            pms = members(pts) if pts is not None else []
-            nd.count = sum(1 for i in range(len(pms)) if is_valid(item_valid, i))
-        elif e == 4:
-            nd.kind = "z"
-            nd.count = get(pars, "uiCount", "integer", 0)
-            st = get(pars, "dZStep", "number", 0.0)
-            lo = get(pars, "dZLow", "number", 0.0)
-            hi = get(pars, "dZHigh", "number", 0.0)
-            step = abs(st)
-            if step == 0 and nd.count > 1:
-                step = finite(abs(finite(hi - lo)) / (nd.count - 1))
-            nd.param = step
-        elif e == 6:
-            c = get(pars, "uiCount", "integer", None)
-            if c is None:
-                c = get(pars, "pPlanes/uiCount", "integer", 0)
-            nd.count = c
-    nd.children = [node_info(k) for k in kids]
-    return nd
+def check_node(obj) -> Node:
+    node = Node()
+    as_object(obj, "experiment node")
+    node.etype = as_integer(get(obj, "eType"), "eType")
+    need(node.etype in (1, 2, 4, 6, 8), f"eType {node.etype}")
+    pars = get(obj, "uLoopPars", MISSING)
+    item_valid = validity(get(obj, "pItemValid", MISSING), "pItemValid")
+    nxt = get(obj, "ppNextLevelEx", MISSING)
+    node.children = []
+    if nxt is not MISSING:
+        for ch in members(as_obj_or_list(nxt, "ppNextLevelEx")):
+            node.children.append(check_node(as_object(ch, "experiment child")))
+    node.has_pars = pars is not MISSING
+    node.count = 0
+    node.value = 0.0
+    et = node.etype
+    node.kind = {1: "time", 8: "time", 2: "position", 4: "z", 6: "spectral"}[et]
+    if not node.has_pars:
+        return node
+    as_object(pars, "uLoopPars")
+    if et == 1:
+        node.count = opt(pars, "uiCount", as_integer, 0)
+        node.value = opt(pars, "dPeriod", as_number, 0.0)
+    elif et == 8:
+        pp = get(pars, "pPeriod", MISSING)
+        valid = validity(get(pars, "pPeriodValid", MISSING), "pPeriodValid")
+        total = 0
+        period = None
+        if pp is not MISSING:
+            for i, p in enumerate(members(as_obj_or_list(pp, "pPeriod"))):
+                as_object(p, "pPeriod member")
+                if not valid(i):
+                    continue
+                total += as_integer(get(p, "uiCount"), "pPeriod/uiCount")
+                d = opt(p, "dPeriod", as_number, 0.0)
+                if period is None:
+                    period = d
+        need(total <= MAX, "time loop count above 2^53-1")
+        node.count = total
+        node.value = period if period is not None else 0.0
+    elif et == 2:
+        pts = get(pars, "Points", MISSING)
+        if pts is not MISSING:
+            node.count = sum(1 for i, _ in enumerate(members(as_obj_or_list(pts, "Points"))) if item_valid(i))
+    elif et == 4:
+        node.count = opt(pars, "uiCount", as_integer, 0)
+        st = opt(pars, "dZStep", as_number, 0.0)
+        lo = opt(pars, "dZLow", as_number, 0.0)
+        hi = opt(pars, "dZHigh", as_number, 0.0)
+        step = abs(st)
+        if step == 0 and node.count > 1:
+            step = finite(abs(hi - lo), "z range") / (node.count - 1)
+        node.value = step
+    elif et == 6:
+        c = get(pars, "uiCount", MISSING)
+        if c is not MISSING:
+            node.count = as_integer(c, "uiCount")
+        else:
+            node.count = opt(pars, "pPlanes/uiCount", as_integer, 0)
+    return node
 
 
-def flatten(root):
-    loops = []
+def flatten(root: Node):
+    loops = []  # [kind, depth, count, value]
 
-    def visit(nd, depth):
-        if not nd.has_pars or nd.count == 0:
+    def visit(node, depth):
+        if not node.has_pars or node.count == 0:
             return
-        if nd.etype == 6:
-            for ch in nd.children:
+        if node.kind == "spectral":
+            for ch in node.children:
                 visit(ch, depth)
             return
-        lp = {"kind": nd.kind, "depth": depth, "count": nd.count, "param": nd.param}
-        if not loops or loops[-1]["depth"] < depth:
-            loops.append(lp)
-        elif loops[-1]["depth"] == depth and loops[-1]["kind"] == nd.kind and loops[-1]["count"] < nd.count:
-            loops[-1] = lp
-        for ch in nd.children:
+        loop = [node.kind, depth, node.count, node.value]
+        if not loops or loops[-1][1] < depth:
+            loops.append(loop)
+        elif loops[-1][1] == depth and loops[-1][0] == node.kind and loops[-1][2] < node.count:
+            loops[-1] = loop
+        for ch in node.children:
             visit(ch, depth + 1)
 
     visit(root, 0)
-    kinds = [l["kind"] for l in loops]
-    if len(set(kinds)) != len(kinds):
-        reject("two loops of the same kind")
+    kinds = [l[0] for l in loops]
+    need(len(set(kinds)) == len(kinds), "two loops of the same kind")
     return loops
 
 
-FRAME_RE = re.compile(rb"ImageDataSeq\|(0|[1-9][0-9]*)!")
+class ND2:
+    def __init__(self, src: Source, out: Output):
+        self.src = src
+        self.out = out
 
+    def header(self, o):
+        need(o <= MAX, "chunk offset above 2^53-1")
+        magic, n, d = struct.unpack("<IIQ", self.src.read(o, 16))
+        need(magic == CHUNK_MAGIC, f"no chunk magic at {o}")
+        need(d <= MAX, "chunk data length above 2^53-1")
+        return n, d
 
-def nd2_profile(src, url):
-    size = src.size
-    n0, d0 = chunk_header(src, 0)
-    if n0 != 32 or d0 != 64 or src.read(16, 32) != FILE_SIG:
-        reject("bad signature chunk")
-    sig = src.read(48, 64)
-    m = re.match(rb"Ver([0-9]+)\.", sig)
-    if not m or int(m.group(1)) < 3:
-        reject("ND2 version below 3 or unreadable")
-    if size < 40:
-        reject("file shorter than 40 bytes")
-    tail = src.read(size - 40, 40)
-    if tail[:32] != MAP_SIG:
-        reject("no chunk map signature")
-    moff = struct.unpack("<Q", tail[32:])[0]
-    mn, md = chunk_header(src, moff)
-    mname = src.read(moff + 16, mn)
-    if mname.split(b"\0", 1)[0] != FILEMAP_NAME:
-        reject("chunk map chunk has the wrong name")
-    mdata = src.read(moff + 16 + mn, md)
-    cmap = {}
-    p = 0
-    while True:
-        j = mdata.find(b"!", p)
-        if j < 0:
-            reject("chunk map without terminating record")
-        nm = mdata[p:j + 1]
-        if nm == MAP_SIG:
-            break
-        if j + 17 > len(mdata):
-            reject("chunk map record truncated")
-        cmap[nm] = struct.unpack("<Q", mdata[j + 1:j + 9])[0]
-        p = j + 17
+    def chunk_data(self, o):
+        n, d = self.header(o)
+        return self.src.read(o + 16 + n, d)
 
-    def lv_chunk(name):
-        o = cmap.get(name)
-        if o is None:
-            return None
-        return parse_lv(chunk_data(src, o))
+    def run(self):
+        src = self.src
+        n, d = self.header(0)
+        need(n == 32 and d == 64, "signature chunk sizes")
+        need(src.read(16, 32) == SIG_NAME, "signature chunk name")
+        sig = src.read(48, 64)
+        m = re.match(rb"Ver([0-9]+)\.", sig)
+        need(m is not None, "signature version")
+        need(int(m.group(1)) >= 3, "ND2 version below 3")
 
-    # Attributes
-    top = lv_chunk(b"ImageAttributesLV!")
-    if top is None:
-        reject("no ImageAttributesLV! chunk")
-    A = get(top, "SLxImageAttributes", "object")
-    W = get(A, "uiWidth", "integer")
-    H = get(A, "uiHeight", "integer")
-    WB = get(A, "uiWidthBytes", "integer")
-    comp = get(A, "uiComp", "integer")
-    bpc = get(A, "uiBpcInMemory", "integer")
-    sig_bits = get(A, "uiBpcSignificant", "number")
-    ecomp = get(A, "eCompression", "integer", 2)
-    tw = get(A, "uiTileWidth", "integer", 0)
-    th = get(A, "uiTileHeight", "integer", 0)
-    if W < 1 or H < 1 or comp < 1:
-        reject("uiWidth, uiHeight or uiComp is 0")
-    if bpc not in (8, 16, 32):
-        reject(f"uiBpcInMemory {bpc}")
-    if ecomp not in (0, 2):
-        reject(f"eCompression {ecomp}")
-    if (tw > 0 and tw != W) or (th > 0 and th != H):
-        reject("tiled ND2")
-    dtype = {8: "uint8", 16: "uint16", 32: "float32"}[bpc]
-    compressed = ecomp == 0
+        need(src.size >= 40, "file shorter than 40 bytes")
+        tail = src.read(src.size - 40, 40)
+        need(tail[:32] == MAP_SIG, "chunk map signature")
+        mo = struct.unpack("<Q", tail[32:])[0]
+        n, d = self.header(mo)
+        name = src.read(mo + 16, n)
+        z = name.find(b"\0")
+        need((name if z < 0 else name[:z]) == FILEMAP_NAME, "chunk map name")
+        data = src.read(mo + 16 + n, d)
+        cmap: dict[bytes, int] = {}
+        pos = 0
+        while True:
+            e = data.find(b"!", pos)
+            need(e >= 0, "chunk map without its last record")
+            nm = data[pos : e + 1]
+            if nm == MAP_SIG:
+                break
+            need(e + 17 <= len(data), "chunk map record runs past the data")
+            cmap[nm] = struct.unpack("<Q", data[e + 1 : e + 9])[0]
+            pos = e + 17
+        self.cmap = cmap
 
-    # Experiment
-    loops = []
-    top = lv_chunk(b"ImageMetadataLV!")
-    if top is not None:
-        exp = get(top, "SLxExperiment", "object", None)
-        if exp is not None:
-            loops = flatten(node_info(exp))
+        # §4.3 attributes
+        need(b"ImageAttributesLV!" in cmap, "no ImageAttributesLV! chunk")
+        attrs_top = parse_lv_chunk(self.chunk_data(cmap[b"ImageAttributesLV!"]))
+        A = as_object(get(attrs_top, "SLxImageAttributes"), "SLxImageAttributes")
+        W = as_integer(get(A, "uiWidth"), "uiWidth")
+        H = as_integer(get(A, "uiHeight"), "uiHeight")
+        WB = as_integer(get(A, "uiWidthBytes"), "uiWidthBytes")
+        comp = as_integer(get(A, "uiComp"), "uiComp")
+        bpc = as_integer(get(A, "uiBpcInMemory"), "uiBpcInMemory")
+        need(W >= 1 and H >= 1 and comp >= 1, "uiWidth/uiHeight/uiComp is 0")
+        sig_bits = as_number(get(A, "uiBpcSignificant"), "uiBpcSignificant")
+        ecomp = opt(A, "eCompression", as_integer, 2)
+        tw = opt(A, "uiTileWidth", as_integer, 0)
+        th = opt(A, "uiTileHeight", as_integer, 0)
+        need(bpc in (8, 16, 32), f"uiBpcInMemory {bpc}")
+        dtype = {8: "uint8", 16: "uint16", 32: "float32"}[bpc]
+        need(ecomp in (0, 2), f"eCompression {ecomp}")
+        compressed = ecomp == 0
+        need(not (tw > 0 and tw != W) and not (th > 0 and th != H), "tiled ND2")
 
-    # Picture metadata
-    calibrated, cal, aspect = False, None, 1.0
-    plane_list = None  # list of planes (or None entries for missing)
-    ucount = 0
-    top = lv_chunk(b"ImageMetadataSeqLV|0!")
-    if top is not None:
-        pm = get(top, "SLxPictureMetadata", "object", None)
-        if pm is not None:
-            bcal = get(pm, "bCalibrated", "flag", False)
-            cal = get(pm, "dCalibration", "number", None)
-            asp = get(pm, "dAspect", "number", 1.0)
-            calibrated = bcal and cal is not None and cal > 0
-            aspect = asp if asp > 0 else 1.0
-            sp = get(pm, "sPicturePlanes", "object", None)
-            if sp is not None:
-                ucount = get(sp, "uiCount", "integer", 0)
-                spn = get(sp, "sPlaneNew", "object", None)
-                plane_list = {}
-                if spn is not None:
-                    for key, v in spn[1].items():
-                        mm = re.fullmatch(r"a(0|[1-9][0-9]*)", key)
-                        if not mm or int(mm.group(1)) >= ucount:
+        # experiment
+        loops = []
+        if b"ImageMetadataLV!" in cmap:
+            top = parse_lv_chunk(self.chunk_data(cmap[b"ImageMetadataLV!"]))
+            exp = get(top, "SLxExperiment", MISSING)
+            if exp is not MISSING:
+                loops = flatten(check_node(as_object(exp, "SLxExperiment")))
+
+        # picture metadata
+        calibrated = False
+        dcal = None
+        aspect = 1.0
+        planes = None  # (uiCount, {i: (desc, color, compcount)})
+        if b"ImageMetadataSeqLV|0!" in cmap:
+            top = parse_lv_chunk(self.chunk_data(cmap[b"ImageMetadataSeqLV|0!"]))
+            pm = get(top, "SLxPictureMetadata", MISSING)
+            if pm is not MISSING:
+                as_object(pm, "SLxPictureMetadata")
+                bcal = opt(pm, "bCalibrated", as_flag, False)
+                dcal = opt(pm, "dCalibration", as_number, None)
+                aspect = opt(pm, "dAspect", as_number, 1.0)
+                sp = get(pm, "sPicturePlanes", MISSING)
+                if sp is not MISSING:
+                    as_object(sp, "sPicturePlanes")
+                    cnt = opt(sp, "uiCount", as_integer, 0)
+                    pn = get(sp, "sPlaneNew", MISSING)
+                    pl = {}
+                    if pn is not MISSING:
+                        as_object(pn, "sPlaneNew")
+                        for k, v in pn.m.items():
+                            mm = re.fullmatch(r"a(0|[1-9][0-9]*)", k)
+                            if not mm or int(mm.group(1)) >= cnt:
+                                continue
+                            as_object(v, k)
+                            pl[int(mm.group(1))] = (
+                                opt(v, "sDescription", as_string, ""),
+                                opt(v, "uiColor", as_color, 0xFFFFFF),
+                                opt(v, "uiCompCount", as_integer, 1),
+                            )
+                    planes = (cnt, pl)
+                calibrated = bcal and dcal is not None and dcal > 0
+                if not aspect > 0:
+                    aspect = 1.0
+
+        # §4.4 frames
+        counts = [l[2] for l in loops]
+        N = 1
+        for c in counts:
+            N *= c
+        need(N <= MAX, "frame count above 2^53-1")
+        R = W * comp * bpc // 8
+        need(WB >= R, "uiWidthBytes below the row size")
+        frames = {}
+        for nm, o in cmap.items():
+            mm = re.fullmatch(rb"ImageDataSeq\|(0|[1-9][0-9]*)!", nm)
+            if mm:
+                f = int(mm.group(1))
+                if f < N:
+                    frames[f] = o
+        present = sorted(frames)
+        franges: dict[int, list] = {}
+        h = H
+        if not compressed:
+            if present:
+                lo, hi = present[0], present[-1]
+                n_lo, d_lo = self.header(frames[lo])
+                n_hi, d_hi = self.header(frames[hi])
+                need(n_lo == n_hi, "frame header name lengths differ")
+                need(d_lo >= 8 + H * WB and d_hi >= 8 + H * WB, "frame data too short")
+                nn = n_lo
+                if WB == R:
+                    for f in present:
+                        start = frames[f] + 16 + nn + 8
+                        franges[f] = [[(0, start, H * R)]]
+                else:
+                    starts = {f: frames[f] + 16 + nn + 8 for f in present}
+                    fmax = max(present, key=lambda f: starts[f])
+                    smax = starts[fmax]
+                    best = 1
+                    # every row costs at least 6 payload bytes, so larger blocks never fit
+                    for cand in range(min(H, MAX_PAYLOAD // 6), 0, -1):
+                        if H % cand:
                             continue
-                        if v[0] != "o":
-                            reject(f"plane {key} is not an object")
-                        plane_list[int(mm.group(1))] = (
-                            get(v, "sDescription", "string", ""),
-                            get(v, "uiColor", "color", 0xFFFFFF),
-                            get(v, "uiCompCount", "integer", 1),
-                        )
-
-    # Channels
-    channels = None
-    if ucount >= 1 and plane_list is not None and all(i in plane_list for i in range(ucount)) \
-            and all(plane_list[i][2] in (1, 3) for i in range(ucount)) \
-            and sum(plane_list[i][2] for i in range(ucount)) == comp:
-        channels = []
-        for i in range(ucount):
-            desc, col, cc = plane_list[i]
-            if cc == 1:
-                r, g, b = col & 0xFF, (col >> 8) & 0xFF, (col >> 16) & 0xFF
-                channels.append((desc, f"{r:02X}{g:02X}{b:02X}"))
-            else:
-                channels += [(desc + " R", "FF0000"), (desc + " G", "00FF00"), (desc + " B", "0000FF")]
-    if channels is None:
-        channels = [(f"C{k}", "FFFFFF") for k in range(comp)]
-
-    # Frames
-    N = 1
-    for lp in loops:
-        N *= lp["count"]
-    frames = {}
-    for nm, o in cmap.items():
-        mm = FRAME_RE.fullmatch(nm)
-        if mm:
-            f = int(mm.group(1))
-            if f < N:
-                frames[f] = o
-    R = W * comp * bpc // 8
-    if WB < R:
-        reject("uiWidthBytes below the row size")
-    frame_ranges = {}  # f -> list of blocks (each a list of ranges)
-    h = H
-    if compressed:
-        if WB != R:
-            reject("compressed frames with padded rows")
-        for f in sorted(frames):
-            o = frames[f]
-            n, d = chunk_header(src, o)
-            if d <= 8:
-                reject(f"compressed frame {f} has no data")
-            frame_ranges[f] = [[(0, o + 16 + n + 8, d - 8)]]
-    elif frames:
-        fl, fh = min(frames), max(frames)
-        nl, dl = chunk_header(src, frames[fl])
-        nh, dh = chunk_header(src, frames[fh])
-        if nl != nh:
-            reject("first and last frame name lengths differ")
-        need = 8 + H * WB
-        if dl < need or dh < need:
-            reject("frame data shorter than its pixels")
-        starts = {f: o + 16 + nl + 8 for f, o in frames.items()}
-        smax = max(starts.values())
-        if smax + (H - 1) * WB + R > size:
-            reject("frame pixels lie outside the file")
-        if WB == R:
-            for f, st in starts.items():
-                frame_ranges[f] = [[(0, st, H * R)]]
+                        rows = [(0, smax + r * WB, R) for r in range(H - cand, H)]
+                        if payload_len(rows) <= MAX_PAYLOAD:
+                            best = cand
+                            break
+                    h = best
+                    for f in present:
+                        s = starts[f]
+                        franges[f] = [
+                            [(0, s + r * WB, R) for r in range(j * h, j * h + h)] for j in range(H // h)
+                        ]
         else:
-            h = 1
-            divs = set()
-            x = 1
-            while x * x <= H:
-                if H % x == 0:
-                    divs.add(x)
-                    divs.add(H // x)
-                x += 1
-            for cand in sorted(divs, reverse=True):
-                # every row of a Concat costs at least 6 bytes
-                if cand == 1 or cand * 6 > MAX_PAYLOAD:
-                    if cand == 1:
-                        break
-                    continue
-                rngs = [(0, smax + r * WB, R) for r in range(H - cand, H)]
-                if payload_len(rngs) <= MAX_PAYLOAD:
-                    h = cand
-                    break
-            for f, st in starts.items():
-                frame_ranges[f] = [[(0, st + r * WB, R) for r in range(j * h, j * h + h)]
-                                   for j in range(H // h)]
+            need(WB == R, "compressed frames with padded rows")
+            for f in present:
+                o = frames[f]
+                nn, dd = self.header(o)
+                need(dd > 8, "compressed frame without data")
+                franges[f] = [[(0, o + 16 + nn + 8, dd - 8)]]
 
-    # Output
-    out = Out(src)
-    kinds = {lp["kind"]: lp for lp in loops}
-    npos = kinds["position"]["count"] if "position" in kinds else 1
-    out.json("zarr.json", {"zarr_format": 3, "node_type": "group",
-                           "attributes": {"ome": {"version": "0.5", "bioformats2raw.layout": 3}}})
-    out.json("OME/zarr.json", {"zarr_format": 3, "node_type": "group",
-                               "attributes": {"ome": {"version": "0.5",
-                                                      "series": [str(p) for p in range(npos)]}}})
-    dims, shape, chunks, scale, units = [], [], [], [], {}
-    if "time" in kinds:
-        dims.append("t"); shape.append(kinds["time"]["count"]); chunks.append(1)
-        per = kinds["time"]["param"]
-        if per > 0:
-            scale.append(finite(per / 1000)); units["t"] = "second"
-        else:
-            scale.append(1)
-    if comp > 1:
-        dims.append("c"); shape.append(comp); chunks.append(comp); scale.append(1)
-    if "z" in kinds:
-        dims.append("z"); shape.append(kinds["z"]["count"]); chunks.append(1)
-        st = kinds["z"]["param"]
-        if st > 0:
-            scale.append(st); units["z"] = "micrometer"
-        else:
-            scale.append(1)
-    dims += ["y", "x"]
-    shape += [H, W]
-    chunks += [h, W]
-    if calibrated:
-        scale += [finite(cal * aspect), cal]
-        units["y"] = units["x"] = "micrometer"
-    else:
-        scale += [1, 1]
-    codecs = []
-    if comp > 1:
-        codecs.append(transpose_codec(dims))
-    codecs.append({"name": "bytes"} if bpc == 8 else {"name": "bytes", "configuration": {"endian": "little"}})
-    if compressed:
-        codecs.append({"name": "zlib", "configuration": {"level": 1}})
-    if bpc == 32:
-        b = None
-    elif sig_bits == math.floor(sig_bits) and 1 <= sig_bits <= bpc:
-        b = int(sig_bits)
-    else:
-        b = bpc
-    omero_ch = []
-    for label, color in channels:
-        c = {"label": label, "color": color, "active": True}
-        if b is not None:
-            V = 2**b - 1
-            c["window"] = {"min": 0, "max": V, "start": 0, "end": V}
-        omero_ch.append(c)
-    meta = array_meta(shape, dtype, chunks, codecs, dims)
-    for p in range(npos):
-        out.json(f"{p}/zarr.json", {"zarr_format": 3, "node_type": "group", "attributes": {"ome": {
-            "version": "0.5",
-            "multiscales": [{
-                "name": f"position {p}",
-                "axes": axis_objs(dims, units),
-                "datasets": [{"path": "0", "coordinateTransformations": [{"type": "scale", "scale": scale}]}],
-            }],
-            "omero": {"channels": omero_ch},
-        }}})
-        out.json(f"{p}/0/zarr.json", meta)
-    for f in sorted(frame_ranges):
-        rem = f
-        idx = {}
-        for lp in reversed(loops):
-            idx[lp["kind"]] = rem % lp["count"]
-            rem //= lp["count"]
-        p = idx.get("position", 0)
-        pre = []
-        if "t" in dims:
-            pre.append(idx["time"])
+        # §4.5 channels
+        channels = None
+        if planes is not None and planes[0] >= 1:
+            cnt, pl = planes
+            if all(i in pl for i in range(cnt)) and all(pl[i][2] in (1, 3) for i in range(cnt)) and sum(
+                pl[i][2] for i in range(cnt)
+            ) == comp:
+                channels = []
+                for i in range(cnt):
+                    desc, color, cc = pl[i]
+                    if cc == 1:
+                        r, g, b = color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF
+                        channels.append((desc, f"{r:02X}{g:02X}{b:02X}"))
+                    else:
+                        channels += [(desc + " R", "FF0000"), (desc + " G", "00FF00"), (desc + " B", "0000FF")]
+        if channels is None:
+            channels = [(f"C{k}", "FFFFFF") for k in range(comp)]
+
+        # §4.6 output
+        kinds = [l[0] for l in loops]
+        loop_of = {l[0]: l for l in loops}
+        dims = []
+        if "time" in loop_of:
+            dims.append("t")
+        if comp > 1:
+            dims.append("c")
+        if "z" in loop_of:
+            dims.append("z")
+        dims += ["y", "x"]
+        shape = {"y": H, "x": W, "c": comp}
+        if "time" in loop_of:
+            shape["t"] = loop_of["time"][2]
+        if "z" in loop_of:
+            shape["z"] = loop_of["z"][2]
+        chunk = {"t": 1, "z": 1, "c": comp, "y": h, "x": W}
+        codecs = []
         if "c" in dims:
-            pre.append(0)
-        if "z" in dims:
-            pre.append(idx["z"])
-        for j, rngs in enumerate(frame_ranges[f]):
-            out.ref(f"{p}/0/c/" + "/".join(map(str, pre + [j, 0])), rngs)
-    return out
+            codecs.append(transpose_codec(dims))
+        codecs.append(bytes_codec(bpc // 8, "little"))
+        if compressed:
+            codecs.append({"name": "zlib", "configuration": {"level": 1}})
+        units = {}
+        scale = {"t": 1, "c": 1, "z": 1, "y": 1, "x": 1}
+        if calibrated:
+            units["x"] = units["y"] = "micrometer"
+            scale["x"] = dcal
+            scale["y"] = finite(dcal * aspect, "y scale")
+        if "z" in loop_of and loop_of["z"][3] > 0:
+            units["z"] = "micrometer"
+            scale["z"] = loop_of["z"][3]
+        if "time" in loop_of and loop_of["time"][3] > 0:
+            units["t"] = "second"
+            scale["t"] = loop_of["time"][3] / 1000
+        b = bpc
+        if sig_bits == int(sig_bits) and 1 <= sig_bits <= bpc:
+            b = int(sig_bits)
+        chan_json = []
+        for label, color in channels:
+            cj = {"label": label, "color": color, "active": True}
+            if dtype != "float32":
+                V = 2**b - 1
+                cj["window"] = {"min": 0, "max": V, "start": 0, "end": V}
+            chan_json.append(cj)
+
+        npos = loop_of["position"][2] if "position" in loop_of else 1
+        out = self.out
+        out.json("zarr.json", {"zarr_format": 3, "node_type": "group", "attributes": {"ome": {"version": "0.5", "bioformats2raw.layout": 3}}})
+        out.json(
+            "OME/zarr.json",
+            {"zarr_format": 3, "node_type": "group", "attributes": {"ome": {"version": "0.5", "series": [str(p) for p in range(npos)]}}},
+        )
+        arr = array_json([shape[d] for d in dims], dtype, [chunk[d] for d in dims], codecs, dims)
+        for p in range(npos):
+            M = {
+                "version": "0.5",
+                "multiscales": [
+                    {
+                        "name": f"position {p}",
+                        "axes": [axis_json(d, units.get(d)) for d in dims],
+                        "datasets": [
+                            {"path": "0", "coordinateTransformations": [{"type": "scale", "scale": [scale[d] for d in dims]}]}
+                        ],
+                    }
+                ],
+                "omero": {"channels": chan_json},
+            }
+            out.json(f"{p}/zarr.json", {"zarr_format": 3, "node_type": "group", "attributes": {"ome": M}})
+            out.json(f"{p}/0/zarr.json", arr)
+        for f in present:
+            rem = f
+            coord = {}
+            for k, cnt in zip(reversed(kinds), reversed(counts)):
+                coord[k] = rem % cnt
+                rem //= cnt
+            p = coord.get("position", 0)
+            pre = []
+            if "t" in dims:
+                pre.append(coord["time"])
+            if "c" in dims:
+                pre.append(0)
+            if "z" in dims:
+                pre.append(coord["z"])
+            for j, rng in enumerate(franges[f]):
+                key = f"{p}/0/c/" + "/".join(str(x) for x in pre + [j, 0])
+                out.ref(key, rng)
 
 
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------
 
 
 def main(argv):
     if len(argv) != 3:
         print("usage: virtualize <url> <out.json>", file=sys.stderr)
         return 2
-    url, outpath = argv[1], argv[2]
+    url, path = argv[1], argv[2]
     try:
         src = Source(url)
-        head = src.read(0, 4) if src.size >= 4 else src.read(0, src.size)
-        if head in (b"II*\0", b"MM\0*", b"II+\0", b"MM\0+"):
-            out = tiff_profile(src, url)
-        elif head == b"\xda\xce\xbe\x0a":
-            out = nd2_profile(src, url)
+        out = Output(url, src.size)
+        head = src.read(0, min(src.size, 12)) if src.size else b""
+        if head[:4] in (b"II*\0", b"MM\0*", b"II+\0", b"MM\0+"):
+            Tiff(src, out).run()
+        elif head[:4] == b"\xda\xce\xbe\x0a":
+            ND2(src, out).run()
         else:
-            reject("not a TIFF or ND2 (v3+) file")
+            raise Reject("unrecognized file type")
+        text = out.dump()
     except Reject as e:
         print(f"rejected: {e}", file=sys.stderr)
         return 3
-    except Fail as e:
-        print(f"failed: {e}", file=sys.stderr)
+    except ReadError as e:
+        print(f"read failed: {e}", file=sys.stderr)
         return 1
-    doc = {"sources": [url], "entries": out.entries}
-    with open(outpath, "w") as fh:
-        json.dump(doc, fh, ensure_ascii=False, allow_nan=False)
-    print(f"ok: {len(out.entries)} entries")
+    with open(path, "w") as fh:
+        fh.write(text)
+    nrefs = sum(1 for v in out.entries.values() if "ranges" in v)
+    print(f"ok: {len(out.entries)} entries, {nrefs} references")
     return 0
 
 
 if __name__ == "__main__":
-    # LV levels and experiment trees may nest deeply; the specification sets no limit.
-    import threading
-    sys.setrecursionlimit(1000000)
-    threading.stack_size(1 << 29)
-    result = []
-    th = threading.Thread(target=lambda: result.append(main(sys.argv)))
-    th.start()
-    th.join()
-    sys.exit(result[0] if result else 1)
+    sys.exit(main(sys.argv))

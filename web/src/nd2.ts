@@ -159,6 +159,7 @@ function nodeLoop(node: LVObject): Omit<Loop, "depth"> | "spectral" | undefined 
       const high = number(pars.get("dZHigh"), "dZHigh", 0);
       const low = number(pars.get("dZLow"), "dZLow", 0);
       if (step === 0 && count > 1) step = Math.abs(high - low) / (count - 1);
+      if (!Number.isFinite(step)) reject("the z step is not finite");
       loop = { kind: "z", count, scale: step };
       break;
     }
@@ -301,7 +302,9 @@ export async function virtualizeNd2(
   const compression = integer(attrs.get("eCompression"), "eCompression", 2);
   const tileWidth = integer(attrs.get("uiTileWidth"), "uiTileWidth", 0);
   const tileHeight = integer(attrs.get("uiTileHeight"), "uiTileHeight", 0);
-  if (Math.min(width, height, comp) < 1) reject("image width, height and components must be at least 1");
+  if (Math.min(width, height, comp) < 1 || comp > 1024) {
+    reject("image width and height must be at least 1, and components from 1 to 1024");
+  }
   const dataType = ({ 8: "uint8", 16: "uint16", 32: "float32" } as Record<number, string>)[bpc];
   if (dataType === undefined) reject(`unsupported bits per component ${bpc}`);
   if (compression === 1) reject("lossy ND2 compression is not supported");
