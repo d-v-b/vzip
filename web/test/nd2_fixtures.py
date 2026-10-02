@@ -447,6 +447,15 @@ def revision4() -> None:
     # A z step that overflows rejects, even on a node the flattening skips.
     write_case("nd2_reject_z_step_overflow", experiment(node(1, {"uiCount": 0}, [
         node(4, {"uiCount": 2, "dZStep": 0.0, "dZLow": -1e308, "dZHigh": 1e308})])))
+    # A single image's stage position, from the picture metadata (§4.6).
+    f = Nd2()
+    f.chunk("ImageAttributesLV!", attributes(w, h, 1, 16, sequence=1))
+    f.chunk("ImageMetadataSeqLV|0!", level("SLxPictureMetadata", [
+        lv("dCalibration", 0.5), lv("bCalibrated", True), lv("dXPos", 100.0), lv("dYPos", -20.0),
+        lv("dStgLgCT11", -1.0), lv("dStgLgCT22", -1.0)]))
+    px = rng.integers(0, 200, (h, w, 1)).astype(np.uint16)
+    f.chunk("ImageDataSeq|0!", frame_bytes(px, w * 2, False))
+    write("nd2_edge_single_position", f, {"0/0/c/0/0": px[:, :, 0]})
     # pItemValid holds flags on every node, not only position loops.
     write_case("nd2_reject_itemvalid_on_time",
                experiment({"eType": 1, "uLoopPars": {"uiCount": 1}, "pItemValid": ["x"]}))

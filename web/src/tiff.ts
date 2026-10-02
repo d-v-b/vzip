@@ -24,12 +24,17 @@ export const Tag = {
   SubIFDs: 330,
   SampleFormat: 339,
   JPEGTables: 347,
+  XResolution: 282,
+  YResolution: 283,
+  ResolutionUnit: 296,
 } as const;
 
 const WANTED = new Set<number>(Object.values(Tag));
 
 // Tags with one used value (VIRTUALIZE.md §3.1); the others are arrays.
-const SCALARS = new Set<number>([256, 257, 259, 262, 277, 284, 317, 322, 323]);
+const SCALARS = new Set<number>([256, 257, 259, 262, 277, 282, 283, 284, 296, 317, 322, 323]);
+// XResolution and YResolution: RATIONAL, kept as [numerator, denominator].
+const RATIONAL_TAGS = new Set<number>([282, 283]);
 // Field types allowed for every tag but ImageDescription: unsigned integers.
 const INTEGER_TYPES = new Set([1, 3, 4, 13, 16, 18]);
 
@@ -125,7 +130,10 @@ function values(
       }
       case 11: out.push(view.getFloat32(4 * i, le)); break;
       case 12: out.push(view.getFloat64(8 * i, le)); break;
-      case 5: out.push(view.getUint32(8 * i, le) / view.getUint32(8 * i + 4, le)); break;
+      case 5:
+        if (RATIONAL_TAGS.has(tag)) out.push(view.getUint32(8 * i, le), view.getUint32(8 * i + 4, le));
+        else out.push(view.getUint32(8 * i, le) / view.getUint32(8 * i + 4, le));
+        break;
       case 10: out.push(view.getInt32(8 * i, le) / view.getInt32(8 * i + 4, le)); break;
       default: throw new TiffError(`unknown field type ${type}`);
     }
@@ -181,7 +189,8 @@ export async function readTiff(read: ByteReader, fileSize: number): Promise<Tiff
       const n = bigTiff ? u64(view, at + 4, le) : view.getUint32(at + 4, le);
       const size = TYPE_SIZE[type];
       const allowed = tag === Tag.ImageDescription ? size !== undefined
-        : tag === Tag.JPEGTables ? type === 1 || type === 7 : INTEGER_TYPES.has(type);
+        : tag === Tag.JPEGTables ? type === 1 || type === 7
+        : RATIONAL_TAGS.has(tag) ? type === 5 : INTEGER_TYPES.has(type);
       if (!allowed) {
         throw new TiffError(`tag ${tag} has field type ${type}`);
       }

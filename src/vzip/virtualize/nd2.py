@@ -293,6 +293,8 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
     aspect = number(picture.get("dAspect"), "dAspect", 1)
     camera = [number(picture.get(f"dStgLgCT{k}"), f"dStgLgCT{k}", default)
               for k, default in (("11", 1.0), ("12", 0.0), ("21", 0.0), ("22", 1.0))]
+    # The stage position without a position loop (§4.6).
+    picture_stage = (number(picture.get("dXPos"), "dXPos", None), number(picture.get("dYPos"), "dYPos", None))
     calibrated = bcal and cal is not None and cal > 0
     if not aspect > 0:
         aspect = 1
@@ -402,9 +404,10 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
     translations = None
     m11, m12, m21, m22 = camera
     det = m11 * m22 - m12 * m21
-    if p and calibrated and det != 0 and all(x is not None and y is not None for x, y in p["scale"]):
+    stages = p["scale"] if p else [picture_stage]
+    if calibrated and det != 0 and all(x is not None and y is not None for x, y in stages):
         translations = []
-        for sx, sy in p["scale"]:
+        for sx, sy in stages:
             u = (m22 * sx - m12 * sy) / det
             v = (m11 * sy - m21 * sx) / det
             shift = {"x": u - width * scale["x"] / 2, "y": v - height * scale["y"] / 2}
