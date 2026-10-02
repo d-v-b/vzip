@@ -2,7 +2,9 @@
 // can read them. Archives are either virtualized TIFFs or existing .vzip
 // files, named by URL:
 //
-//   <prefix>tiff/<id>/<key>      the virtualized TIFF at decodeId(id)
+//   <prefix>image/<id>/<key>     the TIFF or ND2 file at decodeId(id),
+//                                virtualized by VIRTUALIZE.md
+//   <prefix>tiff/<id>/<key>      the same, for TIFF files only
 //   <prefix>archive/<id>/<key>   the .vzip archive at decodeId(id)
 //   .../__vz__/archive.vzip      the archive itself (keys under __vz__/ are
 //                                hidden, so no key can collide with it)
@@ -12,6 +14,9 @@
 
 import { Archive, type RangeFetcher, VzipError } from "./archive.ts";
 import { HttpResolutionError, openHttpFile, readHttpRange } from "./http.ts";
+import { ImageError, virtualizeImage } from "./image.ts";
+import { LVError } from "./lv.ts";
+import { Nd2Error } from "./nd2.ts";
 import { blockReader, TiffError } from "./tiff.ts";
 import { virtualizeTiff } from "./virtualize.ts";
 import { writeVzip } from "./writer.ts";
@@ -100,11 +105,14 @@ export function makeHandler(options: HandlerOptions) {
           return { archive: await Archive.open(await fetchArchive(url), url, fetchRange), filename: stem };
         }
         const file = await openFile(url);
-        const virtual = await virtualizeTiff(url, blockReader(file.read, file.size), file.size);
+        const read = blockReader(file.read, file.size);
+        const virtual = kind === "tiff"
+          ? await virtualizeTiff(url, read, file.size)
+          : await virtualizeImage(url, read, file.size);
         const bytes = await writeVzip(virtual);
         return {
           archive: await Archive.open(bytes, url, fetchRange),
-          filename: `${stem.replace(/\.(ome\.)?tiff?$/i, "")}.vzip`,
+          filename: `${stem.replace(/\.(ome\.tiff?|tiff?|nd2)$/i, "")}.vzip`,
         };
       })();
       opened.set(name, p);
@@ -119,7 +127,7 @@ export function makeHandler(options: HandlerOptions) {
       return response(405, "method not allowed", { Allow: "GET, HEAD" });
     }
     const path = new URL(request.url).pathname.slice(new URL(prefix).pathname.length);
-    const m = path.match(/^(tiff|archive)\/([^/]+)\/(.*)$/);
+    const m = path.match(/^(image|tiff|archive)\/([^/]+)\/(.*)$/);
     if (m === null) return response(404, "not found");
     const [, kind, id] = m;
     let key: string;
@@ -166,6 +174,8 @@ export function makeHandler(options: HandlerOptions) {
         return response(status, message);
       }
       if (e instanceof TiffError) return response(422, `TIFF: ${message}`);
+      if (e instanceof Nd2Error || e instanceof LVError) return response(422, `ND2: ${message}`);
+      if (e instanceof ImageError) return response(422, message);
       if (e instanceof HttpResolutionError) return response(502, message);
       return response(500, message);
     }

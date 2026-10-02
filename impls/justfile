@@ -1,0 +1,20 @@
+# Independent implementations written by agents from the specifications
+# alone (see README.md): SPEC.md readers and writers in rust/, typescript/
+# and python/, and VIRTUALIZE.md virtualizers in virtualize/.
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+mod rust
+mod typescript
+mod python
+mod virtualize
+
+[private]
+default:
+    @just --list --list-submodules
+
+# Build whatever needs building
+build: rust::build virtualize::build
+
+# Run every implementation's own tests
+test: rust::test typescript::test python::test

@@ -1,0 +1,74 @@
+# vzip. Run `just` to list recipes; `just web::test`, `just impls::rust::build`
+# and so on reach the packages' own justfiles.
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+mod web
+mod impls
+
+idr_tiff := "https://ftp.ebi.ac.uk/pub/databases/IDR/idr0096-tratwal-marrowquant/20210609-ftp-ome-tiffs/4000_d11_m5_LT_2%20(20x_01).ome.tiff"
+
+[private]
+default:
+    @just --list --list-submodules
+
+# Test the Python reference (src/vzip)
+test *args:
+    uv run pytest -q tests {{args}}
+
+# Run every offline test: the Python reference, the browser code and the independent implementations
+test-all: test web::test impls::test
+
+# Type-check the browser code
+check: web::typecheck
+
+# Run the SPEC.md conformance suite against the three independent implementations
+conformance out="conformance/results/latest": impls::build
+    uv run python conformance/run.py --out {{out}} \
+        --impl rust=impls/rust/vzip --impl typescript=impls/typescript/vzip --impl python=impls/python/vzip
+
+# Regenerate the synthetic TIFF and ND2 files in web/test/fixtures
+fixtures:
+    uv run python web/test/tiff_fixtures.py
+    uv run python web/test/tiff_edge_fixtures.py
+    uv run python web/test/nd2_fixtures.py
+
+# Check the browser virtualizer's pixels against tifffile and the synthetic ND2 pixels
+verify:
+    uv run python web/test/verify_tiff.py
+    uv run python web/test/verify_nd2.py
+
+# VIRTUALIZE.md: compare implementations on the corpus (network; e.g. `just compare --quick`)
+compare *args:
+    uv run python conformance/virtualize/compare.py conformance/results/virtualize {{args}}
+
+# VIRTUALIZE.md: compare implementations on corrupted copies of the synthetic files
+compare-mutants count="10" seed="0" *args:
+    rm -rf conformance/results/mutants
+    python3 conformance/virtualize/mutate.py conformance/results/mutants {{count}} {{seed}}
+    uv run python conformance/virtualize/compare.py conformance/results/mutants-out \
+        --fixtures conformance/results/mutants {{args}}
+
+# Virtualize a TIFF or ND2 file (a URL or a path) into a vzip archive
+virtualize src out:
+    uv run python -m vzip.virtualize {{quote(src)}} {{quote(out)}}
+
+# Regenerate the (untracked) example archives in experiments/out (network)
+archives: archives-nd2 archives-idr
+
+# Virtualize the public ND2 files of the corpus into experiments/out/nd2
+archives-nd2:
+    grep -v '^#' conformance/virtualize/corpus_nd2.txt | grep . | while IFS='|' read -r url name; do \
+        uv run python -m vzip.virtualize "$url" "experiments/out/nd2/$name.vzip"; \
+    done
+
+# Virtualize the IDR idr0096 OME-TIFF (pinned, and unpinned for browsers) into experiments/out
+archives-idr:
+    mkdir -p experiments/out/ng_idr
+    uv run python experiments/tiff_to_vzip.py {{quote(idr_tiff)}} experiments/out/idr0096_4000_d11_m5_LT_2.vzip
+    uv run python experiments/tiff_to_vzip.py --no-pins {{quote(idr_tiff)}} \
+        experiments/out/ng_idr/idr0096_4000_d11_m5_LT_2_unpinned.vzip
+
+# Build and publish a demo to https://d-v-b.github.io/vzip-demo/ (see web/pages.sh)
+deploy-demo *args: web::build
+    web/pages.sh {{args}}

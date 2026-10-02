@@ -1,0 +1,14 @@
+[package]
+name = "virtualize"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "virtualize"
+path = "src/main.rs"
+
+[dependencies]
+flate2 = "1"
+
+[profile.release]
+opt-level = 2

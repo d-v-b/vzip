@@ -1,17 +1,16 @@
 import {
   archiveDownloadUrl,
   archiveZarrUrl,
+  imageZarrUrl,
   registerVzipWorker,
-  tiffZarrUrl,
 } from "../src/client.ts";
 import { WORKER_HEADER } from "../src/server.ts";
 
 const EXAMPLE =
   "https://ftp.ebi.ac.uk/pub/databases/IDR/idr0096-tratwal-marrowquant/20210609-ftp-ome-tiffs/4000_d11_m5_LT_2%20(20x_01).ome.tiff";
-// A virtualized Nikon ND2 time-lapse (BioImage Archive S-BIAD3015, 4.6 GB),
-// made by experiments/nd2_to_vzip.py.
+// A Nikon ND2 time-lapse (BioImage Archive S-BIAD3015, 4.6 GB).
 const ND2_EXAMPLE =
-  "https://raw.githubusercontent.com/d-v-b/vzip/main/experiments/out/nd2/biad3015_1-SR_1_9_6hPre-C_MC1.vzip";
+  "https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/1-SR_1_9_6hPre-C_MC1.nd2";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const input = $<HTMLInputElement>("url");
@@ -125,8 +124,8 @@ async function virtualize(url: string) {
   prefix ??= registerVzipWorker(new URL("vzip-sw.js", location.href));
   const p = await prefix;
   const isArchive = /\.vzip(?:[?#]|$)/i.test(url);
-  const zarrUrl = isArchive ? archiveZarrUrl(p, url) : tiffZarrUrl(p, url);
-  setStatus(isArchive ? "Opening the archive…" : "Reading the TIFF's directories…");
+  const zarrUrl = isArchive ? archiveZarrUrl(p, url) : imageZarrUrl(p, url);
+  setStatus(isArchive ? "Opening the archive…" : "Reading the file's structure…");
   const t0 = performance.now();
   const group = await getJson(`${zarrUrl}zarr.json`);
   const ms = Math.round(performance.now() - t0);

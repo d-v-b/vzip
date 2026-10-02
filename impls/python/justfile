@@ -1,0 +1,11 @@
+# The Python SPEC.md implementation (Python 3.12, standard library only).
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+[private]
+default:
+    @just --list
+
+# Run the tests
+test:
+    uv run --no-project --python 3.12 python -m unittest discover -s tests -t . -q
