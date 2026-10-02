@@ -452,6 +452,37 @@ def revision4() -> None:
                experiment({"eType": 1, "uLoopPars": {"uiCount": 1}, "pItemValid": ["x"]}))
 
 
+def revision6() -> None:
+    """Stage positions become translations (§4.6)."""
+    h, w = 3, 4
+
+    def case(name: str, points: list[dict], camera: tuple | None, valid: bytes | None = None) -> None:
+        f = Nd2()
+        f.chunk("ImageAttributesLV!", attributes(w, h, 1, 16, sequence=len(points)))
+        f.chunk("ImageMetadataLV!", experiment(node(2, {"Points": points}, item_valid=valid)))
+        pic = [lv("dCalibration", 0.5), lv("bCalibrated", True)]
+        if camera is not None:
+            pic += [lv(f"dStgLgCT{k}", float(v)) for k, v in zip(("11", "12", "21", "22"), camera)]
+        f.chunk("ImageMetadataSeqLV|0!", level("SLxPictureMetadata", pic))
+        expected = {}
+        positions = len(points) if valid is None else sum(valid)
+        for i in range(len(points)):
+            px = rng.integers(0, 200, (h, w, 1)).astype(np.uint16)
+            f.chunk(f"ImageDataSeq|{i}!", frame_bytes(px, w * 2, False))
+            if i < positions:  # frame i is position i; later frames are ignored
+                expected[f"{i}/0/c/0/0"] = px[:, :, 0]
+        write(name, f, expected)
+
+    # A camera rotated by 90 degrees: C = [[0, -1], [1, 0]], C^-1 = [[0, 1], [-1, 0]].
+    # The second point is invalid, so positions 0 and 1 are points 0 and 2.
+    case("nd2_edge_stage_positions",
+         [{"dPosX": 100.0, "dPosY": 20.0}, {"dPosX": 1e300}, {"dPosX": 130.5, "dPosY": -7.25}],
+         (0, -1, 1, 0), bytes([1, 0, 1]))
+    # A singular camera matrix, or a point without dPosY: no translations.
+    case("nd2_edge_stage_singular", [{"dPosX": 1.0, "dPosY": 2.0}, {"dPosX": 3.0, "dPosY": 4.0}], (1, 2, 2, 4))
+    case("nd2_edge_stage_incomplete", [{"dPosX": 1.0, "dPosY": 2.0}, {"dPosX": 3.0}], None)
+
+
 if __name__ == "__main__":
     OUT.mkdir(exist_ok=True)
     tz_uint16()
@@ -462,5 +493,6 @@ if __name__ == "__main__":
     edges()
     revision3()
     revision4()
+    revision6()
     for p in sorted(OUT.glob("nd2_*.nd2")):
         print(p.name, p.stat().st_size)

@@ -1,6 +1,6 @@
 # Virtualizing image files as OME-Zarr in vzip
 
-Profiles version: 0 (**draft**) · Revision: 6
+Profiles version: 0 (**draft**) · Revision: 5
 
 ## 1. Introduction
 
@@ -157,9 +157,8 @@ is the OME-NGFF 0.5 object:
 - Each axis has `name` and `type` (`"time"`, `"channel"` or `"space"`), and
   `unit` only when the profile gives one.
 - `datasets` lists the pyramid levels, full resolution first, with paths
-  `"0"`, `"1"`, ...; each has a `scale` transformation, one number per axis,
-  followed by a `{"type": "translation", "translation": [...]}`
-  transformation (one number per axis) only where the profile gives one.
+  `"0"`, `"1"`, ...; each has exactly one `scale` transformation, one number
+  per axis.
 - `M` has an `"omero"` member, next to `multiscales`, only where a profile
   says so.
 
@@ -587,7 +586,7 @@ its value ends up in the output.
     |---|---|---|
     | 1 | time | integer `uiCount` (default 0); period: number `dPeriod` (ms, default 0) |
     | 8 | time | the members `p` of `pPeriod` (object or list, default none) MUST be objects. The count is the sum of integer `p/uiCount` (required) over the valid `p`. The period is number `p/dPeriod` (default 0) of the first valid `p`, or 0 if none is valid. |
-    | 2 | position | the number of valid members of `Points` (object or list, default none). Each valid member `q` MUST be an object; its **stage position** is numbers `q/dPosX` and `q/dPosY` (µm, default absent). |
+    | 2 | position | the number of valid members of `Points` (object or list, default none) |
     | 4 | z | integer `uiCount` (default 0); numbers `dZStep`, `dZLow`, `dZHigh` (default 0); step `abs(dZStep)`, or if that is 0 and the count is more than 1, `abs(dZHigh − dZLow) / (count − 1)` |
     | 6 | (spectral) | integer `uiCount`; if it is absent, integer `pPlanes/uiCount` (`pPlanes` is read only then); if that is absent, 0 |
 
@@ -638,10 +637,6 @@ its value ends up in the output.
   - calibration: the image is **calibrated** if `bCalibrated` is true and
     `dCalibration` is present and positive. A `dAspect` that is not positive
     counts as 1.
-  - camera matrix: numbers `dStgLgCT11`, `dStgLgCT12`, `dStgLgCT21`,
-    `dStgLgCT22` (defaults 1, 0, 0, 1), the matrix
-    `C = [[dStgLgCT11, dStgLgCT12], [dStgLgCT21, dStgLgCT22]]` that maps
-    image x and y offsets to stage x and y offsets.
 
 ### 4.4 Frames
 
@@ -731,23 +726,6 @@ Each array:
   - `t`: `second` with scale `period / 1000` when the period is positive,
     else no unit and scale 1;
   - `c`: scale 1.
-- **Stage positions:** with a position loop, each image also has a
-  translation (§2.2) placing it where the stage was, when all of these hold:
-  the image is calibrated; every position's stage position (`dPosX` and
-  `dPosY` of the position loop's `p`-th valid member of `Points`, for
-  position `p`) is present; and `d = dStgLgCT11 × dStgLgCT22 −
-  dStgLgCT12 × dStgLgCT21` is not 0. Otherwise no image has one. The
-  stage position `(sx, sy)` is the centre of the field of view; in image
-  coordinates it is
-  - `u = (dStgLgCT22 × sx − dStgLgCT12 × sy) / d`,
-  - `v = (dStgLgCT11 × sy − dStgLgCT21 × sx) / d`
-
-  (that is, `C⁻¹ (sx, sy)`), and the translation is
-  `x = u − uiWidth × sx_scale / 2` and `y = v − uiHeight × sy_scale / 2`,
-  where `sx_scale` and `sy_scale` are the x and y scales, and 0 for the other
-  axes. (Each expression is computed left to right, products before
-  differences.) The position loop is the one in the flattened list (§4.3):
-  when rule 3 replaces a loop, the replacing node's `Points` are used.
 - **omero:** every image's `M` has
   `"omero": {"channels": [...]}`, one object per channel (even when there is
   no `c` axis):

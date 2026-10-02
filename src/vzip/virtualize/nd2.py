@@ -146,8 +146,12 @@ def _node_loop(node: dict):
         periods_ms = [number(p.get("dPeriod"), "dPeriod", 0) for p in valid]
         loop = ("t", count, periods_ms[0] if periods_ms else 0)
     elif typ == 2:
-        count = len(_valid(members(pars.get("Points"), "Points"), item_valid, "pItemValid"))
-        loop = ("p", count, None)
+        points = [obj(q, "Points member") for q in
+                  _valid(members(pars.get("Points"), "Points"), item_valid, "pItemValid")]
+        count = len(points)
+        # The stage position of each valid point, in µm (None if absent).
+        stage = [(number(q.get("dPosX"), "dPosX", None), number(q.get("dPosY"), "dPosY", None)) for q in points]
+        loop = ("p", count, stage)
     elif typ == 4:
         count = integer(pars.get("uiCount"), "uiCount", 0)
         step = abs(number(pars.get("dZStep"), "dZStep", 0))
@@ -302,6 +306,8 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
     bcal = flag(picture.get("bCalibrated"), "bCalibrated", False)
     cal = number(picture.get("dCalibration"), "dCalibration", None)
     aspect = number(picture.get("dAspect"), "dAspect", 1)
+    camera = [number(picture.get(f"dStgLgCT{k}"), f"dStgLgCT{k}", default)
+              for k, default in (("11", 1.0), ("12", 0.0), ("21", 0.0), ("22", 1.0))]
     calibrated = bcal and cal is not None and cal > 0
     if not aspect > 0:
         aspect = 1
@@ -407,11 +413,25 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
     b = int(significant) if significant == int(significant) and 1 <= significant <= bpc else bpc
     window = {} if data_type == "float32" else {"window": {"min": 0, "max": 2**b - 1, "start": 0, "end": 2**b - 1}}
     positions = p["count"] if p else 1
+    # §4.6 stage positions: where each position's image goes.
+    translations = None
+    m11, m12, m21, m22 = camera
+    det = m11 * m22 - m12 * m21
+    if p and calibrated and det != 0 and all(x is not None and y is not None for x, y in p["scale"]):
+        translations = []
+        for sx, sy in p["scale"]:
+            u = (m22 * sx - m12 * sy) / det
+            v = (m11 * sy - m21 * sx) / det
+            shift = {"x": u - width * scale["x"] / 2, "y": v - height * scale["y"] / 2}
+            if not all(math.isfinite(t) for t in shift.values()):
+                raise Rejected("a stage position is not finite")
+            translations.append([shift.get(a, 0) for a in axes])
     out = Output(url)
     out.json("zarr.json", group_json({"version": "0.5", "bioformats2raw.layout": 3}))
     out.json("OME/zarr.json", group_json({"version": "0.5", "series": [str(i) for i in range(positions)]}))
     for pi in range(positions):
-        ome = image_ome(axes, units, [[scale[a] for a in axes]], f"position {pi}")
+        ome = image_ome(axes, units, [[scale[a] for a in axes]], f"position {pi}",
+                        [translations[pi]] if translations else None)
         ome["omero"] = {"channels": [{"label": label, "color": c, "active": True, **window}
                                      for label, c in zip(labels, colors)]}
         out.json(f"{pi}/zarr.json", group_json(ome))
