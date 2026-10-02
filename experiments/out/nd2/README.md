@@ -1,8 +1,11 @@
 # Virtualized Nikon ND2 files
 
-Each `.vzip` here was written by `experiments/nd2_to_vzip.py` from a public
-ND2 file, read in place over HTTP; `experiments/verify_nd2_vzip.py` checked
-sample frames against the `nd2` package. The archives hold only metadata and
+Each `.vzip` here was written by the ND2 profile of
+[VIRTUALIZE.md](../../../VIRTUALIZE.md) (`python -m vzip.virtualize <url> <out>`)
+from a public ND2 file, read in place over HTTP; the browser implementation
+(`web/src/nd2.ts`) produces equivalent archives, and
+`experiments/verify_nd2_vzip.py` checked sample frames against the `nd2`
+package. The archives hold only metadata and
 byte-range references: the pixels stay in the original files.
 
 | archive | source | license |
