@@ -127,6 +127,7 @@ def validate(path: Path, desc: dict) -> list[str]:
         by_name[r["name"]] = r
 
     bodies: dict[str, bytes] = {}
+    spans: list[tuple[int, int]] = []
     for r in z["recs"]:
         nm = r["name"]
         if r["method"] not in (0, 8):
@@ -166,6 +167,7 @@ def validate(path: Path, desc: dict) -> list[str]:
         if lmethod != r["method"]:
             problems.append(f"{nm}: local method differs")
         start = o + 30 + lnlen + lxlen
+        spans.append((o, start + r["csize"]))
         stored = buf[start : start + r["csize"]]
         try:
             body = zlib.decompress(stored, -15) if r["method"] == 8 else stored
@@ -177,6 +179,16 @@ def validate(path: Path, desc: dict) -> list[str]:
         if zlib.crc32(body) != r["crc"] or lcrc != r["crc"]:
             problems.append(f"{nm}: CRC-32 mismatch")
         bodies[nm] = body
+
+    # §3.1 rule 2: every local header belongs to an entry, so the entries fill the
+    # file from offset 0 up to the central directory, with no gaps
+    end = 0
+    for a, b in sorted(spans):
+        if a != end:
+            problems.append(f"bytes [{end}, {a}) belong to no entry")
+        end = max(end, b)
+    if end != z["cd_off"]:
+        problems.append(f"bytes [{end}, {z['cd_off']}) before the central directory belong to no entry")
 
     # ---- comment and source table
     c = z["comment"]
