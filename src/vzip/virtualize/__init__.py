@@ -13,7 +13,7 @@ how a local file is described by the URL it will be served from).
 
 from __future__ import annotations
 
-from vzip.virtualize import ndpi
+from vzip.virtualize import ndpi, nifti
 from vzip.virtualize.common import Output, Rejected, file_reader, http_reader
 from vzip.virtualize.nd2 import is_nd2, virtualize_nd2
 from vzip.virtualize.tiff import virtualize_tiff
@@ -28,7 +28,7 @@ def virtualize(location: str, url: str | None = None) -> tuple[str, Output]:
     else:
         read, size = file_reader(location)
     url = url or location
-    head = read(0, min(8, size))
+    head = read(0, min(552, size))
     if head[:2] in (b"II", b"MM"):
         first = ndpi.detect(read, size)
         if first is not None:
@@ -36,4 +36,6 @@ def virtualize(location: str, url: str | None = None) -> tuple[str, Output]:
         return "tiff", virtualize_tiff(url, read, size)
     if is_nd2(head):
         return "nd2", virtualize_nd2(url, read, size)
-    raise Rejected("not a TIFF or ND2 file")
+    if nifti.detect(head) is not None:
+        return "nifti", nifti.virtualize_nifti(url, read, size)
+    raise Rejected("not a TIFF or ND2 file, nor a NIfTI file")

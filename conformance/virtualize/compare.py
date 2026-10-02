@@ -149,13 +149,13 @@ def check(item: tuple[str, str], impls: dict, out_dir: Path) -> dict:
 
 def corpus(proxy: Proxy, fixtures: Path, quick: bool, local_only: bool) -> list[tuple[str, str]]:
     items = [(f"fixture-{p.stem}", proxy.local(p.relative_to(fixtures).as_posix()))
-             for p in sorted([*fixtures.rglob("*.tif"), *fixtures.rglob("*.ndpi"), *fixtures.rglob("*.nd2")])]
+             for p in sorted([*fixtures.rglob("*.tif"), *fixtures.rglob("*.ndpi"), *fixtures.rglob("*.nd2"), *fixtures.rglob("*.nii")])]
     if local_only:
         return items
     listing = urllib.request.urlopen(IDR, timeout=60).read().decode()
     tiffs = sorted(set(re.findall(r'href="([^"?/][^"]*\.ome\.tiff)"', listing)))
     items += [(f"idr-{i:03d}", proxy.remote(IDR + n)) for i, n in enumerate(tiffs[:3] if quick else tiffs)]
-    for corpus_file, prefix in (("corpus_nd2.txt", "nd2-"), ("corpus_tiff.txt", "")):
+    for corpus_file, prefix in (("corpus_nd2.txt", "nd2-"), ("corpus_tiff.txt", ""), ("corpus_nifti.txt", "nifti-")):
         listed = [line.split("|") for line in (HERE / corpus_file).read_text().split("\n")
                   if line and not line.startswith("#")]
         items += [(f"{prefix}{name}", proxy.remote(url)) for url, name in (listed[:3] if quick else listed)]

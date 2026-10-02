@@ -18,6 +18,7 @@ import { blockReader, ImageError } from "./virtualize/common.ts";
 import { virtualizeImage } from "./virtualize/index.ts";
 import { LVError } from "./virtualize/nd2/lv.ts";
 import { Nd2Error } from "./virtualize/nd2/virtualize.ts";
+import { NiftiError } from "./virtualize/nifti/virtualize.ts";
 import { TiffError } from "./virtualize/tiff/ifd.ts";
 import { virtualizeTiff } from "./virtualize/tiff/virtualize.ts";
 import { writeVzip } from "./writer.ts";
@@ -176,6 +177,7 @@ export function makeHandler(options: HandlerOptions) {
       }
       if (e instanceof TiffError) return response(422, `TIFF: ${message}`);
       if (e instanceof Nd2Error || e instanceof LVError) return response(422, `ND2: ${message}`);
+      if (e instanceof NiftiError) return response(422, `NIfTI: ${message}`);
       if (e instanceof ImageError) return response(422, message);
       if (e instanceof HttpResolutionError) return response(502, message);
       return response(500, message);
