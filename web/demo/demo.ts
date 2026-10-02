@@ -35,7 +35,16 @@ async function getJson(url: string) {
   return r.json();
 }
 
-/** A Neuroglancer state for an OME-Zarr image; RGB as three additive layers. */
+/**
+ * A Neuroglancer state for an OME-Zarr image.
+ *
+ * When every chunk holds all channels (ND2 frames, interleaved TIFF), the
+ * image is one layer whose channel axis is a Neuroglancer channel dimension
+ * (`c^`): the shader composites the channels, each with a checkbox, a colour
+ * and a contrast range from the omero metadata, and there is no channel axis
+ * to scroll. Otherwise (planar TIFF, one channel per chunk) each channel is a
+ * layer of its own.
+ */
 const SECONDS: Record<string, number> = { second: 1, millisecond: 1e-3, minute: 60, hour: 3600 };
 const METERS: Record<string, number> = {
   meter: 1, millimeter: 1e-3, micrometer: 1e-6, nanometer: 1e-9, picometer: 1e-12, angstrom: 1e-10,
@@ -53,6 +62,7 @@ function neuroglancerState(
   axes: { name: string; unit?: string }[],
   scale: number[],
   shape: number[],
+  chunks: number[],
   dtype: string,
   omero: OmeroChannel[] = [],
 ) {
@@ -83,6 +93,22 @@ function neuroglancerState(
     layout: "xy",
   };
   const c = axes.findIndex((a) => a.name === "c");
+  if (c >= 0 && shape[c] > 1 && shape[c] <= 16 && chunks[c] === shape[c]) {
+    const outputDimensions = Object.fromEntries(
+      axes.map((a) => (a.name === "c" ? ["c^", [1, ""]] : [a.name, dimensions[a.name]])),
+    );
+    const rgb = shape[c] === 3 && dtype === "uint8" && omero.length === 0;
+    return {
+      layers: [{
+        type: "image",
+        source: { url: source, transform: { outputDimensions } },
+        name: rgb ? "image" : "channels",
+        opacity: 1,
+        shader: rgb ? RGB_SHADER : channelShader(shape[c], omero),
+      }],
+      crossSectionBackgroundColor: "#000000", ...view,
+    };
+  }
   if (c >= 0 && shape[c] === 3 && dtype === "uint8") {
     const colors = ["v, 0.0, 0.0", "0.0, v, 0.0", "0.0, 0.0, v"];
     return {
@@ -113,6 +139,44 @@ function neuroglancerState(
     };
   }
   return { layers: [{ type: "image", source, name: "image" }], ...view };
+}
+
+const RGB_SHADER = `void main() {
+  emitRGB(vec3(toNormalized(getDataValue(0)), toNormalized(getDataValue(1)), toNormalized(getDataValue(2))));
+}
+`;
+
+/** A shader compositing `n` channels, with a control per channel. */
+function channelShader(n: number, omero: OmeroChannel[]): string {
+  // Control names are shown as labels in the layer panel; Neuroglancer
+  // accepts identifiers starting with a lowercase letter.
+  const used = new Set<string>();
+  const ident = (label: string, k: number) => {
+    let id = label.toLowerCase().replace(/[^a-z0-9_]/g, "_").replace(/^(?=[^a-z])/, "c");
+    if (id === "" || id.length > 40 || used.has(id)) id = `channel${k}`;
+    used.add(id);
+    return id;
+  };
+  const controls: string[] = [];
+  const sum: string[] = [];
+  for (let k = 0; k < n; k++) {
+    const ch = omero[k] ?? {};
+    const id = ident(ch.label ?? `channel${k}`, k);
+    const range = ch.window ? `, range=[${ch.window.start}, ${ch.window.end}]` : "";
+    controls.push(
+      `#uicontrol bool ${id}_on checkbox(default=true)`,
+      `#uicontrol vec3 ${id}_color color(default="#${(ch.color ?? "FFFFFF").toLowerCase()}")`,
+      `#uicontrol invlerp ${id}(channel=${k}${range})`,
+    );
+    sum.push(`  if (${id}_on) rgb += ${id}_color * ${id}();`);
+  }
+  return `${controls.join("\n")}
+void main() {
+  vec3 rgb = vec3(0.0);
+${sum.join("\n")}
+  emitRGB(rgb);
+}
+`;
 }
 
 let prefix: Promise<string> | undefined;
@@ -180,7 +244,9 @@ async function virtualize(url: string) {
     (t: { type: string }) => t.type === "scale",
   )?.scale ?? level0.shape.map(() => 1);
   const omero = (await getJson(`${imageUrl}zarr.json`)).attributes?.ome?.omero?.channels ?? [];
-  const state = neuroglancerState(imageUrl, ms0.axes, scale, level0.shape, level0.data_type, omero);
+  const state = neuroglancerState(
+    imageUrl, ms0.axes, scale, level0.shape, level0.chunk_grid.configuration.chunk_shape, level0.data_type, omero,
+  );
   $<HTMLAnchorElement>("open-ng").href = new URL(
     `neuroglancer/#!${encodeURIComponent(JSON.stringify(state))}`,
     location.href,
