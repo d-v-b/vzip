@@ -136,7 +136,10 @@ always present; the profile says when the others are.
      `"big"` for larger ones;
    - `{"name": "imagecodecs_jpeg2k"}` for JPEG 2000 (one codestream per
      chunk, decoding to the chunk's `[y, x]`, or, when interleaved, to
-     `[y, x, c]`, after which `transpose` applies);
+     `[y, x, c]`, after which `transpose` applies). Decoding follows OpenJPEG,
+     as imagecodecs does: a 3-component codestream whose first component is
+     at full resolution and whose other two are subsampled holds YCbCr, and
+     decodes to RGB (as in Aperio's compression 33003);
    - `{"name": "imagecodecs_jpeg"}` for JPEG (one complete JPEG stream, ISO/IEC
      10918-1 with the JFIF/Adobe colour conventions, per chunk, decoding to
      the chunk's `[y, x]` or `[y, x, c]` like JPEG 2000).

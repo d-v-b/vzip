@@ -43,8 +43,8 @@
 <body>
 <main>
   <h1>Image files to Zarr in the browser</h1>
-  <p class="lede">Paste the URL of an image file or a .vzip archive. Tiled TIFF and OME-TIFF and
-    Nikon ND2 files are supported; the format is detected from the file's first bytes. A
+  <p class="lede">Paste the URL of an image file or a .vzip archive. Tiled TIFF and OME-TIFF, Aperio SVS,
+    Hamamatsu NDPI and Nikon ND2 files are supported; the format is detected from the file's first bytes. A
     service worker reads the file's structure with a few range requests, writes a vzip archive in
     memory (by <a href="https://github.com/d-v-b/vzip/blob/main/VIRTUALIZE.md">VIRTUALIZE.md</a>), and
     serves it as plain Zarr at a local URL that any Zarr viewer on this site can open. Pixel data is
@@ -55,7 +55,9 @@
   </form>
   <div class="examples">Examples: <a href="#" id="example">IDR idr0096, mouse bone marrow (OME-TIFF, 487 MB, JPEG 2000)</a>
     · <a href="#" id="example-nd2">S-BIAD3015, E. coli time-lapse (Nikon ND2, 4.6 GB)</a>
-    · <a href="#" id="example-nd2-zstack">S-BIAD2077, 5-channel z-stack (Nikon ND2, 263 MB)</a></div>
+    · <a href="#" id="example-nd2-zstack">S-BIAD2077, 5-channel z-stack (Nikon ND2, 263 MB)</a>
+    · <a href="#" id="example-svs">TCGA colon H&amp;E (Aperio SVS, JPEG 2000, 538 MB)</a>
+    · <a href="#" id="example-ndpi">QuPath Ki67 lymphoma (Hamamatsu NDPI, 221 MB)</a></div>
   <div id="status" role="status"></div>
   <section id="result" hidden>
     <div><strong id="name"></strong></div>

@@ -14,6 +14,10 @@ const ND2_EXAMPLE =
 // A Nikon ND2 z-stack with five channels (BioImage Archive S-BIAD2077, 263 MB).
 const ND2_ZSTACK_EXAMPLE =
   "https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/077/S-BIAD2077/Files/373_230614_A1_Blk_Reg2_40x.nd2";
+// An Aperio SVS slide with JPEG 2000 tiles (TCGA, via Zenodo 7189465, CC BY 4.0, 538 MB).
+const SVS_EXAMPLE = "https://zenodo.org/api/records/7189465/files/TCGA-CM-4752.svs/content";
+// A Hamamatsu NDPI slide (QuPath's tutorial data, Zenodo 18302140, CC BY 4.0, 221 MB).
+const NDPI_EXAMPLE = "https://zenodo.org/api/records/18302140/files/ki67_lymphoma.ndpi/content";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const input = $<HTMLInputElement>("url");
@@ -288,7 +292,13 @@ $("form").addEventListener("submit", (event) => {
   event.preventDefault();
   virtualize(input.value.trim()).catch((e) => setStatus(String(e.message ?? e), true));
 });
-for (const [id, url] of [["example", EXAMPLE], ["example-nd2", ND2_EXAMPLE], ["example-nd2-zstack", ND2_ZSTACK_EXAMPLE]]) {
+for (const [id, url] of [
+  ["example", EXAMPLE],
+  ["example-nd2", ND2_EXAMPLE],
+  ["example-nd2-zstack", ND2_ZSTACK_EXAMPLE],
+  ["example-svs", SVS_EXAMPLE],
+  ["example-ndpi", NDPI_EXAMPLE],
+]) {
   $(id).addEventListener("click", (event) => {
     event.preventDefault();
     input.value = url;
