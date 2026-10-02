@@ -355,6 +355,7 @@ These are deliberate, and follow from the rules above.
   on a large encapsulated file, that is many small reads.
 - No modality LUT, VOI LUT, palette or overlay is applied to the pixels;
   only the omero window uses the VOI attributes.
-- A file whose preamble starts with a TIFF header, as some toolkits write
-  it (`II*` and a zero byte), is read by the TIFF profile (§1.2), and is
-  usually rejected there.
+
+A file whose preamble holds a TIFF header, as dual-personality files and
+some toolkits write it, is still read by this profile: §1.2 tests for `DICM`
+first.

@@ -40,7 +40,7 @@ def test_padded_rows_become_one_range_per_row():
     ("nd2_reject_loop_type.nd2", "loop type 7"),
     ("nd2_reject_version2.nd2", "Ver2.0"),
     ("nd2_reject_header_lengths.nd2", "name length"),
-    ("nd2_reject_legacy.nd2", "not a TIFF or ND2"),
+    ("nd2_reject_legacy.nd2", "not a TIFF, NDPI, ND2, DICOM"),
 ])
 def test_rejects(name, message):
     with pytest.raises(Rejected, match=message):

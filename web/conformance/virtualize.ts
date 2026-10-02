@@ -39,7 +39,7 @@ try {
   fs.writeFileSync(out, await writeVzip(virtual));
   console.log(JSON.stringify({ format: virtual.format, requests, ms: Math.round(performance.now() - t0), ...virtual.summary }));
 } catch (e) {
-  if (!(e instanceof Error) || !/^(TiffError|Nd2Error|LVError|DicomError|ImageError)$/.test(e.constructor.name)) throw e;
+  if (!(e instanceof Error) || !/^(TiffError|Nd2Error|LVError|DicomError|NiftiError|ImageError)$/.test(e.constructor.name)) throw e;
   console.error(`rejected: ${e.constructor.name}: ${e.message}`);
   process.exitCode = 3;
 }

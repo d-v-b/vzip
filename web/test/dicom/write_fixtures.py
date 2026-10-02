@@ -183,6 +183,10 @@ def main() -> None:
     ds.WindowCenter, ds.WindowWidth = "40", "400"
     ds.RescaleIntercept, ds.RescaleSlope = "-1024", "1"
     save("dicom_implicit_mono16", native(ds, ramp((12, 10), np.uint16) & 0x0FFF), ImplicitVRLittleEndian)
+    # The same file with a TIFF header in its preamble, as some toolkits write
+    # it: §1.2 tests for DICM first, so it is still DICOM.
+    (OUT / "dicom_tiff_preamble.dcm").write_bytes(
+        b"II*\0" + (OUT / "dicom_implicit_mono16.dcm").read_bytes()[4:])
 
     ds = image(MULTIFRAME_GRAYSCALE, 6, 9, photometric="MONOCHROME1", bits=16, signed=True, frames=4)
     ds.SpacingBetweenSlices = "2.5"

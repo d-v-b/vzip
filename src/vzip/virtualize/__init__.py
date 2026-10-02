@@ -13,11 +13,15 @@ how a local file is described by the URL it will be served from).
 
 from __future__ import annotations
 
-from vzip.virtualize import ndpi
+from vzip.virtualize import ndpi, nifti
 from vzip.virtualize.common import Output, Rejected, file_reader, http_reader
 from vzip.virtualize.dicom import is_dicom, virtualize_dicom
 from vzip.virtualize.nd2 import is_nd2, virtualize_nd2
 from vzip.virtualize.tiff import virtualize_tiff
+
+# The first bytes of a TIFF or BigTIFF file, in either byte order (§1.2).
+TIFF_MAGIC = (b"II*\0", b"MM\0*", b"II+\0", b"MM\0+")
+NOT_SUPPORTED = "not a TIFF, NDPI, ND2, DICOM or NIfTI file"
 
 __all__ = ["Output", "Rejected", "virtualize", "virtualize_dicom", "virtualize_nd2", "virtualize_tiff"]
 
@@ -30,13 +34,15 @@ def virtualize(location: str, url: str | None = None) -> tuple[str, Output]:
         read, size = file_reader(location)
     url = url or location
     head = read(0, min(552, size))
-    if head[:2] in (b"II", b"MM"):
+    if is_dicom(head):
+        return "dicom", virtualize_dicom(url, read, size)
+    if head[:4] in TIFF_MAGIC:
         first = ndpi.detect(read, size)
         if first is not None:
             return "ndpi", ndpi.virtualize_ndpi(url, read, size, first)
         return "tiff", virtualize_tiff(url, read, size)
     if is_nd2(head):
         return "nd2", virtualize_nd2(url, read, size)
-    if is_dicom(head):
-        return "dicom", virtualize_dicom(url, read, size)
-    raise Rejected("not a TIFF or ND2 file")
+    if nifti.detect(head) is not None:
+        return "nifti", nifti.virtualize_nifti(url, read, size)
+    raise Rejected(NOT_SUPPORTED)

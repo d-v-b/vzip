@@ -69,17 +69,17 @@ a test that needs a byte beyond `H` does not match.
 
 | test on `H` | |
 |---|---|
+| bytes 128–131 are `44 49 43 4D` (`DICM`) | DICOM profile (§6) |
 | bytes 0–3 are `49 49 2A 00`, `4D 4D 00 2A`, `49 49 2B 00` or `4D 4D 00 2B` | NDPI profile (§4) if the file passes its detection test (§4), else TIFF profile (§3) |
 | bytes 0–3 are `DA CE BE 0A` (the ND2 chunk magic, §5.1) | ND2 profile (§5) |
 | bytes 0–7 are `89 48 44 46 0D 0A 1A 0A` (the HDF5 signature) | IMS profile (§8) |
 | bytes 0–3 are the 32-bit integer 348 in either byte order, and bytes 344–347 are `6E 2B 31 00` (`n+1`) | NIfTI profile (§7), NIfTI-1 |
 | bytes 0–3 are the 32-bit integer 540 in either byte order, and bytes 4–11 are `6E 2B 32 00 0D 0A 1A 0A` (`n+2`) | NIfTI profile (§7), NIfTI-2 |
-| bytes 128–131 are `44 49 43 4D` (`DICM`) | DICOM profile (§6) |
 | anything else, including the JPEG 2000 signature box `00 00 00 0C 6A 50 20 20 0D 0A 87 0A` that starts legacy ND2 files, and NIfTI header-and-image pairs (`ni1`, `ni2`) | rejected |
 
-A DICOM file whose 128-byte preamble holds a TIFF header (a dual-personality
-file) is therefore read by the TIFF profile. An HDF5 file that is not an
-Imaris file is rejected by the IMS profile.
+A DICOM file is read by the DICOM profile even when its 128-byte preamble
+holds a TIFF header, as dual-personality files and some writers' preambles
+do. An HDF5 file that is not an Imaris file is rejected by the IMS profile.
 
 **Rejection.** A virtualizer MUST reject an input the profile does not
 accept, producing no output. That includes every input that is not well
