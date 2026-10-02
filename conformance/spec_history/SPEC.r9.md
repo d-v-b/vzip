@@ -97,6 +97,47 @@ is welcome as issues or pull requests on the specification's repository. A
 report is most useful when it names the section, the input, and the
 behaviour each reading would produce.
 
+### 1.4 Prior work (informative)
+
+vzip is a binary container for a model of references that other projects
+established. This section credits them; nothing in it is normative.
+
+- **kerchunk.** Virtual Zarr originates with
+  [kerchunk](https://github.com/fsspec/kerchunk) (Martin Durant and
+  contributors, fsspec). kerchunk records where the chunks of HDF5, netCDF,
+  GRIB, TIFF and FITS files live, and fsspec's `ReferenceFileSystem` serves
+  them so that Zarr can read the files in place. vzip's data model (§2)
+  is the one defined by kerchunk's
+  [reference specification](https://fsspec.github.io/kerchunk/spec.html):
+
+  | kerchunk reference specification | vzip |
+  |---|---|
+  | a string value: inline data | a `bytes` entry (§4.2) |
+  | `[url, offset, length]` | a reference with one source range (§5.2) |
+  | a `base64:` string: inline binary data | a literal range (§5.2), or a `data` source (§6) |
+  | `templates` shared by many URLs | the source table (§6) |
+
+  kerchunk's version 1 specification anticipated "future possible binary
+  storage" of references. This document specifies one. kerchunk's Parquet
+  layout showed how compactly references can be stored.
+- **VirtualiZarr.**
+  [VirtualiZarr](https://github.com/zarr-developers/VirtualiZarr) (started
+  by Tom Nicholas, a zarr-developers project, grown out of kerchunk) recast
+  virtual Zarr as chunk manifests: a path, offset and length for every chunk
+  of a Zarr array. Those manifests are what a vzip archive's references
+  record, and the reference implementation's converters take VirtualiZarr
+  datasets as input. The need for a Zarr-native on-disk manifest format,
+  raised in
+  [zarr-specs#287](https://github.com/zarr-developers/zarr-specs/issues/287),
+  motivated this work.
+- **Icechunk.** Source pins (§6.1) adapt [Icechunk](https://icechunk.io/)'s
+  checks of virtual chunks against the ETag or modification time of the
+  object they reference.
+
+What vzip contributes is the container: a single ZIP file, a binary
+encoding, and a specification with a conformance suite that is independent of
+any one language or library.
+
 ## 2. Data model
 
 An archive defines a partial function from **keys** to **values**:
@@ -133,17 +174,26 @@ also satisfies the following:
    record, and no two central directory records have the same file name.
 3. Every entry uses compression method 0 (STORED) or 8 (DEFLATE). DEFLATE
    bodies are raw DEFLATE streams (RFC 1951) with no zlib or gzip wrapper.
-4. Every local file header has an extra field length of 0. The body of an
+4. Every local file header has an extra field length of 0, except that of a
+   large entry (rule 7), whose extra field is exactly one ZIP64 extended
+   information extra field of 20 bytes: header ID 0x0001, data size 16, then
+   the uncompressed size and the compressed size as `u64`. The body of an
    entry therefore starts at `local_header_offset + 30 + file_name_length`,
-   computed from the central directory record alone (the **body offset**).
+   plus 20 for a large entry, computed from the central directory record
+   alone (the **body offset**).
 5. No entry is encrypted (general purpose bit 0 clear), and general purpose
    bit 3 (data descriptor) is clear. General purpose bit 11 (UTF-8 file
    names) is set in both headers of every entry.
 6. The CRC-32, compressed size and uncompressed size in both headers are
    correct for the entry's body.
-7. Every entry's compressed and uncompressed sizes are less than 0xFFFFFFFF.
-   Entries of 4 GiB or more cannot be stored, because they would need a ZIP64
-   extra field in the local header, which rule 4 forbids.
+7. An entry is **large** if its compressed or uncompressed size is
+   0xFFFFFFFF or more. In both headers of a large entry, both 32-bit size
+   fields are 0xFFFFFFFF and the sizes are in the ZIP64 extra field (rule 4,
+   §3.2). Sizes are less than 2^64. A large entry MUST use method 0, so that
+   a range of it can be read without inflating the whole body; a large entry
+   with method 8 is an entry error. Reference entries are never large (§4.3),
+   and nor are the format entries (§4.1), which use method 8: a writer whose
+   source table or page index would reach 0xFFFFFFFF bytes MUST fail.
 8. Central directory records have no file comment (comment length 0).
 9. The archive has no central directory encryption, digital signature or
    archive extra data record.
@@ -170,26 +220,32 @@ directory records use ZIP64 only where a value is too large for its field:
   The end of an archive therefore has the same shape at every size. A ZIP
   reader that knows nothing about vzip is sent to the zip64 record by the
   all-ones fields, so it reads the same four values a vzip reader does.
-- **Central directory records.** A local header offset of 0xFFFFFFFF or more
-  is stored as 0xFFFFFFFF, with the actual value in a ZIP64 extended
-  information extra field (`0x0001`) containing only that value. A writer
-  MUST NOT write that block on a record whose offset is smaller. Sizes never
-  need ZIP64 (§3.1 rule 7).
+- **Central directory records.** A record's ZIP64 extended information
+  extra field (`0x0001`) holds, in this order (as APPNOTE orders them), the
+  uncompressed size and the compressed size if the entry is large (§3.1
+  rule 7), then the local header offset if it is 0xFFFFFFFF or more; each
+  value it holds has its 32-bit field set to 0xFFFFFFFF. A writer MUST NOT
+  write the block on a record that needs neither, and MUST NOT include a
+  value that fits its 32-bit field.
 
-In a central directory record, the ZIP64 extra block (`0x0001`) holds the
-64-bit local header offset when the 32-bit field is all ones. In a valid
-vzip archive that is the only value it can hold, because sizes never reach
-0xFFFFFFFF (§3.1 rule 7), so the block is exactly 8 bytes. A record has an
-entry error if:
+A reader decodes a central directory record's sizes and offset like this:
 
-- its compressed or uncompressed size field is 0xFFFFFFFF;
-- its offset field is all ones and it has no `0x0001` block, or one shorter
-  than 8 bytes;
-- it has more than one `0x0001` block, whatever its offset.
+- **Sizes:** if both size fields are 0xFFFFFFFF, the entry is large and its
+  sizes are the first 16 bytes of the `0x0001` block (uncompressed, then
+  compressed). Otherwise the size fields are the sizes.
+- **Offset:** if the offset field is 0xFFFFFFFF, the offset is the next 8
+  bytes of the block, after the sizes if the entry is large. Otherwise the
+  offset field is the offset.
 
-A `0x0001` block on a record whose offset is not all ones is otherwise
-ignored. When the offset comes from a block longer than 8 bytes, it is the
-block's first 8 bytes; the rest is ignored.
+A record has an entry error if:
+
+- exactly one of its size fields is 0xFFFFFFFF;
+- it needs values from a `0x0001` block and has none, or one shorter than
+  the values it needs (16 bytes for the sizes, 8 for the offset);
+- it has more than one `0x0001` block, whatever it needs.
+
+A `0x0001` block on a record that needs no value from it is otherwise
+ignored, and so are any bytes of a block after the values a record needs.
 
 A reader takes the central directory's size and offset from the zip64 end of
 central directory record, in every archive:
@@ -317,8 +373,9 @@ The data of the 0x7A76 or 0x7A77 block is the **reference payload**:
 Writers MUST use 0x7A76 when a reference has exactly one range, and 0x7A77
 otherwise. Readers MUST accept a 0x7A77 payload with any number of parts.
 
-A reference entry MUST use method 0; a reference entry with method 8 is an
-entry error. Extra field blocks may appear in any order. Its body MUST be either empty or byte-identical to the reference
+A reference entry MUST use method 0; a reference entry with method 8, or a
+large one (§3.1 rule 7), is an entry error. Extra field blocks may appear in
+any order. Its body MUST be either empty or byte-identical to the reference
 payload. Writers SHOULD make it identical, so that ZIP tools which ignore
 extra fields still see the payload. Readers MUST take the payload from the
 central directory, and MUST NOT read or check the body except in the raw view
@@ -575,8 +632,9 @@ Writers SHOULD:
 This section applies to readers that support `http:` and `https:`.
 
 - **Requests:** a read of bytes `[a, b)` of an HTTP object is a GET with
-  `Range: bytes=a-(b−1)` and `Accept-Encoding: identity`. A reader MAY
-  combine reads of nearby ranges of the same object into one request. It
+  `Range: bytes=a-(b−1)` and `Accept-Encoding: identity`. A reader SHOULD
+  combine reads of nearby ranges of the same object into one request
+  (§8.3). It
   MUST NOT make any other request to resolve a range or check its pins: no
   HEAD, and no request for the whole object.
 - **Pins** add `If-Match` and `If-Unmodified-Since` headers to those same
@@ -854,8 +912,20 @@ A conforming reader provides the following operations on an opened archive:
    error, even if their source is missing or too short. This includes every
    zero-length range.
 
-Readers SHOULD fetch only the bytes in step 3. A reader MUST NOT return bytes
-for a request it could not resolve completely.
+**Coalescing.** A reader SHOULD combine reads of step 3 that fall in the
+same source value and lie close together into one read that also covers the
+bytes between them, and take each range's bytes from that read. Otherwise a
+reference made of many short ranges of one object, such as one range per row
+of an image whose rows are padded, costs one request per range. The bytes
+between the ranges are read but never returned. How close counts as "close"
+is up to the reader; the implementations in the specification's repository
+combine reads at most 64 KiB apart.
+
+Coalescing never changes the result of a `get`: a combined read ends at the
+end of one of the ranges it covers, so it fails only where that range's own
+read would. Apart from such gaps, readers SHOULD fetch only the bytes in
+step 3. A reader MUST NOT return bytes for a request it could not resolve
+completely.
 
 ### 8.4 Errors
 
@@ -864,7 +934,7 @@ There are six classes of error. Each says which operations it makes fail.
 | class | causes | effect |
 |---|---|---|
 | **archive error** | everything §8.1 checks | opening fails |
-| **entry error** | the key's record violates §4.1 (unparseable extra field, several reference blocks), uses a method other than 0 and 8, has bit 0 set, is a reference entry with method 8 (§4.3), or breaks the ZIP64 block rules (§3.2); or the page that lookup (§7.2) selects for the key cannot be parsed. In that last case the key is reported as an entry error even if it isn't in the page, because the reader cannot tell. | classify, get and raw fail for that key; other keys are unaffected |
+| **entry error** | the key's record violates §4.1 (unparseable extra field, several reference blocks), uses a method other than 0 and 8, has bit 0 set, is a reference entry with method 8 (§4.3), is a large entry with method 8 (§3.1 rule 7), or breaks the ZIP64 block rules (§3.2); or the page that lookup (§7.2) selects for the key cannot be parsed. In that last case the key is reported as an entry error even if it isn't in the page, because the reader cannot tell. | classify, get and raw fail for that key; other keys are unaffected |
 | **body error** | an entry's body (`[body offset, body offset + compressed size)`, judged as a whole even for a small window) lies outside the file; a DEFLATE body does not inflate cleanly (§8.1); a STORED entry's compressed and uncompressed sizes differ. This applies to bytes entries for get and raw, and to reference entries for raw. | get and raw of that key fail; a range of a `key` source naming it fails with a resolution error |
 | **payload error** | the reference payload is malformed (§5) | get fails for that key |
 | **resolution error** | §6, §6.1, §8.3 step 3 | get fails for the requests that need the range |
@@ -899,9 +969,9 @@ SHOULD report the class of an error along with its message.
 For archives that break these writer requirements, reader results are
 unspecified:
 
-- §3.1 rules 1, 2, 4, 5 (except bit 0), 6, 7 and 8: readers use body offsets
-  computed from the central directory, need not read local headers, and need
-  not verify CRC-32 values. Duplicate names are included here. A reader that
+- §3.1 rules 1, 2, 4, 5 (except bit 0), 6, 7 (except a large entry with
+  method 8) and 8: readers use body offsets computed from the central
+  directory, need not read local headers, and need not verify CRC-32 values. Duplicate names are included here. A reader that
   does verify a CRC-32 and finds a mismatch reports a body error.
 - §3.2: whether a record's ZIP64 extra block was written only where needed;
   whether the end of central directory record's counts, size and offset are
@@ -939,8 +1009,6 @@ MUST reject its input, producing no archive, if:
 - a source range's `offset + length`, or a reference's total size, exceeds
   2^64 − 1 (§5.2, §5.3);
 - a key's UTF-8 encoding is longer than 65535 bytes;
-- a bytes entry's uncompressed or compressed size is 0xFFFFFFFF or more
-  (§3.1 rule 7);
 - a pinned entry is not a bytes entry, is a format entry, or is listed
   twice.
 
