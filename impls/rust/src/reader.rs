@@ -123,8 +123,10 @@ fn analyze(r: &Record) -> Result<Entry, Error> {
     if r.method != 0 && r.method != 8 {
         return Err(e(format!("unsupported compression method {}", r.method)));
     }
-    if r.csize == 0xFFFF_FFFF || r.usize == 0xFFFF_FFFF {
-        return Err(e("size field is 0xFFFFFFFF".into()));
+    // §3.2: both size fields 0xFFFFFFFF mark a large entry; exactly one is an error.
+    let large = r.csize == 0xFFFF_FFFF && r.usize == 0xFFFF_FFFF;
+    if !large && (r.csize == 0xFFFF_FFFF || r.usize == 0xFFFF_FFFF) {
+        return Err(e("exactly one size field is 0xFFFFFFFF".into()));
     }
     let x = &r.extra;
     let mut i = 0;
@@ -150,28 +152,40 @@ fn analyze(r: &Record) -> Result<Entry, Error> {
     if z64.len() > 1 {
         return Err(e("more than one ZIP64 extra block".into()));
     }
-    let lho = if r.lho == 0xFFFF_FFFF {
-        match z64.first() {
-            Some(d) if d.len() >= 8 => u64le(d, 0),
-            _ => return Err(e("offset is 0xFFFFFFFF without an 8-byte ZIP64 block".into())),
-        }
-    } else {
-        r.lho as u64
+    // §3.2: the ZIP64 block holds a large entry's sizes (uncompressed, then
+    // compressed), then the offset if its field is 0xFFFFFFFF.
+    let big_lho = r.lho == 0xFFFF_FFFF;
+    let need = if large { 16 } else { 0 } + if big_lho { 8 } else { 0 };
+    let z = match z64.first() {
+        _ if need == 0 => &[][..],
+        Some(d) if d.len() >= need => *d,
+        _ => return Err(e("ZIP64 extra block missing or too short".into())),
     };
+    let (usize, csize) = if large { (u64le(z, 0), u64le(z, 8)) } else { (r.usize as u64, r.csize as u64) };
+    let lho = if big_lho { u64le(z, if large { 16 } else { 0 }) } else { r.lho as u64 };
     if refs.len() > 1 {
         return Err(e("more than one reference extra block".into()));
     }
     let body = Body {
-        off: lho.saturating_add(30).saturating_add(r.name.len() as u64),
-        csize: r.csize as u64,
-        usize: r.usize as u64,
+        off: lho
+            .saturating_add(30)
+            .saturating_add(r.name.len() as u64)
+            .saturating_add(if large { 20 } else { 0 }),
+        csize,
+        usize,
         method: r.method,
     };
+    if large && r.method != 0 {
+        return Err(e(format!("large entry uses method {}", r.method)));
+    }
     match refs.first() {
         None => Ok(Entry::Bytes(body)),
         Some((id, d)) => {
             if r.method == 8 {
                 return Err(e("reference entry uses method 8".into()));
+            }
+            if large {
+                return Err(e("reference entry is large".into()));
             }
             Ok(Entry::Reference { id: *id, payload: d.to_vec(), body })
         }
@@ -650,4 +664,102 @@ fn read_file_range(u: &Uri, from: u64, to: u64, pins: &crate::http::Pins) -> Res
     let mut v = vec![0u8; (to - from) as usize];
     f.read_exact_at(&mut v, from).map_err(|e| re(format!("read failed: {e}")))?;
     Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FF: u32 = 0xFFFF_FFFF;
+
+    fn rec(csize: u32, usize: u32, lho: u32, extra: Vec<u8>) -> Record {
+        Record { name: b"k".to_vec(), flags: 0x800, method: 0, csize, usize, lho, extra }
+    }
+    fn z64(vals: &[u64]) -> Vec<u8> {
+        let mut x = vec![1, 0];
+        x.extend_from_slice(&((vals.len() * 8) as u16).to_le_bytes());
+        vals.iter().for_each(|v| x.extend_from_slice(&v.to_le_bytes()));
+        x
+    }
+    fn body(r: &Record) -> (u64, u64, u64) {
+        match analyze(r).unwrap() {
+            Entry::Bytes(b) => (b.off, b.csize, b.usize),
+            Entry::Reference { .. } => panic!("not bytes"),
+        }
+    }
+    fn entry_err(r: Record) {
+        assert_eq!(analyze(&r).unwrap_err().class, ErrorClass::Entry);
+    }
+    fn range_extra() -> Vec<u8> {
+        let p = proto::encode_range(&Range { source: 0, offset: 0, length: 0, data: Some(b"a".to_vec()) });
+        let mut x = crate::EXTRA_RANGE.to_le_bytes().to_vec();
+        x.extend_from_slice(&(p.len() as u16).to_le_bytes());
+        x.extend_from_slice(&p);
+        x
+    }
+
+    /// §3.2 decoding: sizes and offset come from the record or its ZIP64 block.
+    #[test]
+    fn analyze_sizes_and_offsets() {
+        let big = 5u64 << 30;
+        // (record, expected (body offset, csize, usize)); name length is 1.
+        let cases = [
+            (rec(3, 4, 100, vec![]), (131, 3, 4)),
+            (rec(FF, FF, 100, z64(&[big, big + 1])), (151, big + 1, big)),
+            (rec(3, 4, FF, z64(&[big])), (big + 31, 3, 4)),
+            (rec(FF, FF, FF, z64(&[big, big, 7 << 32])), ((7 << 32) + 51, big, big)),
+            // bytes beyond what is needed are ignored
+            (rec(3, 4, FF, z64(&[big, 9])), (big + 31, 3, 4)),
+            (rec(FF, FF, 100, z64(&[big, big, 9])), (151, big, big)),
+            // a block on a record that needs nothing is ignored
+            (rec(3, 4, 100, z64(&[1, 2, 3])), (131, 3, 4)),
+        ];
+        for (r, want) in cases {
+            assert_eq!(body(&r), want, "{r:?}");
+        }
+        // A small reference entry with a ZIP64 offset block is fine.
+        let mut x = range_extra();
+        x.extend(z64(&[big]));
+        assert!(matches!(analyze(&rec(0, 0, FF, x)).unwrap(), Entry::Reference { .. }));
+    }
+
+    #[test]
+    fn analyze_err_one_size_field_all_ones() {
+        entry_err(rec(FF, 4, 100, z64(&[1, 2])));
+        entry_err(rec(3, FF, 100, z64(&[1, 2])));
+    }
+
+    #[test]
+    fn analyze_err_zip64_block_missing() {
+        entry_err(rec(FF, FF, 100, vec![]));
+        entry_err(rec(3, 4, FF, vec![]));
+    }
+
+    #[test]
+    fn analyze_err_zip64_block_too_short() {
+        entry_err(rec(FF, FF, 100, z64(&[1])));
+        entry_err(rec(FF, FF, FF, z64(&[1, 2])));
+        entry_err(rec(3, 4, FF, vec![1, 0, 4, 0, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn analyze_err_duplicate_zip64_block() {
+        let mut x = z64(&[1]);
+        x.extend(z64(&[1]));
+        entry_err(rec(3, 4, 100, x));
+    }
+
+    #[test]
+    fn analyze_err_large_deflate_entry() {
+        let mut r = rec(FF, FF, 100, z64(&[1 << 32, 7]));
+        r.method = 8;
+        entry_err(r);
+    }
+
+    #[test]
+    fn analyze_err_large_reference_entry() {
+        let mut x = range_extra();
+        x.extend(z64(&[1 << 32, 1 << 32]));
+        entry_err(rec(FF, FF, 100, x));
+    }
 }

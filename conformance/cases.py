@@ -994,6 +994,77 @@ def crafted(root: Path) -> dict[str, dict]:
     zip64_counts_ignored.expect = end_ok
     case("zip64_record_counts_ignored")(zip64_counts_ignored)
 
+    # -- revision 9: large entries (§3.1 rules 4 and 7, §3.2) --------------------
+    # Bodies of 4 GiB or more are sparse files: zeros, then a short tail.
+    def large(path):
+        f, w = _writer(path)
+        _sparse_entry(w, "edge", 0xFFFFFFFF, b"EDGE")  # the smallest large entry
+        _sparse_entry(w, "big", 0x100000000 + 3, b"tail!")
+        w.add_bytes("after", b"past 8 GiB")  # its local header offset needs ZIP64 too
+        w.add_ref("x", "data/blob.bin", 3, 2)
+        w.close(); f.close()
+    large.expect = [
+        (classify("big"), [{"ok": True, "kind": "bytes"}]),
+        (get("big", {"suffix": 5}), [ok_value(b"tail!")]),
+        (get("big", {"start": 0x100000000 - 4, "end": 0x100000000}), [ok_value(b"\0\0ta")]),
+        (get("big", {"start": 0, "end": 4}), [ok_value(b"\0" * 4)]),
+        (get("edge", {"suffix": 4}), [ok_value(b"EDGE")]),
+        (get("edge", {"offset": 0xFFFFFFFF - 6}), [ok_value(b"\0\0EDGE")]),
+        (get("after"), [ok_value(b"past 8 GiB")]),
+        (get("x"), [ok_value(BLOB[3:5])]),
+        ({"op": "list", "prefix": ""}, [{"ok": True, "keys": ["after", "big", "edge", "x"]}]),
+    ]
+    case("large_entries")(large)
+
+    def patched_record(key, mutate):
+        """`mutate(size32, csize32, off32, extra)` returns those fields, and optionally a
+        method, for the central directory record of `key`, in an archive with `fine`
+        and a reference `x`."""
+        def build(path):
+            f, w = _writer(path)
+            w.add_bytes("z", b"hello")
+            w.add_bytes("fine", b"ok")
+            w.add_ref("x", "data/blob.bin", 3, 2)
+            w.close(); f.close()
+            b = bytearray(path.read_bytes())
+            i = next(_records(b, b"PK\x01\x02", 28, 46, key.encode()))
+            csize, size = struct.unpack_from("<II", b, i + 20)
+            nlen, xlen = struct.unpack_from("<HH", b, i + 28)
+            off = struct.unpack_from("<I", b, i + 42)[0]
+            extra = bytes(b[i + 46 + nlen : i + 46 + nlen + xlen])
+            size, csize, off, new, *method = mutate(size, csize, off, extra)
+            if method:
+                struct.pack_into("<H", b, i + 10, method[0])
+            struct.pack_into("<II", b, i + 20, csize, size)
+            struct.pack_into("<I", b, i + 42, off)
+            struct.pack_into("<H", b, i + 30, len(new))
+            b[i + 46 + nlen : i + 46 + nlen + xlen] = new
+            # the central directory changed size: fix it in the zip64 record (its
+            # offset is unchanged), and the locator, because the zip64 record moved
+            z = len(b) - 22 - 22 - 20 - 56
+            assert b[z : z + 4] == b"PK\x06\x06"
+            struct.pack_into("<Q", b, z + 40, struct.unpack_from("<Q", b, z + 40)[0] + len(new) - xlen)
+            struct.pack_into("<Q", b, z + 56 + 8, z)
+            path.write_bytes(bytes(b))
+        build.expect = fine + entry_error(key)
+        return build
+
+    def z64(*values):
+        return struct.pack("<HH", 1, 8 * len(values)) + struct.pack(f"<{len(values)}Q", *values)
+
+    U32 = 0xFFFFFFFF
+    case("large_zip64_block_too_short")(
+        patched_record("z", lambda s, c, o, x: (U32, U32, o, z64(s) + x)))
+    case("large_zip64_block_without_offset")(
+        patched_record("z", lambda s, c, o, x: (U32, U32, U32, z64(s, c) + x)))
+    case("large_without_zip64_block")(
+        patched_record("z", lambda s, c, o, x: (U32, U32, o, x)))
+    case("large_reference_entry")(
+        patched_record("x", lambda s, c, o, x: (U32, U32, o, z64(s, c) + x)))
+    # "hello" again, but DEFLATEd: a well-formed body, rejected because it is large
+    case("large_deflate_entry")(
+        patched_record("z", lambda s, c, o, x: (U32, U32, o, z64(5, 7) + x, 8)))
+
     def empty_url(path):
         f, w = _writer(path, sources=[Source(url="data/blob.bin"), Source(url="")])
         w._skip_checks = True
@@ -1049,6 +1120,24 @@ def _records(b: bytes, sig: bytes, name_len_at: int, name_at: int, key: bytes):
         if n == len(key) and b[i + name_at : i + name_at + n] == key:
             yield i
         i += 4
+
+
+def _sparse_entry(w, key: str, size: int, tail: bytes) -> None:
+    """Add a STORED entry of `size` bytes, zeros then `tail`, leaving the zeros as
+    a hole in the file so it takes no disk space."""
+    crc, zeros, left = 0, bytes(1 << 24), size - len(tail)
+    while left:
+        n = min(left, len(zeros))
+        crc, left = zlib.crc32(zeros[:n] if n < len(zeros) else zeros, crc), left - n
+    crc = zlib.crc32(tail, crc)
+    w._check_new_key(key)
+    w._names.add(key)
+    off = w._pos
+    w._local_header(key.encode(), 0, crc, size, size)
+    w._f.seek(size - len(tail), 1)
+    w._f.write(tail)
+    w._pos += size
+    w._cd.append((key, off, size, size, 0, crc, b""))
 
 
 def _body_offset(b: bytes, key: str) -> int:

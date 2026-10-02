@@ -31,6 +31,7 @@ export type RawEntry = {
   method?: number;
   flags?: number;
   extra?: Buffer; // central directory extra field
+  localExtra?: Buffer; // local header extra field (a large entry's 20-byte ZIP64 field)
   csize?: number;
   usize?: number;
   lho?: number; // override local header offset field
@@ -79,9 +80,11 @@ export function rawZip(opts: {
     lh.writeUInt32LE(e.csize ?? body.length, 18);
     lh.writeUInt32LE(e.usize ?? body.length, 22);
     lh.writeUInt16LE(name.length, 26);
+    const lx = e.localExtra ?? Buffer.alloc(0);
+    lh.writeUInt16LE(lx.length, 28);
     const lho = off;
-    out.push(lh, name, body);
-    off += 30 + name.length + body.length;
+    out.push(lh, name, lx, body);
+    off += 30 + name.length + lx.length + body.length;
     const extra = e.extra ?? Buffer.alloc(0);
     const cd = Buffer.alloc(46);
     cd.writeUInt32LE(0x02014b50, 0);
@@ -97,7 +100,7 @@ export function rawZip(opts: {
     cd.writeUInt32LE(e.lho ?? lho, 42);
     recs.push(Buffer.concat([cd, name, extra]));
     names.push(name.toString("latin1"));
-    return lho + 30 + name.length;
+    return lho + 30 + name.length + lx.length;
   };
   for (const e of opts.entries) add(e);
   const st = opts.sources === undefined ? Buffer.alloc(0) : Buffer.isBuffer(opts.sources) ? opts.sources : encodeSourceTable(opts.sources);

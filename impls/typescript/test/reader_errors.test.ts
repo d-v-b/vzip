@@ -167,18 +167,61 @@ test("entry error: extra field does not parse", () => entryErrorFor({ name: "bad
 test("entry error: two reference blocks", () =>
   entryErrorFor({ name: "bad", extra: Buffer.concat([extraBlock(0x7a76, Buffer.alloc(0)), extraBlock(0x7a77, Buffer.alloc(0))]) }));
 test("entry error: reference with method 8", () => entryErrorFor({ name: "bad", method: 8, body: zlib.deflateRawSync(Buffer.alloc(0)), extra: extraBlock(0x7a76, Buffer.alloc(0)) }));
-test("entry error: size field 0xFFFFFFFF", () => entryErrorFor({ name: "bad", usize: 0xffffffff }));
+test("entry error: exactly one size field 0xFFFFFFFF", () =>
+  entryErrorFor({ name: "bad", usize: 0xffffffff, extra: extraBlock(1, Buffer.alloc(16)) }));
+test("entry error: large entry without zip64 block", () => entryErrorFor({ name: "bad", usize: 0xffffffff, csize: 0xffffffff }));
+test("entry error: large entry with zip64 block shorter than 16 bytes", () =>
+  entryErrorFor({ name: "bad", usize: 0xffffffff, csize: 0xffffffff, extra: extraBlock(1, Buffer.alloc(15)) }));
+test("entry error: large entry with offset 0xFFFFFFFF and zip64 block without the offset", () =>
+  entryErrorFor({ name: "bad", usize: 0xffffffff, csize: 0xffffffff, lho: 0xffffffff, extra: extraBlock(1, Buffer.alloc(16)) }));
+test("entry error: large reference entry", () =>
+  entryErrorFor({
+    name: "bad", usize: 0xffffffff, csize: 0xffffffff,
+    extra: Buffer.concat([extraBlock(1, u64s(0x100000000n, 0x100000000n)), extraBlock(0x7a76, Buffer.alloc(0))]),
+  }));
+test("entry error: large entry with method 8", () =>
+  entryErrorFor({
+    name: "bad", body: zlib.deflateRawSync(Buffer.from("hello")), method: 8, usize: 0xffffffff, csize: 0xffffffff,
+    extra: extraBlock(1, u64s(0x100000000n, 7n)),
+  }));
 test("entry error: offset 0xFFFFFFFF without zip64 block", () => entryErrorFor({ name: "bad", lho: 0xffffffff }));
 test("entry error: offset 0xFFFFFFFF with short zip64 block", () =>
   entryErrorFor({ name: "bad", lho: 0xffffffff, extra: extraBlock(1, Buffer.alloc(4)) }));
 test("entry error: two zip64 blocks", () =>
   entryErrorFor({ name: "bad", extra: Buffer.concat([extraBlock(1, Buffer.alloc(8)), extraBlock(1, Buffer.alloc(8))]) }));
 
-test("zip64 extra block holds the local header offset", async () => {
-  const z = Buffer.alloc(8);
-  z.writeBigUInt64LE(0n);
-  const a = open(rawZip({ entries: [{ name: "k", body: Buffer.from("hi"), lho: 0xffffffff, extra: extraBlock(1, z) }] }));
-  assert.deepEqual(await a.get("k", WHOLE), Buffer.from("hi"));
+function u64s(...vs: bigint[]): Buffer {
+  const b = Buffer.alloc(8 * vs.length);
+  vs.forEach((v, i) => b.writeBigUInt64LE(v, 8 * i));
+  return b;
+}
+
+test("zip64 extra block decoding (§3.2): sizes, offset, both, ignored blocks and trailing bytes", async () => {
+  // Sizes in the block are taken as given, so small bodies stand in for large ones here;
+  // the local header of a large entry carries the 20-byte ZIP64 field (§3.1 rule 4).
+  const body = Buffer.from("hello");
+  const lx = extraBlock(1, u64s(5n, 5n));
+  const ALL = 0xffffffff;
+  const entries: RawEntry[] = [
+    // offset only (the first entry is at offset 0)
+    { name: "off", body: Buffer.from("hi"), lho: ALL, extra: extraBlock(1, u64s(0n)) },
+    // sizes only, with trailing bytes after them
+    { name: "sizes", body, usize: ALL, csize: ALL, localExtra: lx, extra: extraBlock(1, Buffer.concat([u64s(5n, 5n), Buffer.alloc(3)])) },
+    // a block on a record that needs nothing is ignored
+    { name: "ignored", body: Buffer.from("x"), extra: extraBlock(1, u64s(99n)) },
+  ];
+  const a = open(rawZip({ entries }));
+  assert.deepEqual(await a.get("off", WHOLE), Buffer.from("hi"));
+  assert.deepEqual(await a.get("sizes", WHOLE), body);
+  assert.deepEqual(await a.get("sizes", { kind: "range", start: 1n, end: 3n }), Buffer.from("el"));
+  assert.deepEqual(await a.raw("sizes"), body);
+  assert.deepEqual(await a.get("ignored", WHOLE), Buffer.from("x"));
+
+  // sizes and offset: the offset follows the sizes; a second archive whose large entry is first
+  const b = open(rawZip({
+    entries: [{ name: "both", body, usize: ALL, csize: ALL, lho: ALL, localExtra: lx, extra: extraBlock(1, u64s(5n, 5n, 0n)) }],
+  }));
+  assert.deepEqual(await b.get("both", WHOLE), body);
 });
 
 test("entry error: unparseable page; key reported as entry error even if not in page", async () => {
