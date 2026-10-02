@@ -809,3 +809,68 @@ The only failures left are the four revision-8 rules the round-7
 implementations already failed (`h/dupetag`, TS `h/upperbytes`, and two
 query-file rejections in TS and Python). The same run on the commit before
 this revision fails exactly the same checks.
+
+## Revision 10: related ZIP profiles (compatible)
+
+Format version 0, specification revision 10. **Status: provisional.**
+
+Outside review opened four more issues, comparing vzip with OME-Zarr RFC 9
+([issue 16](https://github.com/d-v-b/vzip/issues/16),
+[issue 13](https://github.com/d-v-b/vzip/issues/13)) and SOZip
+([issue 15](https://github.com/d-v-b/vzip/issues/15)), and proposing a
+fixed-record-length index ([issue 14](https://github.com/d-v-b/vzip/issues/14)).
+Revision 9 already took two of their points: entries of 4 GiB or more (RFC 9
+item 5, SOZip point 3), and large entries being STORED (SOZip point 1). This
+revision takes the rest that need no new format rule. No reader behaviour
+changes, and every archive valid under revision 9 is still valid.
+
+| § | r9 | r10 |
+|---|---|---|
+| 1.5 | — | new, informative: how a vzip archive relates to an `.ozx` file (reference entries, comment, ZIP64, shards, `zarr.json` order, hidden entries) and to SOZip |
+| 3.1 rule 2 | "every entry has exactly one local file header", silent on local headers that belong to no entry | a writer MUST NOT write a local header that no central directory record points to (SOZip's index files are such headers); readers never look for one |
+| 9.3 | — | new: archives SHOULD be named `.vzip`; an archive with reference entries SHOULD NOT be named `.ozx` |
+
+**Why rule 2 forbids them.** Rule 2 could be read either way, and issue 15
+asked for a position. vzip readers find entries only through the central
+directory (§3.1 rule 4), so a header outside it is invisible to them, and
+allowing it would buy nothing but SOZip indexes, which vzip readers would not
+use: a DEFLATE body is inflated in full (§8.4), and a large entry is STORED.
+Forbidding it keeps "the archive is its central directory" literally true.
+The rule is a writer requirement that readers need not detect (§8.6), which
+is why it changes no reader result.
+
+**Not adopted, and why:**
+
+- **A JSON archive comment (issue 13).** It would let one archive carry
+  RFC 9's `ome` comment as well as vzip's. But an archive with reference
+  entries is not readable by an RFC 9 reader whatever its comment says
+  (§1.5), so the gain is limited to archives of `bytes` entries only, while
+  the cost (a variable-length comment found by a backward scan, numbers
+  limited to 2^53, an incompatible change) falls on every reader. It is
+  deferred until the project decides whether vzip should produce `.ozx`
+  files at all. If it does, the issue's design is the one to take.
+- **A fixed-record-length index (issue 14).** Positional access (cursors,
+  parallel listing, sampling) is not among vzip's current operations. The
+  observation behind it stands: the page index is variable-length and is
+  downloaded whole, so its size grows with the number of entries. If that
+  becomes a problem, the per-group form of the issue's variant B is the
+  likely direction; it would be a new hidden entry, so nothing here
+  conflicts with it.
+- **SOZip support (issue 15, options a and b).** Large inline DEFLATE
+  entries are out of scope (option c).
+- **ZIP64 fields on every record (issue 4, options B and C).** See revision
+  9: records use ZIP64 fields only where a value needs them.
+
+**Kit:**
+
+- **The validator** checks that the entries fill the file from offset 0 to
+  the central directory with no gaps, which is what rule 2 now requires of
+  writers.
+- **New crafted case:** `local_header_without_record`, a SOZip-style index
+  file between two entries, which readers MUST read normally (they never
+  see it). `unzip -t` also reads it normally.
+
+**Result:** the reference and all three implementations read 5173/5173
+queries (one new crafted archive), all 11 write cases from every writer pass
+the stricter validator, and cross-reads are 19892/19892. The remaining
+failures are the same four revision-8 rules as before.
