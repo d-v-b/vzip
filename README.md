@@ -10,7 +10,7 @@ read the [pitch](https://github.com/d-v-b/vzip/blob/main/PITCH.md), or the [spec
 
 ## demos
 
-live demos are at https://d-v-b.github.io/vzip-demo/. for example, [tiff to zarr](https://d-v-b.github.io/vzip-demo/tiff-to-zarr/) virtualizes a remote OME-TIFF into a vzip archive in the browser and opens it in Neuroglancer.
+live demos are at https://d-v-b.github.io/vzip-demo/. for example, [image files to zarr](https://d-v-b.github.io/vzip-demo/image-to-zarr/) virtualizes a remote OME-TIFF or Nikon ND2 file into a vzip archive in the browser and opens it in Neuroglancer.
 
 ## status
 

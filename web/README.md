@@ -39,7 +39,7 @@ repository, built with `npm run build`:
 node web/serve.mjs 8080
 ```
 
-Live demo: https://d-v-b.github.io/vzip-demo/tiff-to-zarr/. `web/pages.sh`
+Live demo: https://d-v-b.github.io/vzip-demo/image-to-zarr/ (formerly `tiff-to-zarr/`, which now redirects). `web/pages.sh`
 publishes it, with the Neuroglancer build, to its own directory of the demo
 site (the `gh-pages` branch of `d-v-b/vzip-demo`, which hosts each vzip demo
 in a directory and lists them at https://d-v-b.github.io/vzip-demo/).
