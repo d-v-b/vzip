@@ -1,100 +1,109 @@
 // ND2 profile (VIRTUALIZE.md §4).
+import { MAX_SAFE, Output, Source, arrayJson, axisType, buildCodecs, finite, reject } from "./io.ts";
+import type { Axis, Range } from "./io.ts";
+import { decodeLv, flag, flagOf, get, getLevel, membersOf, num, numOf, uint } from "./lv.ts";
+import type { LvLevel, LvValue } from "./lv.ts";
 
-import { Reader, Output, reject, dv, u64, arrayJson, axisType } from "./util.ts";
-import type { Axis } from "./util.ts";
-import { decodeLV, lvGet, lvMembers, lvNum, LVLevel } from "./lv.ts";
-import type { LVValue } from "./lv.ts";
-
-const CHUNK_MAGIC = 0x0abeceda;
+const MAGIC = 0x0abeceda;
 const SIG_NAME = "ND2 FILE SIGNATURE CHUNK NAME01!";
 const MAP_SIG = "ND2 CHUNK MAP SIGNATURE 0000001!";
 const FILEMAP_NAME = "ND2 FILEMAP SIGNATURE NAME 0001!";
-const JP2_SIG = [0x00, 0x00, 0x00, 0x0c, 0x6a, 0x50, 0x20, 0x20, 0x0d, 0x0a, 0x87, 0x0a];
 
-const ascii = (b: Uint8Array) => String.fromCharCode(...b);
-
-type ChunkHeader = { offset: number; nameLen: number; dataLen: number; name: string };
-
-async function readHeader(r: Reader, o: number): Promise<ChunkHeader> {
-  const h = dv(await r.read(o, 16));
-  if (h.getUint32(0, true) !== CHUNK_MAGIC) reject(`no chunk magic at ${o}`);
-  const n = h.getUint32(4, true);
-  const d = u64(h, 8, true);
-  const nb = await r.read(o + 16, n);
-  let e = nb.indexOf(0);
-  if (e < 0) e = n;
-  return { offset: o, nameLen: n, dataLen: d, name: ascii(nb.subarray(0, e)) };
+function latin1(b: Uint8Array): string {
+  let s = "";
+  for (const c of b) s += String.fromCharCode(c);
+  return s;
 }
 
-export function isNd2(head: Uint8Array): boolean {
-  if (head.length >= 4 && dv(head).getUint32(0, true) === CHUNK_MAGIC) return true;
-  return head.length >= JP2_SIG.length && JP2_SIG.every((v, i) => head[i] === v);
+function u64(dv: DataView, o: number, what: string): number {
+  const v = dv.getBigUint64(o, true);
+  if (v > BigInt(MAX_SAFE)) reject(`${what}: ${v} above 2^53 - 1`);
+  return Number(v);
 }
 
-type Loop = { kind: "time" | "position" | "z"; eType: number; depth: number; count: number; period?: number; step?: number };
+type ChunkHeader = { o: number; n: number; d: number; name: Uint8Array };
 
-function num(v: LVValue | undefined): number | undefined {
-  return lvNum(v);
+async function chunkHeader(src: Source, o: number): Promise<ChunkHeader> {
+  const h = await src.read(o, 16);
+  const dv = new DataView(h.buffer, h.byteOffset, 16);
+  if (dv.getUint32(0, true) !== MAGIC) reject(`no chunk magic at ${o}`);
+  const n = dv.getUint32(4, true);
+  const d = u64(dv, 8, `chunk at ${o}: data length`);
+  const name = await src.read(o + 16, n);
+  return { o, n, d, name };
 }
 
-function flattenExperiment(root: LVValue | undefined): Loop[] {
-  const loops: Loop[] = [];
-  const visit = (node: LVValue, depth: number) => {
-    if (!(node instanceof LVLevel)) reject("experiment node is not a level");
-    const eType = num(node.get("eType"));
-    if (eType === undefined || ![1, 2, 4, 6, 8].includes(eType)) reject(`experiment loop type ${eType} unsupported`);
-    const pars = node.get("uLoopPars");
-    const children = lvMembers(node.get("ppNextLevelEx")) ?? [];
-    if (pars === undefined) return;
-    let loop: Loop | null = null;
-    let count = 0;
-    if (eType === 1) {
-      count = num(lvGet(pars, "uiCount")) ?? 0;
-      loop = { kind: "time", eType, depth, count, period: num(lvGet(pars, "dPeriod")) };
-    } else if (eType === 8) {
-      const periods = lvMembers(lvGet(pars, "pPeriod")) ?? [];
-      const valid = lvMembers(lvGet(pars, "pPeriodValid"));
-      let period: number | undefined;
-      let first = true;
-      for (let i = 0; i < periods.length; i++) {
-        const ok = valid === undefined ? true : (num(valid[i]) ?? 0) !== 0;
-        if (!ok) continue;
-        count += num(lvGet(periods[i], "uiCount")) ?? 0;
-        if (first) {
-          period = num(lvGet(periods[i], "dPeriod"));
-          first = false;
-        }
-      }
-      loop = { kind: "time", eType, depth, count, period };
-    } else if (eType === 2) {
-      const pts = lvMembers(lvGet(pars, "Points")) ?? [];
-      const valid = lvMembers(node.get("pItemValid"));
-      if (valid === undefined) count = pts.length;
-      else for (let i = 0; i < pts.length; i++) if ((num(valid[i]) ?? 0) !== 0) count++;
-      loop = { kind: "position", eType, depth, count };
-    } else if (eType === 4) {
-      count = num(lvGet(pars, "uiCount")) ?? 0;
-      let step = Math.abs(num(lvGet(pars, "dZStep")) ?? 0);
-      if (step === 0 && count > 1) {
-        const hi = num(lvGet(pars, "dZHigh")) ?? 0;
-        const lo = num(lvGet(pars, "dZLow")) ?? 0;
-        step = Math.abs(hi - lo) / (count - 1);
-      }
-      loop = { kind: "z", eType, depth, count, step };
-    } else {
-      count = num(lvGet(pars, "uiCount")) ?? num(lvGet(pars, "pPlanes/uiCount")) ?? 0;
+async function chunkData(src: Source, h: ChunkHeader): Promise<Uint8Array> {
+  return await src.read(h.o + 16 + h.n, h.d);
+}
+
+type Loop = { kind: "time" | "position" | "z"; eType: number; depth: number; count: number; node: LvLevel };
+
+function loopKind(eType: number): "time" | "position" | "z" {
+  return eType === 1 || eType === 8 ? "time" : eType === 2 ? "position" : "z";
+}
+
+function validMembers(pars: LvLevel, listPath: string, validHolder: LvLevel, validPath: string): LvValue[] {
+  const lv = get(pars, listPath);
+  if (lv === undefined) return [];
+  const items = membersOf(lv, listPath);
+  const vv = get(validHolder, validPath);
+  if (vv === undefined) return items;
+  const valid = membersOf(vv, validPath);
+  return items.filter((_, i) => i < valid.length && flagOf(valid[i], `${validPath}[${i}]`));
+}
+
+function asNode(v: LvValue, what: string): LvLevel {
+  if (v.t !== 11) reject(`${what} is not a level`);
+  return v.v;
+}
+
+function nodeCount(eType: number, pars: LvLevel, node: LvLevel): number {
+  switch (eType) {
+    case 1:
+    case 4:
+      return uint(pars, "uiCount", 0);
+    case 8: {
+      let sum = 0;
+      for (const p of validMembers(pars, "pPeriod", pars, "pPeriodValid")) sum += uint(asNode(p, "pPeriod member"), "uiCount");
+      if (!Number.isSafeInteger(sum)) reject("time loop count too large");
+      return sum;
     }
+    case 2:
+      return validMembers(pars, "Points", node, "pItemValid").length;
+    case 6:
+      if (get(pars, "uiCount") !== undefined) return uint(pars, "uiCount");
+      if (get(pars, "pPlanes/uiCount") !== undefined) return uint(pars, "pPlanes/uiCount");
+      return 0;
+  }
+  reject(`eType ${eType}`);
+}
+
+function flattenExperiment(root: LvLevel): Loop[] {
+  const loops: Loop[] = [];
+  const visit = (node: LvLevel, depth: number) => {
+    const eType = num(node, "eType");
+    if (![1, 2, 4, 6, 8].includes(eType)) reject(`unsupported loop eType ${eType}`);
+    const pars = getLevel(node, "uLoopPars");
+    const children = (): LvLevel[] => {
+      const c = get(node, "ppNextLevelEx");
+      if (c === undefined) return [];
+      return membersOf(c, "ppNextLevelEx").map((v) => asNode(v, "ppNextLevelEx member"));
+    };
+    if (pars === undefined) return;
+    const count = nodeCount(eType, pars, node);
     if (count === 0) return;
     if (eType === 6) {
-      for (const ch of children) visit(ch, depth);
+      for (const ch of children()) visit(ch, depth);
       return;
     }
     const last = loops[loops.length - 1];
-    if (!last || last.depth < depth) loops.push(loop!);
-    else if (last.depth === depth && last.eType === eType && last.count < count) loops[loops.length - 1] = loop!;
-    for (const ch of children) visit(ch, depth + 1);
+    const loop: Loop = { kind: loopKind(eType), eType, depth, count, node: pars };
+    if (!last || last.depth < depth) loops.push(loop);
+    else if (last.depth === depth && last.eType === eType && last.count < count) loops[loops.length - 1] = loop;
+    for (const ch of children()) visit(ch, depth + 1);
   };
-  if (root !== undefined) visit(root, 0);
+  visit(root, 0);
   const kinds = new Set<string>();
   for (const l of loops) {
     if (kinds.has(l.kind)) reject(`two ${l.kind} loops`);
@@ -103,242 +112,276 @@ function flattenExperiment(root: LVValue | undefined): Loop[] {
   return loops;
 }
 
-function hex2(n: number): string {
-  return n.toString(16).toUpperCase().padStart(2, "0");
-}
+export async function virtualizeNd2(src: Source, out: Output): Promise<void> {
+  // ---- §4.1 signature
+  const sig = await chunkHeader(src, 0);
+  if (sig.n !== 32 || sig.d !== 64 || latin1(sig.name) !== SIG_NAME) reject("bad signature chunk");
+  const sigData = latin1(await chunkData(src, sig));
+  const vm = /^Ver([0-9]+)\./.exec(sigData);
+  if (!vm) reject("signature chunk data does not start with Ver<digits>.");
+  if (Number(vm[1]) < 3) reject(`ND2 version ${vm[1]} < 3`);
 
-export async function virtualizeNd2(r: Reader, url: string, out: Output): Promise<void> {
-  // §4.1 signature
-  const head = await r.read(0, Math.min(r.size, 16 + 32 + 64));
-  if (head.length >= JP2_SIG.length && JP2_SIG.every((v, i) => head[i] === v)) reject("legacy (JPEG 2000) ND2 file");
-  if (head.length < 112) reject("file too short for ND2");
-  const hd = dv(head);
-  if (hd.getUint32(0, true) !== CHUNK_MAGIC) reject("no ND2 chunk magic at 0");
-  if (hd.getUint32(4, true) !== 32 || u64(hd, 8, true) !== 64) reject("bad signature chunk lengths");
-  if (ascii(head.subarray(16, 48)) !== SIG_NAME) reject("bad signature chunk name");
-  const ver = /^Ver([0-9]+)\.([0-9]+)/.exec(ascii(head.subarray(48, 112)));
-  if (!ver) reject("signature data does not start with VerM.m");
-  if (Number(ver[1]) < 3) reject(`ND2 version ${ver[1]}.${ver[2]} unsupported`);
-
-  // chunk map
-  if (r.size < 40) reject("file too short for chunk map");
-  const tail = await r.read(r.size - 40, 40);
-  if (ascii(tail.subarray(0, 32)) !== MAP_SIG) reject("no chunk map signature at end of file");
-  const m = u64(dv(tail), 32, true);
-  const mh = await readHeader(r, m);
-  if (mh.name !== FILEMAP_NAME) reject(`chunk at ${m} is not the file map`);
-  const mapData = await r.read(m + 16 + mh.nameLen, mh.dataLen);
-  const md = dv(mapData);
-  const chunkMap = new Map<string, number>();
+  // ---- chunk map
+  if (src.size < 40) reject("file shorter than 40 bytes");
+  const tail = await src.read(src.size - 40, 40);
+  if (latin1(tail.subarray(0, 32)) !== MAP_SIG) reject("no chunk map signature at the end of the file");
+  const m = u64(new DataView(tail.buffer, tail.byteOffset, 40), 32, "chunk map offset");
+  const mh = await chunkHeader(src, m);
+  let mname = latin1(mh.name);
+  const nul = mname.indexOf("\0");
+  if (nul >= 0) mname = mname.slice(0, nul);
+  if (mname !== FILEMAP_NAME) reject(`chunk map chunk named "${mname}"`);
+  const md = await chunkData(src, mh);
+  const mdv = new DataView(md.buffer, md.byteOffset, md.byteLength);
+  const map = new Map<string, number>();
   let p = 0;
   for (;;) {
-    const e = mapData.indexOf(0x21, p);
-    if (e < 0 || e + 17 > mapData.length) reject("chunk map not terminated");
-    const name = ascii(mapData.subarray(p, e + 1));
+    const bang = md.indexOf(0x21, p);
+    if (bang < 0) reject("chunk map: record without '!'");
+    const name = latin1(md.subarray(p, bang + 1));
+    p = bang + 1;
+    if (p + 16 > md.length) reject("chunk map: truncated record");
     if (name === MAP_SIG) break;
-    chunkMap.set(name, u64(md, e + 1, true));
-    p = e + 17;
+    map.set(name, u64(mdv, p, `chunk map offset of ${name}`));
+    p += 16;
   }
 
-  const chunkData = async (name: string): Promise<Uint8Array | null> => {
-    const o = chunkMap.get(name);
-    if (o === undefined) return null;
-    const h = await readHeader(r, o);
-    return r.read(o + 16 + h.nameLen, h.dataLen);
+  const lvChunk = async (name: string): Promise<LvLevel | undefined> => {
+    const o = map.get(name);
+    if (o === undefined) return undefined;
+    const h = await chunkHeader(src, o);
+    return decodeLv(await chunkData(src, h));
   };
 
-  // §4.3 attributes
-  const attrData = await chunkData("ImageAttributesLV!");
-  if (!attrData) reject("no ImageAttributesLV! chunk");
-  const attrs = lvGet(decodeLV(attrData), "SLxImageAttributes");
-  if (!(attrs instanceof LVLevel)) reject("no SLxImageAttributes");
-  const req = (k: string): number => {
-    const v = num(attrs.get(k));
-    if (v === undefined) reject(`SLxImageAttributes/${k} missing`);
-    return v;
-  };
-  const width = req("uiWidth");
-  const height = req("uiHeight");
-  const widthBytes = req("uiWidthBytes");
-  const comp = req("uiComp");
-  const bpc = req("uiBpcInMemory");
-  const bpcSig = req("uiBpcSignificant");
-  const eCompression = num(attrs.get("eCompression")) ?? 2;
-  const tileW = num(attrs.get("uiTileWidth")) ?? 0;
-  const tileH = num(attrs.get("uiTileHeight")) ?? 0;
-  const dataType = bpc === 8 ? "uint8" : bpc === 16 ? "uint16" : bpc === 32 ? "float32" : reject(`uiBpcInMemory ${bpc} unsupported`);
-  if (eCompression === 1) reject("lossy compression");
-  if (eCompression !== 0 && eCompression !== 2) reject(`eCompression ${eCompression} unsupported`);
-  const compressed = eCompression === 0;
-  if ((tileW > 0 && tileW !== width) || (tileH > 0 && tileH !== height)) reject("tiled ND2 unsupported");
+  // ---- §4.3 attributes
+  const attrChunk = await lvChunk("ImageAttributesLV!");
+  if (!attrChunk) reject("no ImageAttributesLV! chunk");
+  const A = getLevel(attrChunk, "SLxImageAttributes");
+  if (!A) reject("no SLxImageAttributes");
+  const W = uint(A, "uiWidth");
+  const H = uint(A, "uiHeight");
+  const WB = uint(A, "uiWidthBytes");
+  const comp = uint(A, "uiComp");
+  const bpc = uint(A, "uiBpcInMemory");
+  const bpcSigRaw = num(A, "uiBpcSignificant");
+  if (W < 1 || H < 1 || comp < 1) reject("uiWidth, uiHeight and uiComp must be at least 1");
+  const ecomp = num(A, "eCompression", 2);
+  const tw = num(A, "uiTileWidth", 0);
+  const th = num(A, "uiTileHeight", 0);
+  const dataType = bpc === 8 ? "uint8" : bpc === 16 ? "uint16" : bpc === 32 ? "float32" : null;
+  if (!dataType) reject(`uiBpcInMemory ${bpc} unsupported`);
+  let compressed: boolean;
+  if (ecomp === 2) compressed = false;
+  else if (ecomp === 0) compressed = true;
+  else reject(`eCompression ${ecomp} unsupported`);
+  if ((tw > 0 && tw !== W) || (th > 0 && th !== H)) reject("tiled ND2 unsupported");
 
-  // experiment
-  const metaData = await chunkData("ImageMetadataLV!");
-  const expRoot = metaData ? lvGet(decodeLV(metaData), "SLxExperiment") : undefined;
-  const loops = flattenExperiment(expRoot);
-
-  // picture metadata
-  const picData = await chunkData("ImageMetadataSeqLV|0!");
-  const pic = picData ? lvGet(decodeLV(picData), "SLxPictureMetadata") : undefined;
-  type PPlane = { desc: string; color: number; comps: number };
-  const pplanes: PPlane[] = [];
-  let planesOk = false;
-  let calib: number | undefined;
-  let aspect = 1;
-  if (pic instanceof LVLevel) {
-    const nPlanes = num(lvGet(pic, "sPicturePlanes/uiCount")) ?? 0;
-    planesOk = true;
-    for (let i = 0; i < nPlanes; i++) {
-      const pl = lvGet(pic, `sPicturePlanes/sPlaneNew/a${i}`);
-      if (!(pl instanceof LVLevel)) {
-        planesOk = false;
-        break;
-      }
-      const d = pl.get("sDescription");
-      pplanes.push({
-        desc: typeof d === "string" ? d : "",
-        color: num(pl.get("uiColor")) ?? 0,
-        comps: num(pl.get("uiCompCount")) ?? 1,
-      });
-    }
-    if (pic.get("bCalibrated") === true || num(pic.get("bCalibrated")) === 1) {
-      calib = num(pic.get("dCalibration"));
-    }
-    aspect = num(pic.get("dAspect")) ?? 1;
+  // ---- experiment
+  const metaChunk = await lvChunk("ImageMetadataLV!");
+  let loops: Loop[] = [];
+  if (metaChunk) {
+    const exp = get(metaChunk, "SLxExperiment");
+    if (exp === undefined) reject("ImageMetadataLV! has no SLxExperiment");
+    loops = flattenExperiment(asNode(exp, "SLxExperiment"));
+    if (process.env.VZ_DEBUG) process.stderr.write(JSON.stringify(loops.map((l) => [l.kind, l.eType, l.depth, l.count])) + "\n");
   }
 
-  // §4.5 channels
-  type Chan = { label: string; color: string };
-  let chans: Chan[] = [];
-  if (planesOk && pplanes.reduce((s, q) => s + q.comps, 0) === comp && pplanes.every((q) => q.comps === 1 || q.comps === 3)) {
-    for (const q of pplanes) {
-      if (q.comps === 1) {
-        const c = q.color >>> 0;
-        chans.push({ label: q.desc, color: hex2(c & 0xff) + hex2((c >>> 8) & 0xff) + hex2((c >>> 16) & 0xff) });
-      } else {
-        chans.push({ label: `${q.desc} R`, color: "FF0000" }, { label: `${q.desc} G`, color: "00FF00" }, { label: `${q.desc} B`, color: "0000FF" });
-      }
-    }
-  } else {
-    chans = [];
-    for (let k = 0; k < comp; k++) chans.push({ label: `C${k}`, color: "FFFFFF" });
-  }
+  // ---- picture metadata
+  const picChunk = await lvChunk("ImageMetadataSeqLV|0!");
+  const P = picChunk ? getLevel(picChunk, "SLxPictureMetadata") : undefined;
 
-  // §4.4 frames
-  const N = loops.reduce((a, l) => a * l.count, 1);
-  const R = (width * comp * bpc) / 8;
-  if (compressed && widthBytes !== R) reject("compressed ND2 with row padding");
-  const present: number[] = [];
-  for (let f = 0; f < N; f++) if (chunkMap.has(`ImageDataSeq|${f}!`)) present.push(f);
-  const frameRanges = new Map<number, Array<[number, number, number]>>();
-  if (present.length > 0) {
+  // ---- §4.4 frames
+  const R = (W * comp * bpc) / 8;
+  if (WB < R) reject(`uiWidthBytes ${WB} < ${R}`);
+  let N = 1;
+  for (const l of loops) N *= l.count;
+  const frames: Array<[number, number]> = []; // [f, offset]
+  for (const [name, o] of map) {
+    const fm = /^ImageDataSeq\|(0|[1-9][0-9]*)!$/.exec(name);
+    if (!fm) continue;
+    const f = Number(fm[1]);
+    if (f < N) frames.push([f, o]);
+  }
+  frames.sort((a, b) => a[0] - b[0]);
+  const frameRanges = new Map<number, Range[]>();
+  if (frames.length > 0) {
     if (!compressed) {
-      const h0 = await readHeader(r, chunkMap.get(`ImageDataSeq|${present[0]}!`)!);
-      const h1 = await readHeader(r, chunkMap.get(`ImageDataSeq|${present[present.length - 1]}!`)!);
-      if (h0.nameLen !== h1.nameLen) reject("first and last frame chunk name lengths differ");
-      const n = h0.nameLen;
-      for (const f of present) {
-        const start = chunkMap.get(`ImageDataSeq|${f}!`)! + 16 + n + 8;
-        if (widthBytes === R) frameRanges.set(f, [[0, start, height * R]]);
+      const lo = await chunkHeader(src, frames[0][1]);
+      const hi = await chunkHeader(src, frames[frames.length - 1][1]);
+      if (lo.n !== hi.n) reject("frame chunk name lengths differ");
+      const need = 8 + H * WB;
+      if (lo.d < need || hi.d < need) reject("frame chunk data too short");
+      for (const [f, o] of frames) {
+        const start = o + 16 + lo.n + 8;
+        if (WB === R) frameRanges.set(f, [[0, start, H * R]]);
         else {
-          const rs: Array<[number, number, number]> = [];
-          for (let row = 0; row < height; row++) rs.push([0, start + row * widthBytes, R]);
+          const rs: Range[] = [];
+          for (let r = 0; r < H; r++) rs.push([0, start + r * WB, R]);
           frameRanges.set(f, rs);
         }
       }
     } else {
-      await Promise.all(
-        present.map(async (f) => {
-          const o = chunkMap.get(`ImageDataSeq|${f}!`)!;
-          const h = await readHeader(r, o);
-          if (h.dataLen < 8) reject(`frame ${f} data shorter than its timestamp`);
-          frameRanges.set(f, [[0, o + 16 + h.nameLen + 8, h.dataLen - 8]]);
-        }),
-      );
+      if (WB !== R) reject("compressed frames with row padding");
+      await src.prefetch(frames.map(([, o]) => [o, 16 + 64] as [number, number]));
+      for (const [f, o] of frames) {
+        const h = await chunkHeader(src, o);
+        if (h.d <= 8) reject(`frame ${f}: compressed data length ${h.d} <= 8`);
+        frameRanges.set(f, [[0, o + 16 + h.n + 8, h.d - 8]]);
+      }
     }
   }
 
-  // §4.6 output
+  // ---- §4.5 channels
+  const labels: string[] = [];
+  const colors: string[] = [];
+  const planeCount = P ? uint(P, "sPicturePlanes/uiCount", 0) : 0;
+  let labeled = false;
+  if (planeCount >= 1) {
+    const planes: LvLevel[] = [];
+    let ok = true;
+    for (let i = 0; i < planeCount; i++) {
+      const v = get(P, `sPicturePlanes/sPlaneNew/a${i}`);
+      if (v === undefined) { ok = false; break; }
+      planes.push(asNode(v, `a${i}`));
+    }
+    if (ok) {
+      const cc = planes.map((pl) => uint(pl, "uiCompCount", 1));
+      if (cc.every((c) => c === 1 || c === 3) && cc.reduce((a, b) => a + b, 0) === comp) {
+        labeled = true;
+        for (let i = 0; i < planes.length; i++) {
+          const dv = get(planes[i], "sDescription");
+          let desc = "";
+          if (dv !== undefined) {
+            if (dv.t !== 8) reject("sDescription is not a string");
+            desc = dv.v;
+          }
+          if (cc[i] === 1) {
+            const c = num(planes[i], "uiColor", 0xffffff);
+            if (!Number.isInteger(c)) reject("uiColor is not an integer");
+            const u = ((c % 2 ** 32) + 2 ** 32) % 2 ** 32;
+            const hex = (x: number) => x.toString(16).toUpperCase().padStart(2, "0");
+            labels.push(desc);
+            colors.push(hex(u & 0xff) + hex((u >>> 8) & 0xff) + hex((u >>> 16) & 0xff));
+          } else {
+            labels.push(`${desc} R`, `${desc} G`, `${desc} B`);
+            colors.push("FF0000", "00FF00", "0000FF");
+          }
+        }
+      }
+    }
+  }
+  if (!labeled) {
+    for (let k = 0; k < comp; k++) {
+      labels.push(`C${k}`);
+      colors.push("FFFFFF");
+    }
+  }
+
+  // calibration
+  let calibrated = false;
+  let cal = 0;
+  let aspect = 1;
+  if (P) {
+    const dc = get(P, "dCalibration");
+    if (flag(P, "bCalibrated", false) && dc !== undefined) {
+      const v = numOf(dc, "dCalibration");
+      if (v > 0) {
+        calibrated = true;
+        cal = v;
+      }
+    }
+    if (calibrated) {
+      const da = num(P, "dAspect", 1);
+      aspect = da > 0 ? da : 1;
+    }
+  }
+
+  // ---- §4.6 output
   const tLoop = loops.find((l) => l.kind === "time");
   const zLoop = loops.find((l) => l.kind === "z");
   const pLoop = loops.find((l) => l.kind === "position");
   const nPos = pLoop ? pLoop.count : 1;
-  out.json("zarr.json", { zarr_format: 3, node_type: "group", attributes: { ome: { version: "0.5", "bioformats2raw.layout": 3 } } });
-  const series: string[] = [];
-  for (let i = 0; i < nPos; i++) series.push(String(i));
-  out.json("OME/zarr.json", { zarr_format: 3, node_type: "group", attributes: { ome: { version: "0.5", series } } });
 
   const axes: string[] = [];
   if (tLoop) axes.push("t");
   if (comp > 1) axes.push("c");
   if (zLoop) axes.push("z");
   axes.push("y", "x");
-  const shape: number[] = [];
-  const chunkShape: number[] = [];
+
+  let period = 0;
+  if (tLoop) {
+    if (tLoop.eType === 1) period = num(tLoop.node, "dPeriod", 0);
+    else {
+      const first = validMembers(tLoop.node, "pPeriod", tLoop.node, "pPeriodValid")[0];
+      period = first ? num(asNode(first, "pPeriod member"), "dPeriod", 0) : 0;
+    }
+  }
+  let step = 0;
+  if (zLoop) {
+    step = finite(Math.abs(num(zLoop.node, "dZStep", 0)), "z step");
+    if (step === 0 && zLoop.count > 1) {
+      const hi = num(zLoop.node, "dZHigh", 0);
+      const lo = num(zLoop.node, "dZLow", 0);
+      step = finite(Math.abs(finite(hi - lo, "dZHigh - dZLow")) / (zLoop.count - 1), "z step");
+    }
+  }
+
   const axisObjs: Axis[] = [];
   const scale: number[] = [];
-  const calibrated = calib !== undefined;
   for (const a of axes) {
     const o: Axis = { name: a, type: axisType(a) };
     let s = 1;
-    if (a === "t") {
-      shape.push(tLoop!.count);
-      chunkShape.push(1);
-      const per = tLoop!.period;
-      if (per !== undefined && per > 0) {
-        o.unit = "second";
-        s = per / 1000;
-      }
-    } else if (a === "c") {
-      shape.push(comp);
-      chunkShape.push(comp);
-    } else if (a === "z") {
-      shape.push(zLoop!.count);
-      chunkShape.push(1);
-      const st = zLoop!.step;
-      if (st !== undefined && st > 0) {
-        o.unit = "micrometer";
-        s = st;
-      }
-    } else if (a === "y") {
-      shape.push(height);
-      chunkShape.push(height);
-      if (calibrated) {
-        o.unit = "micrometer";
-        s = calib! * aspect;
-      }
-    } else {
-      shape.push(width);
-      chunkShape.push(width);
-      if (calibrated) {
-        o.unit = "micrometer";
-        s = calib!;
-      }
-    }
+    if (a === "x" && calibrated) { o.unit = "micrometer"; s = cal; }
+    else if (a === "y" && calibrated) { o.unit = "micrometer"; s = finite(cal * aspect, "y scale"); }
+    else if (a === "z" && step > 0) { o.unit = "micrometer"; s = step; }
+    else if (a === "t" && period > 0) { o.unit = "second"; s = finite(period / 1000, "t scale"); }
     axisObjs.push(o);
     scale.push(s);
   }
+
+  let window: { min: number; max: number; start: number; end: number } | null = null;
+  if (dataType !== "float32") {
+    const b = Number.isInteger(bpcSigRaw) && bpcSigRaw >= 1 && bpcSigRaw <= bpc ? bpcSigRaw : bpc;
+    const V = 2 ** b - 1;
+    window = { min: 0, max: V, start: 0, end: V };
+  }
+  const channels = labels.map((label, k) => {
+    const ch: Record<string, unknown> = { label, color: colors[k], active: true };
+    if (window) ch.window = window;
+    return ch;
+  });
+
+  const shape: number[] = [];
+  const chunk: number[] = [];
+  for (const a of axes) {
+    if (a === "t") { shape.push(tLoop!.count); chunk.push(1); }
+    else if (a === "c") { shape.push(comp); chunk.push(comp); }
+    else if (a === "z") { shape.push(zLoop!.count); chunk.push(1); }
+    else if (a === "y") { shape.push(H); chunk.push(H); }
+    else { shape.push(W); chunk.push(W); }
+  }
   const arr = arrayJson({
-    shape, dataType, chunkShape, axes, interleaved: comp > 1, arrayToBytes: "bytes",
-    endian: "little", itemSize: bpc / 8, compressor: compressed ? "zlib" : null,
+    shape, dataType, chunkShape: chunk,
+    codecs: buildCodecs({
+      axes, interleaved: comp > 1, arrayToBytes: "bytes", itemSize: bpc / 8, littleEndian: true,
+      compressor: compressed ? "zlib" : null,
+    }),
+    dimensionNames: axes,
   });
-  const channels = chans.map((c) => {
-    const o: Record<string, unknown> = { label: c.label, color: c.color, active: true };
-    if (dataType !== "float32") {
-      const V = 2 ** bpcSig - 1;
-      o.window = { min: 0, max: V, start: 0, end: V };
-    }
-    return o;
+
+  out.json("zarr.json", { zarr_format: 3, node_type: "group", attributes: { ome: { version: "0.5", "bioformats2raw.layout": 3 } } });
+  out.json("OME/zarr.json", {
+    zarr_format: 3, node_type: "group",
+    attributes: { ome: { version: "0.5", series: Array.from({ length: nPos }, (_, i) => `${i}`) } },
   });
-  for (let pos = 0; pos < nPos; pos++) {
-    out.json(`${pos}/zarr.json`, {
-      zarr_format: 3,
-      node_type: "group",
+  for (let pIdx = 0; pIdx < nPos; pIdx++) {
+    out.json(`${pIdx}/zarr.json`, {
+      zarr_format: 3, node_type: "group",
       attributes: {
         ome: {
           version: "0.5",
           multiscales: [{
-            name: `position ${pos}`,
+            name: `position ${pIdx}`,
             axes: axisObjs,
             datasets: [{ path: "0", coordinateTransformations: [{ type: "scale", scale }] }],
           }],
@@ -346,22 +389,25 @@ export async function virtualizeNd2(r: Reader, url: string, out: Output): Promis
         },
       },
     });
-    out.json(`${pos}/0/zarr.json`, arr);
+    out.json(`${pIdx}/0/zarr.json`, arr);
   }
-  for (const f of present) {
-    // row-major coordinates over loops, last fastest
-    const coord = new Map<string, number>();
+
+  // chunks
+  for (const [f, ranges] of frameRanges) {
+    const coord: Record<string, number> = {};
     let rem = f;
     for (let i = loops.length - 1; i >= 0; i--) {
-      coord.set(loops[i].kind, rem % loops[i].count);
+      coord[loops[i].kind] = rem % loops[i].count;
       rem = Math.floor(rem / loops[i].count);
     }
-    const pos = coord.get("position") ?? 0;
+    const pIdx = coord.position ?? 0;
     const cs: number[] = [];
-    if (tLoop) cs.push(coord.get("time")!);
-    if (comp > 1) cs.push(0);
-    if (zLoop) cs.push(coord.get("z")!);
+    for (const a of axes) {
+      if (a === "t") cs.push(coord.time);
+      else if (a === "c") cs.push(0);
+      else if (a === "z") cs.push(coord.z);
+    }
     cs.push(0, 0);
-    out.ref(`${pos}/0/c/${cs.join("/")}`, frameRanges.get(f)!);
+    out.ref(`${pIdx}/0/c/${cs.join("/")}`, ranges);
   }
 }

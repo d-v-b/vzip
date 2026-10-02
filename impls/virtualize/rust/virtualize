@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build (if needed) and run the Rust virtualizer: virtualize <url> <out.json>
+# Builds (if needed) and runs the Rust virtualizer: virtualize <url> <out.json>
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bin="$here/target/release/virtualize"

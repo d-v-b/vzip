@@ -1,452 +1,461 @@
 // TIFF profile (VIRTUALIZE.md §3).
-
-import { Reader, Output, reject, dv, u64, unitOf, arrayJson, axisType } from "./util.ts";
-import type { Axis } from "./util.ts";
-import { parseXml, findFirst, findAll } from "./xml.ts";
-import type { XmlElement } from "./xml.ts";
+import {
+  MAX_SAFE,
+  Output,
+  Source,
+  UNITS,
+  arrayJson,
+  axisType,
+  buildCodecs,
+  finite,
+  reject,
+} from "./io.ts";
+import type { Axis, Range } from "./io.ts";
+import { parseOme } from "./omexml.ts";
+import type { OmeInfo } from "./omexml.ts";
 
 const TYPE_SIZE: Record<number, number> = {
   1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4, 16: 8, 17: 8, 18: 8,
 };
+const INT_TYPES = new Set([1, 3, 4, 6, 8, 9, 13, 16, 17, 18]);
 
-type TagEntry = { type: number; count: number; data: Uint8Array | null; offset: number };
+type Field = { tag: number; type: number; count: number; valueField: Uint8Array; valueFieldPos: number };
 
-type Ifd = { offset: number; tags: Map<number, TagEntry>; subIfds: Ifd[] };
-
-type Format = { bps: number; spp: number; sf: number; planar: number; comp: number; pred: number };
-
-type Info = {
-  width: number;
-  length: number;
-  tiled: boolean;
-  tileW: number;
-  tileL: number;
-  format: Format;
-};
+class Ifd {
+  offset: number;
+  fields = new Map<number, Field>();
+  next = 0;
+  constructor(offset: number) {
+    this.offset = offset;
+  }
+}
 
 class Tiff {
-  r: Reader;
+  src: Source;
   le = true;
   big = false;
-  main: Ifd[] = [];
-  count = 0;
-  infoCache = new Map<Ifd, Promise<Info>>();
+  ifdsRead = 0;
+  seen = new Set<number>();
+  cache = new Map<string, unknown>();
 
-  constructor(r: Reader) {
-    this.r = r;
+  constructor(src: Source) {
+    this.src = src;
+  }
+
+  u16(b: Uint8Array, o: number): number {
+    return new DataView(b.buffer, b.byteOffset, b.byteLength).getUint16(o, this.le);
+  }
+  u32(b: Uint8Array, o: number): number {
+    return new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(o, this.le);
+  }
+  u64(b: Uint8Array, o: number): number {
+    const v = new DataView(b.buffer, b.byteOffset, b.byteLength).getBigUint64(o, this.le);
+    if (v > BigInt(MAX_SAFE)) reject(`64-bit value ${v} above 2^53 - 1`);
+    return Number(v);
   }
 
   async header(): Promise<number> {
-    const h = await this.r.read(0, Math.min(16, this.r.size));
-    if (h.length < 8) reject("file too short for TIFF");
-    if (h[0] === 0x49 && h[1] === 0x49) this.le = true;
-    else if (h[0] === 0x4d && h[1] === 0x4d) this.le = false;
-    else reject("not a TIFF");
-    const d = dv(h);
-    const magic = d.getUint16(2, this.le);
+    const h = await this.src.read(0, 4);
+    this.le = h[0] === 0x49;
+    const magic = this.u16(h, 2);
     if (magic === 42) {
-      this.big = false;
-      return d.getUint32(4, this.le);
+      const b = await this.src.read(0, 8);
+      return this.u32(b, 4);
     }
-    if (magic === 43) {
-      if (h.length < 16) reject("file too short for BigTIFF");
-      if (d.getUint16(4, this.le) !== 8 || d.getUint16(6, this.le) !== 0) reject("unsupported BigTIFF offset size");
-      this.big = true;
-      return u64(d, 8, this.le);
-    }
-    return reject(`bad TIFF magic ${magic}`);
+    this.big = true;
+    const b = await this.src.read(0, 16);
+    if (this.u16(b, 4) !== 8) reject("BigTIFF offset size is not 8");
+    if (this.u16(b, 6) !== 0) reject("BigTIFF reserved word is not 0");
+    return this.u64(b, 8);
   }
 
-  async readIfd(offset: number): Promise<{ ifd: Ifd; next: number }> {
-    if (++this.count > 100000) reject("more than 100000 IFDs");
+  async readIfd(offset: number): Promise<Ifd> {
+    if (this.seen.has(offset)) reject(`IFD cycle at offset ${offset}`);
+    this.seen.add(offset);
+    if (++this.ifdsRead > 100000) reject("more than 100000 IFDs");
+    const ifd = new Ifd(offset);
     const cs = this.big ? 8 : 2;
     const es = this.big ? 20 : 12;
     const os = this.big ? 8 : 4;
-    const cb = dv(await this.r.read(offset, cs));
-    const n = this.big ? u64(cb, 0, this.le) : cb.getUint16(0, this.le);
-    const body = await this.r.read(offset + cs, n * es + os);
-    const d = dv(body);
-    const tags = new Map<number, TagEntry>();
+    const cb = await this.src.read(offset, cs);
+    const n = this.big ? this.u64(cb, 0) : this.u16(cb, 0);
+    if (n * es > MAX_SAFE) reject("IFD too large");
+    const body = await this.src.read(offset + cs, n * es + os);
     for (let i = 0; i < n; i++) {
       const p = i * es;
-      const tag = d.getUint16(p, this.le);
-      const type = d.getUint16(p + 2, this.le);
-      const count = this.big ? u64(d, p + 4, this.le) : d.getUint32(p + 4, this.le);
-      const vpos = p + (this.big ? 12 : 8);
-      const size = TYPE_SIZE[type];
-      let entry: TagEntry;
-      if (size !== undefined && size * count <= os) {
-        entry = { type, count, data: body.slice(vpos, vpos + size * count), offset: 0 };
-      } else {
-        entry = { type, count, data: null, offset: this.big ? u64(d, vpos, this.le) : d.getUint32(vpos, this.le) };
-      }
-      if (!tags.has(tag)) tags.set(tag, entry);
+      const tag = this.u16(body, p);
+      const type = this.u16(body, p + 2);
+      let count: number;
+      if (this.big) {
+        const v = new DataView(body.buffer, body.byteOffset).getBigUint64(p + 4, this.le);
+        count = v > BigInt(MAX_SAFE) ? Infinity : Number(v);
+      } else count = this.u32(body, p + 4);
+      const vf = body.subarray(p + (this.big ? 12 : 8), p + es);
+      // Of duplicate tags in an IFD, the first is used.
+      if (!ifd.fields.has(tag))
+        ifd.fields.set(tag, { tag, type, count, valueField: vf, valueFieldPos: offset + cs + p + (this.big ? 12 : 8) });
     }
-    const next = this.big ? u64(d, n * es, this.le) : d.getUint32(n * es, this.le);
-    return { ifd: { offset, tags, subIfds: [] }, next };
+    ifd.next = this.big ? this.u64(body, n * es) : this.u32(body, n * es);
+    return ifd;
   }
 
-  async bytes(ifd: Ifd, tag: number): Promise<Uint8Array | null> {
-    const e = ifd.tags.get(tag);
-    if (!e) return null;
-    const size = TYPE_SIZE[e.type];
-    if (size === undefined) reject(`tag ${tag} has unknown type ${e.type}`);
-    if (e.data) return e.data;
-    return this.r.read(e.offset, size * e.count);
+  /** Raw value bytes of a field; rejects unknown field types. */
+  async valueBytes(f: Field): Promise<Uint8Array> {
+    const sz = TYPE_SIZE[f.type];
+    if (sz === undefined) reject(`tag ${f.tag}: unknown field type ${f.type}`);
+    const total = f.count * sz;
+    if (!Number.isSafeInteger(total)) reject(`tag ${f.tag}: count too large`);
+    const inline = this.big ? 8 : 4;
+    if (total <= inline) return f.valueField.subarray(0, total);
+    const off = this.big ? this.u64(f.valueField, 0) : this.u32(f.valueField, 0);
+    return await this.src.read(off, total);
   }
 
-  async values(ifd: Ifd, tag: number): Promise<number[] | null> {
-    const e = ifd.tags.get(tag);
-    if (!e) return null;
-    const b = await this.bytes(ifd, tag);
-    const d = dv(b!);
-    const out: number[] = new Array(e.count);
-    const le = this.le;
-    for (let i = 0; i < e.count; i++) {
-      switch (e.type) {
-        case 1: case 2: case 7: out[i] = d.getUint8(i); break;
-        case 6: out[i] = d.getInt8(i); break;
-        case 3: out[i] = d.getUint16(2 * i, le); break;
-        case 8: out[i] = d.getInt16(2 * i, le); break;
-        case 4: case 13: out[i] = d.getUint32(4 * i, le); break;
-        case 9: out[i] = d.getInt32(4 * i, le); break;
-        case 5: out[i] = d.getUint32(8 * i, le) / d.getUint32(8 * i + 4, le); break;
-        case 10: out[i] = d.getInt32(8 * i, le) / d.getInt32(8 * i + 4, le); break;
-        case 11: out[i] = d.getFloat32(4 * i, le); break;
-        case 12: out[i] = d.getFloat64(8 * i, le); break;
-        case 16: case 18: out[i] = u64(d, 8 * i, le); break;
-        case 17: out[i] = Number(d.getBigInt64(8 * i, le)); break;
-        default: reject(`tag ${tag} has unknown type ${e.type}`);
+  /** All values of an integer tag, or undefined if absent. */
+  async ints(ifd: Ifd, tag: number): Promise<number[] | undefined> {
+    const key = `${ifd.offset}:${tag}`;
+    if (this.cache.has(key)) return this.cache.get(key) as number[];
+    const f = ifd.fields.get(tag);
+    if (!f) return undefined;
+    const b = await this.valueBytes(f);
+    if (!INT_TYPES.has(f.type)) reject(`tag ${tag}: field type ${f.type} is not an integer type`);
+    const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    const out: number[] = new Array(f.count);
+    for (let i = 0; i < f.count; i++) {
+      let v: number;
+      switch (f.type) {
+        case 1: v = dv.getUint8(i); break;
+        case 6: v = dv.getInt8(i); break;
+        case 3: v = dv.getUint16(i * 2, this.le); break;
+        case 8: v = dv.getInt16(i * 2, this.le); break;
+        case 4: case 13: v = dv.getUint32(i * 4, this.le); break;
+        case 9: v = dv.getInt32(i * 4, this.le); break;
+        default: {
+          const bv = f.type === 17 ? dv.getBigInt64(i * 8, this.le) : dv.getBigUint64(i * 8, this.le);
+          if (bv > BigInt(MAX_SAFE) || bv < 0n) reject(`tag ${tag}: value ${bv} out of range`);
+          v = Number(bv);
+        }
       }
+      if (v < 0) reject(`tag ${tag}: negative value ${v}`);
+      out[i] = v;
     }
+    this.cache.set(key, out);
     return out;
   }
 
-  async scalar(ifd: Ifd, tag: number, def: number | null): Promise<number> {
-    const v = await this.values(ifd, tag);
-    if (v === null || v.length === 0) {
-      if (def === null) reject(`IFD at ${ifd.offset}: required tag ${tag} missing`);
+  /** First value of an integer tag; default when absent; rejects if absent without default. */
+  async int(ifd: Ifd, tag: number, def?: number): Promise<number> {
+    const v = await this.ints(ifd, tag);
+    if (v === undefined) {
+      if (def === undefined) reject(`IFD at ${ifd.offset}: required tag ${tag} missing`);
       return def;
     }
+    if (v.length === 0) reject(`IFD at ${ifd.offset}: tag ${tag} has no values`);
     return v[0];
   }
 
-  async readAll(): Promise<void> {
-    let off = await this.header();
-    const seen = new Set<number>();
-    while (off !== 0) {
-      if (seen.has(off)) reject("IFD cycle");
-      seen.add(off);
-      const { ifd, next } = await this.readIfd(off);
-      this.main.push(ifd);
-      off = next;
-    }
-    for (const ifd of this.main) {
-      const subs = await this.values(ifd, 330);
-      if (subs) {
-        for (const s of subs) ifd.subIfds.push((await this.readIfd(s)).ifd);
-      }
-    }
-  }
-
-  info(ifd: Ifd): Promise<Info> {
-    let p = this.infoCache.get(ifd);
-    if (!p) {
-      p = this.computeInfo(ifd);
-      this.infoCache.set(ifd, p);
-    }
-    return p;
-  }
-
-  async computeInfo(ifd: Ifd): Promise<Info> {
-    const width = await this.scalar(ifd, 256, null);
-    const length = await this.scalar(ifd, 257, null);
-    const bpsAll = await this.values(ifd, 258);
-    if (!bpsAll || bpsAll.length === 0) reject(`IFD at ${ifd.offset}: BitsPerSample missing`);
-    if (bpsAll.some((b) => b !== bpsAll[0])) reject(`IFD at ${ifd.offset}: BitsPerSample values differ`);
-    const spp = await this.scalar(ifd, 277, 1);
-    const format: Format = {
-      bps: bpsAll[0],
-      spp,
-      sf: await this.scalar(ifd, 339, 1),
-      planar: spp > 1 ? await this.scalar(ifd, 284, 1) : 1,
-      comp: await this.scalar(ifd, 259, 1),
-      pred: await this.scalar(ifd, 317, 1),
-    };
-    const tiled = ifd.tags.has(322) && ifd.tags.has(324);
-    return {
-      width,
-      length,
-      tiled,
-      tileW: tiled ? await this.scalar(ifd, 322, null) : 0,
-      tileL: tiled ? await this.scalar(ifd, 323, null) : 0,
-      format,
-    };
+  isTiled(ifd: Ifd): boolean {
+    return ifd.fields.has(322) && ifd.fields.has(324);
   }
 }
+
+type Format = { bps: number; spp: number; sf: number; planar: number; comp: number; pred: number };
 
 function sameFormat(a: Format, b: Format): boolean {
   return a.bps === b.bps && a.spp === b.spp && a.sf === b.sf && a.planar === b.planar && a.comp === b.comp && a.pred === b.pred;
 }
 
-function parseIntAttr(el: XmlElement, name: string, def: number): number {
-  const v = el.attrs.get(name);
-  if (v === undefined) return def;
-  const t = v.trim();
-  if (!/^[+]?[0-9]+$/.test(t)) reject(`${el.name}/@${name} is not a non-negative integer: ${JSON.stringify(v)}`);
-  return Number(t);
+async function format(t: Tiff, ifd: Ifd): Promise<Format> {
+  const bpsAll = await t.ints(ifd, 258);
+  if (bpsAll === undefined) reject(`IFD at ${ifd.offset}: BitsPerSample missing`);
+  if (bpsAll.length === 0) reject(`IFD at ${ifd.offset}: BitsPerSample has no values`);
+  if (bpsAll.some((v) => v !== bpsAll[0])) reject(`IFD at ${ifd.offset}: BitsPerSample values differ`);
+  const spp = await t.int(ifd, 277, 1);
+  const sfAll = (await t.ints(ifd, 339)) ?? [1];
+  if (sfAll.length === 0) reject(`IFD at ${ifd.offset}: SampleFormat has no values`);
+  if (sfAll.some((v) => v !== sfAll[0])) reject(`IFD at ${ifd.offset}: SampleFormat values differ`);
+  let planar = 1;
+  if (spp > 1) {
+    planar = await t.int(ifd, 284, 1);
+    if (planar !== 1 && planar !== 2) reject(`IFD at ${ifd.offset}: PlanarConfiguration ${planar}`);
+  }
+  const comp = await t.int(ifd, 259, 1);
+  const pred = await t.int(ifd, 317, 1);
+  return { bps: bpsAll[0], spp, sf: sfAll[0], planar, comp, pred };
 }
 
-function parseFloatAttr(el: XmlElement, name: string): number | undefined {
-  const v = el.attrs.get(name);
-  if (v === undefined) return undefined;
-  const t = v.trim();
-  if (!/^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$/.test(t)) return undefined;
-  return Number(t);
+type Geometry = { w: number; h: number; tw: number; th: number };
+
+async function geometry(t: Tiff, ifd: Ifd): Promise<Geometry> {
+  const w = await t.int(ifd, 256);
+  const h = await t.int(ifd, 257);
+  if (!t.isTiled(ifd)) reject(`IFD at ${ifd.offset} is not tiled`);
+  const tw = await t.int(ifd, 322);
+  const th = await t.int(ifd, 323);
+  if (!ifd.fields.has(325)) reject(`IFD at ${ifd.offset}: TileByteCounts missing`);
+  if (w < 1 || h < 1) reject(`IFD at ${ifd.offset}: zero width or length`);
+  if (tw < 1 || th < 1) reject(`IFD at ${ifd.offset}: zero tile width or length`);
+  return { w, h, tw, th };
 }
 
 type Plane = { z: number; c: number; t: number; ifd: number };
 
-export async function virtualizeTiff(r: Reader, url: string, out: Output): Promise<void> {
-  const tf = new Tiff(r);
-  await tf.readAll();
-  if (tf.main.length === 0) reject("TIFF has no IFDs");
-  const first = tf.main[0];
-  const firstInfo = await tf.info(first);
-  const spp = firstInfo.format.spp;
+export async function virtualizeTiff(src: Source, out: Output): Promise<void> {
+  const t = new Tiff(src);
+  // ---- §3.1 IFDs
+  const main: Ifd[] = [];
+  let off = await t.header();
+  if (off === 0) reject("no IFD 0");
+  while (off !== 0) {
+    const ifd = await t.readIfd(off);
+    main.push(ifd);
+    off = ifd.next;
+  }
+  const subs = new Map<Ifd, Ifd[]>();
+  for (const ifd of main) {
+    const offs = (await t.ints(ifd, 330)) ?? [];
+    const list: Ifd[] = [];
+    for (const o of offs) list.push(await t.readIfd(o));
+    subs.set(ifd, list);
+  }
+  const ifd0 = main[0];
 
-  // §3.2 OME-XML
-  let xmlBytes: Uint8Array | null = null;
-  let xmlText: string | null = null;
-  const desc = await tf.bytes(first, 270);
+  // ---- §3.2 OME-XML
+  let D: Uint8Array | null = null;
+  let ome: OmeInfo | null = null;
+  const desc = ifd0.fields.get(270);
   if (desc) {
-    let end = desc.indexOf(0);
-    if (end < 0) end = desc.length;
-    const b = desc.subarray(0, end);
-    const text = new TextDecoder("utf-8", { ignoreBOM: true }).decode(b);
-    if (text.includes("<OME")) {
-      xmlBytes = b;
-      xmlText = text;
+    if (TYPE_SIZE[desc.type] === undefined) reject(`ImageDescription: unknown field type ${desc.type}`);
+    if (desc.type === 2) {
+      const bytes = await t.valueBytes(desc);
+      const nul = bytes.indexOf(0);
+      const d = nul < 0 ? bytes : bytes.subarray(0, nul);
+      let text: string | null = null;
+      try {
+        text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(d);
+      } catch {
+        text = null;
+      }
+      if (text !== null) {
+        const info = parseOme(text);
+        if (info) {
+          D = d;
+          ome = info;
+        }
+      }
     }
   }
 
-  let sizeZ = 1, sizeC = spp, sizeT = 1;
-  let name: string | undefined;
-  const phys: Record<string, number | undefined> = {};
-  const physUnit: Record<string, string> = { X: "µm", Y: "µm", Z: "µm" };
-  const planes: Plane[] = [];
-
-  if (xmlText !== null) {
-    const doc = parseXml(xmlText);
-    const image = findFirst(doc, "Image");
-    if (image && image.attrs.has("Name")) name = image.attrs.get("Name");
-    const pixels = findFirst(doc, "Pixels");
-    let tiffData: XmlElement[] = [];
-    let order = "XYZCT";
-    if (pixels) {
-      sizeZ = parseIntAttr(pixels, "SizeZ", 1);
-      sizeC = parseIntAttr(pixels, "SizeC", spp);
-      sizeT = parseIntAttr(pixels, "SizeT", 1);
-      const dimo = pixels.attrs.get("DimensionOrder");
-      if (dimo !== undefined) order = dimo;
-      for (const a of ["X", "Y", "Z"]) {
-        phys[a] = parseFloatAttr(pixels, `PhysicalSize${a}`);
-        const u = pixels.attrs.get(`PhysicalSize${a}Unit`);
-        if (u !== undefined) physUnit[a] = u;
-      }
-      tiffData = findAll(pixels, "TiffData");
-    }
-    if (!/^XY(ZCT|ZTC|CZT|CTZ|TZC|TCZ)$/.test(order)) reject(`bad DimensionOrder ${order}`);
+  // ---- §3.3 planes
+  const fmt0 = await format(t, ifd0);
+  const spp = fmt0.spp;
+  let sizeZ = 1, sizeT = 1, sizeC = spp;
+  let planes: Plane[];
+  if (!ome) {
+    planes = [{ z: 0, c: 0, t: 0, ifd: 0 }];
+  } else {
+    sizeZ = ome.sizeZ ?? 1;
+    sizeT = ome.sizeT ?? 1;
+    sizeC = ome.sizeC ?? spp;
     if (spp > 1) {
       if (sizeC === 1) sizeC = spp;
       else if (sizeC !== spp) reject(`SizeC ${sizeC} differs from SamplesPerPixel ${spp}`);
     }
-    if (sizeZ < 1 || sizeC < 1 || sizeT < 1) reject("a Size attribute is 0");
     const cp = spp > 1 ? 1 : sizeC;
-    const total = sizeZ * sizeT * cp;
-    // dims fastest first
     const sizes: Record<string, number> = { Z: sizeZ, C: cp, T: sizeT };
-    const dims = order.slice(2).split("");
-    const mapped: Array<number | undefined> = new Array(total);
-    const tds = tiffData.length > 0 ? tiffData : [null];
-    for (const td of tds) {
-      const at = (k: string, def: number) => (td ? parseIntAttr(td, k, def) : def);
-      if (td) {
-        for (const ch of td.children) {
-          if (ch.name === "UUID" && ch.attrs.has("FileName")) reject("TiffData with UUID FileName (multi-file dataset)");
-        }
-      }
-      const pos: Record<string, number> = { Z: at("FirstZ", 0), C: at("FirstC", 0), T: at("FirstT", 0) };
-      for (const d of dims) if (pos[d] >= sizes[d]) reject(`TiffData First${d} ${pos[d]} out of range`);
-      const ifd0 = at("IFD", 0);
-      const defCount = tds.length === 1 && !(td && td.attrs.has("IFD")) ? total : 1;
-      const count = at("PlaneCount", defCount);
-      let lin = 0, stride = 1;
-      for (const d of dims) {
-        lin += pos[d] * stride;
-        stride *= sizes[d];
-      }
-      for (let i = 0; i < count && lin + i < total; i++) mapped[lin + i] = ifd0 + i;
+    const order = ome.dimensionOrder.slice(2); // fastest first
+    const count = sizeZ * cp * sizeT;
+    if (!Number.isSafeInteger(count)) reject("plane count too large");
+    const tds = ome.tiffData.length ? ome.tiffData : [{ attrs: {}, uuidKey: null }];
+    // multi-file
+    const files = new Set<string>();
+    for (const td of tds) if (td.uuidKey !== null) files.add(td.uuidKey);
+    if (files.size > 1) reject("multi-file dataset");
+    // capacity bound: a TiffData maps at most (chain length - IFD) planes to existing IFDs.
+    const parsed = tds.map((td) => {
+      const a = td.attrs;
+      const fz = a.FirstZ ?? 0, fc = a.FirstC ?? 0, ft = a.FirstT ?? 0;
+      if (fz >= sizeZ) reject(`FirstZ ${fz} >= SizeZ ${sizeZ}`);
+      if (fc >= cp) reject(`FirstC ${fc} >= ${cp}`);
+      if (ft >= sizeT) reject(`FirstT ${ft} >= SizeT ${sizeT}`);
+      const ifdIdx = a.IFD ?? 0;
+      const pc = a.PlaneCount ?? (tds.length === 1 && a.IFD === undefined ? count : 1);
+      return { fz, fc, ft, ifdIdx, pc };
+    });
+    let capacity = 0;
+    for (const p of parsed) capacity += Math.max(0, Math.min(p.pc, main.length - p.ifdIdx));
+    if (count > capacity) reject("not every plane can be mapped to an existing IFD");
+    const map = new Float64Array(count).fill(-1);
+    const pos: Record<string, number> = {};
+    const stride: Record<string, number> = {};
+    let s = 1;
+    for (const d of order) {
+      stride[d] = s;
+      s *= sizes[d];
     }
-    for (let p = 0; p < total; p++) {
-      const ifd = mapped[p];
-      if (ifd === undefined) reject(`plane ${p} is not mapped to an IFD`);
-      if (ifd >= tf.main.length) reject(`plane ${p} maps to IFD ${ifd}, which does not exist`);
-      const pos: Record<string, number> = {};
-      let rem = p;
-      for (const d of dims) {
-        pos[d] = rem % sizes[d];
-        rem = Math.floor(rem / sizes[d]);
-      }
-      planes.push({ z: pos.Z, c: pos.C, t: pos.T, ifd });
+    for (const p of parsed) {
+      pos.Z = p.fz; pos.C = p.fc; pos.T = p.ft;
+      const start = pos.Z * stride.Z + pos.C * stride.C + pos.T * stride.T;
+      const n = Math.min(p.pc, count - start);
+      for (let k = 0; k < n; k++) map[start + k] = p.ifdIdx + k;
     }
-  } else {
-    planes.push({ z: 0, c: 0, t: 0, ifd: 0 });
-  }
-
-  // §3.4 levels: levels[L][planeIndex] = Ifd
-  const levels: Ifd[][] = [planes.map((p) => tf.main[p.ifd])];
-  if (first.subIfds.length > 0 || first.tags.has(330)) {
-    const nsub = first.subIfds.length;
-    for (let k = 1; k <= nsub; k++) {
-      levels.push(
-        planes.map((p) => {
-          const s = tf.main[p.ifd].subIfds[k - 1];
-          if (!s) reject(`IFD ${p.ifd} has no SubIFD ${k}`);
-          return s;
-        }),
-      );
-    }
-  } else if (xmlText === null) {
-    let prev = firstInfo;
-    for (let i = 1; i < tf.main.length; i++) {
-      let inf: Info;
-      try {
-        inf = await tf.info(tf.main[i]);
-      } catch (e) {
-        continue; // an IFD missing required tags cannot be a level
-      }
-      if (inf.tiled && sameFormat(inf.format, firstInfo.format) && inf.width < prev.width && inf.length < prev.length) {
-        levels.push([tf.main[i]]);
-        prev = inf;
-      }
+    planes = [];
+    for (let i = 0; i < count; i++) {
+      const ifdIdx = map[i];
+      if (ifdIdx < 0 || ifdIdx >= main.length) reject(`plane ${i} not mapped to an existing IFD`);
+      const z = Math.floor(i / stride.Z) % sizeZ;
+      const c = Math.floor(i / stride.C) % cp;
+      const tt = Math.floor(i / stride.T) % sizeT;
+      planes.push({ z, c, t: tt, ifd: ifdIdx });
     }
   }
 
-  // validation and data type (§3.4, §3.5)
-  const fmt = firstInfo.format;
-  const levelInfo: Info[] = [];
-  for (let L = 0; L < levels.length; L++) {
-    let li: Info | null = null;
-    for (const ifd of levels[L]) {
-      const inf = await tf.info(ifd);
-      if (!inf.tiled) reject(`level ${L} image at ${ifd.offset} is not tiled`);
-      if (!sameFormat(inf.format, fmt)) reject(`level ${L} image at ${ifd.offset} has a different format`);
-      if (li === null) li = inf;
-      else if (inf.width !== li.width || inf.length !== li.length || inf.tileW !== li.tileW || inf.tileL !== li.tileL) {
-        reject(`level ${L} planes differ in size or tiling`);
+  // ---- §3.4 levels: levels[L][planeIndex] = Ifd
+  const levels: Ifd[][] = [planes.map((p) => main[p.ifd])];
+  const s0 = subs.get(ifd0)!;
+  if (s0.length > 0) {
+    const s = s0.length;
+    for (const pl of levels[0]) if (subs.get(pl)!.length < s) reject("plane IFD has fewer SubIFDs than IFD 0");
+    for (let k = 1; k <= s; k++) levels.push(levels[0].map((pl) => subs.get(pl)![k - 1]));
+  } else if (!ome) {
+    let last = await geometryWH(t, ifd0);
+    for (let i = 1; i < main.length; i++) {
+      const ifd = main[i];
+      if (!t.isTiled(ifd)) continue;
+      if (!ifd.fields.has(258)) continue;
+      if (!sameFormat(await format(t, ifd), fmt0)) continue;
+      const wh = await geometryWH(t, ifd);
+      if (wh.w < last.w && wh.h < last.h) {
+        levels.push([ifd]);
+        last = wh;
       }
     }
-    levelInfo.push(li!);
   }
 
-  const kind = fmt.sf === 1 ? "uint" : fmt.sf === 2 ? "int" : fmt.sf === 3 ? "float" : reject(`SampleFormat ${fmt.sf} unsupported`);
+  // validate levels
+  const geoms: Geometry[] = [];
+  for (const lvl of levels) {
+    let g: Geometry | null = null;
+    for (const ifd of lvl) {
+      const f = await format(t, ifd);
+      if (!sameFormat(f, fmt0)) reject(`IFD at ${ifd.offset}: format differs from IFD 0`);
+      const gi = await geometry(t, ifd);
+      if (g && (g.w !== gi.w || g.h !== gi.h || g.tw !== gi.tw || g.th !== gi.th))
+        reject("planes of a level differ in size or tile size");
+      g = gi;
+    }
+    geoms.push(g!);
+  }
+
+  // ---- §3.5 data type and codecs
+  const kind = fmt0.sf === 1 ? "uint" : fmt0.sf === 2 ? "int" : fmt0.sf === 3 ? "float" : null;
+  if (!kind) reject(`SampleFormat ${fmt0.sf} unsupported`);
   const okBits = kind === "float" ? [32, 64] : [8, 16, 32, 64];
-  if (!okBits.includes(fmt.bps)) reject(`BitsPerSample ${fmt.bps} unsupported for ${kind}`);
-  const dataType = `${kind}${fmt.bps}`;
-  let arrayToBytes: "bytes" | "jpeg2k" = "bytes";
+  if (!okBits.includes(fmt0.bps)) reject(`BitsPerSample ${fmt0.bps} unsupported for ${kind}`);
+  const dataType = `${kind}${fmt0.bps}`;
+  let a2b: "bytes" | "jpeg2k" = "bytes";
   let compressor: "zlib" | "zstd" | null = null;
-  if (fmt.comp === 1 && fmt.pred === 1) compressor = null;
-  else if ((fmt.comp === 8 || fmt.comp === 32946) && fmt.pred === 1) compressor = "zlib";
-  else if (fmt.comp === 50000 && fmt.pred === 1) compressor = "zstd";
-  else if ([33003, 33004, 33005, 34712].includes(fmt.comp)) arrayToBytes = "jpeg2k";
-  else reject(`Compression ${fmt.comp} with Predictor ${fmt.pred} unsupported`);
-  const planarSep = spp > 1 && fmt.planar !== 1;
-  const interleaved = spp > 1 && fmt.planar === 1;
-  // PlanarConfiguration other than 1 and 2
-  if (spp > 1 && fmt.planar !== 1 && fmt.planar !== 2) reject(`PlanarConfiguration ${fmt.planar} unsupported`);
+  const c = fmt0.comp;
+  if ([33003, 33004, 33005, 34712].includes(c)) a2b = "jpeg2k";
+  else {
+    if (fmt0.pred !== 1) reject(`Predictor ${fmt0.pred} unsupported`);
+    if (c === 1) compressor = null;
+    else if (c === 8 || c === 32946) compressor = "zlib";
+    else if (c === 50000) compressor = "zstd";
+    else reject(`Compression ${c} unsupported`);
+  }
+  const interleaved = spp > 1 && fmt0.planar === 1;
+  const planarSamples = spp > 1 && fmt0.planar === 2;
 
-  // §3.6 output
-  const channels = spp > 1 ? spp : sizeC;
+  // ---- §3.6 output
+  const channels = ome ? sizeC : spp;
   const axes: string[] = [];
   if (sizeT > 1) axes.push("t");
   if (channels > 1) axes.push("c");
   if (sizeZ > 1) axes.push("z");
   axes.push("y", "x");
 
-  const axisObjs: Axis[] = axes.map((a) => {
-    const o: Axis = { name: a, type: axisType(a) };
-    if (xmlText !== null && (a === "x" || a === "y" || a === "z")) {
-      const A = a.toUpperCase();
-      if (phys[A] !== undefined) {
-        const u = unitOf(physUnit[A]);
-        if (u !== undefined) o.unit = u;
+  const px = ome?.physX ?? null, py = ome?.physY ?? null, pz = ome?.physZ ?? null;
+  const axisObjs: Axis[] = axes.map((n) => {
+    const a: Axis = { name: n, type: axisType(n) };
+    if (ome && (n === "x" || n === "y" || n === "z")) {
+      const ph = n === "x" ? px : n === "y" ? py : pz;
+      if (ph !== null) {
+        const sym = n === "x" ? ome.unitX : n === "y" ? ome.unitY : ome.unitZ;
+        const u = UNITS[sym ?? "µm"];
+        if (u) a.unit = u;
       }
     }
-    return o;
+    return a;
   });
 
-  const H0 = levelInfo[0].length, W0 = levelInfo[0].width;
+  const H0 = geoms[0].h, W0 = geoms[0].w;
   const datasets: unknown[] = [];
   for (let L = 0; L < levels.length; L++) {
-    const li = levelInfo[L];
-    const scale = axes.map((a) => {
-      if (a === "y") return (phys.Y ?? 1) * (H0 / li.length);
-      if (a === "x") return (phys.X ?? 1) * (W0 / li.width);
-      if (a === "z") return phys.Z ?? 1;
+    const g = geoms[L];
+    const scale = axes.map((n) => {
+      if (n === "y") return finite((py ?? 1) * (H0 / g.h), "y scale");
+      if (n === "x") return finite((px ?? 1) * (W0 / g.w), "x scale");
+      if (n === "z") return pz ?? 1;
       return 1;
     });
-    datasets.push({ path: String(L), coordinateTransformations: [{ type: "scale", scale }] });
-
-    const shape: number[] = [];
-    const chunk: number[] = [];
-    for (const a of axes) {
-      if (a === "t") { shape.push(sizeT); chunk.push(1); }
-      else if (a === "c") { shape.push(channels); chunk.push(interleaved ? spp : 1); }
-      else if (a === "z") { shape.push(sizeZ); chunk.push(1); }
-    }
-    shape.push(li.length, li.width);
-    chunk.push(li.tileL, li.tileW);
-    out.json(`${L}/zarr.json`, arrayJson({
-      shape, dataType, chunkShape: chunk, axes, interleaved, arrayToBytes,
-      endian: tf.le ? "little" : "big", itemSize: fmt.bps / 8, compressor,
-    }));
-
-    const across = Math.ceil(li.width / li.tileW);
-    const down = Math.ceil(li.length / li.tileL);
-    const T = across * down;
-    const nSamplePlanes = planarSep ? spp : 1;
-    for (let pi = 0; pi < planes.length; pi++) {
-      const pl = planes[pi];
-      const ifd = levels[L][pi];
-      const offs = await tf.values(ifd, 324);
-      const counts = await tf.values(ifd, 325);
-      if (!offs || !counts) reject(`IFD at ${ifd.offset}: TileOffsets/TileByteCounts missing`);
-      if (offs.length !== T * nSamplePlanes) reject(`IFD at ${ifd.offset}: ${offs.length} tiles, expected ${T * nSamplePlanes}`);
-      if (counts.length !== offs.length) reject(`IFD at ${ifd.offset}: TileByteCounts length differs from TileOffsets`);
-      for (let k = 0; k < offs.length; k++) {
-        const n = counts[k];
-        if (!(n > 0)) continue;
-        const s = Math.floor(k / T);
-        const j = k % T;
-        const coords: number[] = [];
-        for (const a of axes) {
-          if (a === "t") coords.push(pl.t);
-          else if (a === "c") coords.push(spp > 1 ? (planarSep ? s : 0) : pl.c);
-          else if (a === "z") coords.push(pl.z);
-        }
-        coords.push(Math.floor(j / across), j % across);
-        out.ref(`${L}/c/${coords.join("/")}`, [[0, offs[k], n]]);
-      }
-    }
+    datasets.push({ path: `${L}`, coordinateTransformations: [{ type: "scale", scale }] });
   }
-
   const ms: Record<string, unknown> = {};
-  if (name !== undefined) ms.name = name;
+  if (ome && ome.imageName) ms.name = ome.imageName;
   ms.axes = axisObjs;
   ms.datasets = datasets;
   out.json("zarr.json", { zarr_format: 3, node_type: "group", attributes: { ome: { version: "0.5", multiscales: [ms] } } });
-  if (xmlText !== null) {
-    out.set("OME/METADATA.ome.xml", { base64: Buffer.from(new TextEncoder().encode(xmlText)).toString("base64") });
+
+  for (let L = 0; L < levels.length; L++) {
+    const g = geoms[L];
+    const shape: number[] = [];
+    const chunk: number[] = [];
+    for (const n of axes) {
+      if (n === "t") { shape.push(sizeT); chunk.push(1); }
+      else if (n === "c") { shape.push(channels); chunk.push(interleaved ? spp : 1); }
+      else if (n === "z") { shape.push(sizeZ); chunk.push(1); }
+      else if (n === "y") { shape.push(g.h); chunk.push(g.th); }
+      else { shape.push(g.w); chunk.push(g.tw); }
+    }
+    out.json(`${L}/zarr.json`, arrayJson({
+      shape, dataType, chunkShape: chunk,
+      codecs: buildCodecs({ axes, interleaved, arrayToBytes: a2b, itemSize: fmt0.bps / 8, littleEndian: t.le, compressor }),
+      dimensionNames: axes,
+    }));
+
+    const rows = Math.ceil(g.h / g.th), cols = Math.ceil(g.w / g.tw);
+    const T = rows * cols;
+    const nsp = planarSamples ? spp : 1;
+    for (let pi = 0; pi < planes.length; pi++) {
+      const plane = planes[pi];
+      const ifd = levels[L][pi];
+      const offs = (await t.ints(ifd, 324))!;
+      const cnts = await t.ints(ifd, 325);
+      if (!cnts) reject("TileByteCounts missing");
+      if (offs.length !== T * nsp || cnts.length !== T * nsp)
+        reject(`IFD at ${ifd.offset}: tile count ${offs.length}/${cnts.length} != ${T * nsp}`);
+      for (let sIdx = 0; sIdx < nsp; sIdx++) {
+        for (let j = 0; j < T; j++) {
+          const k = sIdx * T + j;
+          const n = cnts[k];
+          if (n <= 0) continue;
+          const coords: number[] = [];
+          for (const a of axes) {
+            if (a === "t") coords.push(plane.t);
+            else if (a === "c") coords.push(planarSamples ? sIdx : interleaved ? 0 : plane.c);
+            else if (a === "z") coords.push(plane.z);
+          }
+          coords.push(Math.floor(j / cols), j % cols);
+          const r: Range = [0, offs[k], n];
+          out.ref(`${L}/c/${coords.join("/")}`, [r]);
+        }
+      }
+    }
   }
+  if (D) out.bytes("OME/METADATA.ome.xml", D);
+}
+
+async function geometryWH(t: Tiff, ifd: Ifd): Promise<{ w: number; h: number }> {
+  return { w: await t.int(ifd, 256), h: await t.int(ifd, 257) };
 }

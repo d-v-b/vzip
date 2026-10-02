@@ -1,170 +1,256 @@
-// Lite-variant (LV) decoder (VIRTUALIZE.md §4.2).
-
+// ND2 lite variant decoder (VIRTUALIZE.md §4.2).
 import { inflateSync } from "node:zlib";
-import { reject, dv } from "./util.ts";
+import { MAX_SAFE, reject } from "./io.ts";
 
-export type LVValue = number | boolean | string | number[] | LVLevel;
+export type LvLevel = { kind: "object"; members: Map<string, LvValue> } | { kind: "list"; items: LvValue[] };
 
-// A level keeps its records in order; whether it is an "object" (named
-// members) or a "list" (all names empty) only matters for lookups, which
-// use the last record of a given name, and for "members", which are the
-// values in order. Both views are available on the same structure.
-export class LVLevel {
-  recs: Array<[string, LVValue]>;
-  constructor(recs: Array<[string, LVValue]>) {
-    this.recs = recs;
-  }
-  get isList(): boolean {
-    return this.recs.every(([n]) => n === "");
-  }
-  get(name: string): LVValue | undefined {
-    for (let i = this.recs.length - 1; i >= 0; i--) if (this.recs[i][0] === name) return this.recs[i][1];
-    return undefined;
-  }
-  members(): LVValue[] {
-    if (this.isList) return this.recs.map(([, v]) => v);
-    // object: one member per distinct name, in order of first appearance, with the last value
-    const seen = new Map<string, LVValue>();
-    for (const [n, v] of this.recs) seen.set(n, v);
-    return [...seen.values()];
-  }
-}
+// t: record type (1-9, 11), or 0 for a byte of a byte array
+export type LvValue =
+  | { t: 1 | 2 | 3 | 6 | 0; v: number }
+  | { t: 4 | 5; v: bigint }
+  | { t: 7; v: null }
+  | { t: 8; v: string }
+  | { t: 9; v: LvLevel }
+  | { t: 11; v: LvLevel };
 
-function utf16(b: Uint8Array, pos: number, units: number): string {
+function decodeUtf16(units: number[]): string {
   let s = "";
-  for (let i = 0; i < units; i++) {
-    const u = b[pos + 2 * i] | (b[pos + 2 * i + 1] << 8);
-    if (u === 0) break;
-    s += String.fromCharCode(u);
+  for (let i = 0; i < units.length; i++) {
+    const u = units[i];
+    if (u >= 0xd800 && u <= 0xdbff) {
+      const w = units[i + 1];
+      if (w !== undefined && w >= 0xdc00 && w <= 0xdfff) {
+        s += String.fromCharCode(u, w);
+        i++;
+      } else s += "�";
+    } else if (u >= 0xdc00 && u <= 0xdfff) s += "�";
+    else s += String.fromCharCode(u);
   }
   return s;
 }
 
-function need(b: Uint8Array, pos: number, n: number, end: number): void {
-  if (pos + n > end || pos + n > b.length) reject(`LV structure truncated at ${pos}`);
-}
+class Parser {
+  b: Uint8Array;
+  dv: DataView;
+  constructor(b: Uint8Array) {
+    this.b = b;
+    this.dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  }
 
-function parseSeq(b: Uint8Array, start: number, end: number, count: number | null): { recs: Array<[string, LVValue]>; pos: number } {
-  const d = dv(b);
-  const recs: Array<[string, LVValue]> = [];
-  let pos = start;
-  while (count === null ? pos < end : recs.length < count) {
-    const recStart = pos;
-    need(b, pos, 2, end);
-    const type = b[pos];
-    const k = b[pos + 1];
-    pos += 2;
-    if (type === 76) {
-      need(b, pos, 10, end);
-      pos += 10;
-      let inflated: Uint8Array;
-      try {
-        inflated = new Uint8Array(inflateSync(b.subarray(pos, end)));
-      } catch (e) {
-        return reject(`LV compressed record: bad zlib stream (${(e as Error).message})`);
-      }
-      const inner = parseSeq(inflated, 0, inflated.length, null);
-      return { recs: inner.recs, pos: end };
+  need(p: number, n: number, end: number): void {
+    if (p + n > end) reject("LV: record runs past the end of its data");
+  }
+
+  /** Parses records in [p, end) until count records (or end, if count is null). Returns [records, pos]. */
+  records(p: number, end: number, count: number | null): [Array<[string, LvValue]>, number] {
+    const recs: Array<[string, LvValue]> = [];
+    while (count === null ? p < end : recs.length < count) {
+      const [name, val, q] = this.record(p, end);
+      recs.push([name, val]);
+      p = q;
     }
-    need(b, pos, 2 * k, end);
-    const name = utf16(b, pos, k);
-    pos += 2 * k;
-    let value: LVValue;
+    return [recs, p];
+  }
+
+  record(p: number, end: number): [string, LvValue, number] {
+    const start = p;
+    this.need(p, 2, end);
+    const type = this.b[p];
+    const k = this.b[p + 1];
+    p += 2;
+    this.need(p, 2 * k, end);
+    const units: number[] = [];
+    for (let i = 0; i < k; i++) {
+      const u = this.dv.getUint16(p + 2 * i, true);
+      if (u === 0) break;
+      units.push(u);
+    }
+    const name = decodeUtf16(units);
+    p += 2 * k;
+    let val: LvValue;
     switch (type) {
       case 1:
-        need(b, pos, 1, end);
-        value = b[pos] !== 0;
-        pos += 1;
+        this.need(p, 1, end);
+        val = { t: 1, v: this.b[p] };
+        p += 1;
         break;
       case 2:
-        need(b, pos, 4, end);
-        value = d.getInt32(pos, true);
-        pos += 4;
+        this.need(p, 4, end);
+        val = { t: 2, v: this.dv.getInt32(p, true) };
+        p += 4;
         break;
       case 3:
-        need(b, pos, 4, end);
-        value = d.getUint32(pos, true);
-        pos += 4;
+        this.need(p, 4, end);
+        val = { t: 3, v: this.dv.getUint32(p, true) };
+        p += 4;
         break;
       case 4:
-        need(b, pos, 8, end);
-        value = Number(d.getBigInt64(pos, true));
-        pos += 8;
+        this.need(p, 8, end);
+        val = { t: 4, v: this.dv.getBigInt64(p, true) };
+        p += 8;
         break;
       case 5:
-      case 7:
-        need(b, pos, 8, end);
-        value = Number(d.getBigUint64(pos, true));
-        pos += 8;
+        this.need(p, 8, end);
+        val = { t: 5, v: this.dv.getBigUint64(p, true) };
+        p += 8;
         break;
       case 6:
-        need(b, pos, 8, end);
-        value = d.getFloat64(pos, true);
-        pos += 8;
+        this.need(p, 8, end);
+        val = { t: 6, v: this.dv.getFloat64(p, true) };
+        p += 8;
+        break;
+      case 7:
+        this.need(p, 8, end);
+        val = { t: 7, v: null };
+        p += 8;
         break;
       case 8: {
-        let s = "";
+        const units: number[] = [];
         for (;;) {
-          need(b, pos, 2, end);
-          const u = d.getUint16(pos, true);
-          pos += 2;
+          this.need(p, 2, end);
+          const u = this.dv.getUint16(p, true);
+          p += 2;
           if (u === 0) break;
-          s += String.fromCharCode(u);
+          units.push(u);
         }
-        value = s;
+        val = { t: 8, v: decodeUtf16(units) };
         break;
       }
       case 9: {
-        need(b, pos, 8, end);
-        const n = Number(d.getBigUint64(pos, true));
-        pos += 8;
-        need(b, pos, n, end);
-        value = Array.from(b.subarray(pos, pos + n));
-        pos += n;
+        this.need(p, 8, end);
+        const bl = this.dv.getBigUint64(p, true);
+        p += 8;
+        if (bl > BigInt(end - p)) reject("LV: byte array runs past the end of its data");
+        const n = Number(bl);
+        const items: LvValue[] = [];
+        for (let i = 0; i < n; i++) items.push({ t: 0, v: this.b[p + i] });
+        p += n;
+        val = { t: 9, v: { kind: "list", items } };
         break;
       }
       case 11: {
-        need(b, pos, 12, end);
-        const c = d.getUint32(pos, true);
-        const L = Number(d.getBigUint64(pos + 4, true));
-        pos += 12;
-        const recEnd = recStart + L;
-        if (recEnd < pos || recEnd > end) reject(`LV level ${name}: bad length ${L}`);
-        const inner = parseSeq(b, pos, recEnd, c);
-        if (inner.pos !== recEnd) reject(`LV level ${name}: records end at ${inner.pos}, length says ${recEnd}`);
-        pos = recEnd + 8 * c;
-        if (pos > end) reject(`LV level ${name}: trailing offsets past end`);
-        value = new LVLevel(inner.recs);
+        this.need(p, 12, end);
+        const c = this.dv.getUint32(p, true);
+        const L = this.dv.getBigUint64(p + 4, true);
+        p += 12;
+        if (L > BigInt(end - start)) reject("LV: level length runs past the end of its data");
+        const lend = start + Number(L);
+        const [recs, q] = this.records(p, lend, c);
+        if (q !== lend) reject(`LV: level "${name}" records end at ${q - start}, not at its length ${L}`);
+        p = q;
+        this.need(p, 8 * c, end);
+        p += 8 * c;
+        val = { t: 11, v: makeLevel(recs) };
         break;
       }
       default:
-        return reject(`LV record type ${type} unknown at ${recStart}`);
+        reject(`LV: unknown record type ${type}`);
     }
-    recs.push([name, value]);
+    return [name, val, p];
   }
-  return { recs, pos };
 }
 
-export function decodeLV(b: Uint8Array): LVLevel {
-  return new LVLevel(parseSeq(b, 0, b.length, null).recs);
+function makeLevel(recs: Array<[string, LvValue]>): LvLevel {
+  if (recs.length > 0 && recs.every(([n]) => n === "")) return { kind: "list", items: recs.map(([, v]) => v) };
+  const members = new Map<string, LvValue>();
+  for (const [n, v] of recs) members.set(n, v); // Map keeps first-insertion order, last value
+  return { kind: "object", members };
 }
 
-export function lvGet(v: LVValue | undefined, path: string): LVValue | undefined {
-  for (const part of path.split("/")) {
-    if (!(v instanceof LVLevel)) return undefined;
-    v = v.get(part);
+/** Decodes a metadata chunk's data into its LV structure (an object or a list). */
+export function decodeLv(data: Uint8Array): LvLevel {
+  if (data.length > 0 && data[0] === 76) {
+    if (data.length < 12) reject("LV: compressed record too short");
+    const stream = data.subarray(12);
+    let res: { buffer: Buffer; engine: { bytesWritten: number } };
+    try {
+      res = inflateSync(stream, { info: true }) as unknown as typeof res;
+    } catch (e) {
+      reject(`LV: bad zlib stream: ${(e as Error).message}`);
+    }
+    if (res.engine.bytesWritten !== stream.length) reject("LV: zlib stream does not end at the end of the chunk");
+    return decodeLvPlain(new Uint8Array(res.buffer.buffer, res.buffer.byteOffset, res.buffer.byteLength));
   }
-  return v;
+  return decodeLvPlain(data);
 }
 
-export function lvMembers(v: LVValue | undefined): LVValue[] | undefined {
-  if (v instanceof LVLevel) return v.members();
-  if (Array.isArray(v)) return v;
+function decodeLvPlain(data: Uint8Array): LvLevel {
+  const p = new Parser(data);
+  const [recs] = p.records(0, data.length, null);
+  return makeLevel(recs);
+}
+
+// ---------------------------------------------------------------- access
+
+export function asLevel(v: LvValue, what: string): LvLevel {
+  if (v.t === 11 || v.t === 9) return v.v;
+  reject(`${what} is not a level`);
+}
+
+/** Member at a path below a level; undefined if missing. Each step must be an object. */
+export function get(root: LvLevel | undefined, path: string): LvValue | undefined {
+  if (!root) return undefined;
+  let cur: LvLevel = root;
+  const parts = path.split("/");
+  for (let i = 0; i < parts.length; i++) {
+    if (cur.kind !== "object") reject(`LV: "${parts.slice(0, i).join("/")}" is not an object`);
+    const v = cur.members.get(parts[i]);
+    if (v === undefined) return undefined;
+    if (i === parts.length - 1) return v;
+    if (v.t !== 11) reject(`LV: "${parts.slice(0, i + 1).join("/")}" is not a level`);
+    cur = v.v;
+  }
   return undefined;
 }
 
-export function lvNum(v: LVValue | undefined): number | undefined {
-  if (typeof v === "number") return v;
-  if (typeof v === "boolean") return v ? 1 : 0;
-  return undefined;
+export function getLevel(root: LvLevel | undefined, path: string): LvLevel | undefined {
+  const v = get(root, path);
+  if (v === undefined) return undefined;
+  if (v.t !== 11) reject(`LV: "${path}" is not a level`);
+  return v.v;
+}
+
+/** A value used as a number (types 2-6). */
+export function numOf(v: LvValue, what: string): number {
+  if (v.t === 2 || v.t === 3 || v.t === 6 || v.t === 0) return v.v;
+  if (v.t === 4 || v.t === 5) {
+    if (v.v > BigInt(MAX_SAFE) || v.v < -BigInt(MAX_SAFE)) reject(`${what}: 64-bit value ${v.v} out of range`);
+    return Number(v.v);
+  }
+  reject(`${what}: type ${v.t} cannot be used as a number`);
+}
+
+/** A value used as a flag (types 1-5). */
+export function flagOf(v: LvValue, what: string): boolean {
+  if (v.t === 1 || v.t === 2 || v.t === 3 || v.t === 0) return v.v !== 0;
+  if (v.t === 4 || v.t === 5) return v.v !== 0n;
+  reject(`${what}: type ${v.t} cannot be used as a flag`);
+}
+
+export function num(root: LvLevel | undefined, path: string, def?: number): number {
+  const v = get(root, path);
+  if (v === undefined) {
+    if (def === undefined) reject(`LV: required member "${path}" missing`);
+    return def;
+  }
+  return numOf(v, path);
+}
+
+/** A number that must be a non-negative integer (sizes, counts, enumerations). */
+export function uint(root: LvLevel | undefined, path: string, def?: number): number {
+  const n = num(root, path, def);
+  if (!Number.isSafeInteger(n) || n < 0) reject(`LV: "${path}" = ${n} is not a non-negative integer`);
+  return n;
+}
+
+export function flag(root: LvLevel | undefined, path: string, def: boolean): boolean {
+  const v = get(root, path);
+  if (v === undefined) return def;
+  return flagOf(v, path);
+}
+
+/** "The members of" a level or byte array: its values in order. */
+export function membersOf(v: LvValue, what: string): LvValue[] {
+  if (v.t === 11 || v.t === 9) return v.v.kind === "list" ? v.v.items : [...v.v.members.values()];
+  reject(`${what} has no members (type ${v.t})`);
 }
