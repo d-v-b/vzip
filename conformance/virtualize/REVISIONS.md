@@ -401,7 +401,7 @@ own, beside `ome`, for what OME-NGFF cannot express. Conformance moved from
 | IMS (§8) | Imaris 5.5–10 files: a hand-read HDF5 subset (superblock 0–3, object headers v1/v2, symbol-table, compact and dense groups and attributes, v1 B-tree, single-chunk and fixed-array chunk indexes, absolute soft links), uncompressed or deflate chunks | LZ4, shuffle and other filters, contiguous layouts, other chunk indexes, shared messages |
 
 **Tests.** Each profile has synthetic files in `web/test/fixtures/<profile>/`
-(42 DICOM, 64 NIfTI, 27 IMS, about 580 KB in all), checked pixel by pixel
+(43 DICOM, 64 NIfTI, 27 IMS, about 580 KB in all), checked pixel by pixel
 against pydicom, nibabel and h5py. Both maintained implementations agree on
 all 254 synthetic files of the six profiles, on mutants of the new ones
 (420 DICOM, 1920 NIfTI, 1350 IMS) and on public files: 17 DICOM (pydicom
