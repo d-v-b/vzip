@@ -123,6 +123,8 @@ interface Loop {
   depth: number;
   count: number;
   scale: number; // period (ms) or step (µm)
+  /** For positions: each valid point's stage position (µm), or null if absent. */
+  stage?: [number | null, number | null][];
 }
 
 /** One experiment node's loop, "spectral", or undefined (skipped). */
@@ -149,10 +151,15 @@ function nodeLoop(node: LVObject): Omit<Loop, "depth"> | "spectral" | undefined 
       loop = { kind: "t", count, scale: ms.length ? ms[0] : 0 };
       break;
     }
-    case 2:
-      count = valid(members(pars.get("Points"), "Points"), itemValid, "pItemValid").length;
-      loop = { kind: "p", count, scale: 0 };
+    case 2: {
+      const points = valid(members(pars.get("Points"), "Points"), itemValid, "pItemValid")
+        .map((q) => obj(q, "Points member"));
+      count = points.length;
+      const stage = points.map((q): [number | null, number | null] =>
+        [number(q.get("dPosX"), "dPosX", null), number(q.get("dPosY"), "dPosY", null)]);
+      loop = { kind: "p", count, scale: 0, stage };
       break;
+    }
     case 4: {
       count = integer(pars.get("uiCount"), "uiCount", 0);
       let step = Math.abs(number(pars.get("dZStep"), "dZStep", 0));
@@ -328,6 +335,8 @@ export async function virtualizeNd2(
   const bCalibrated = flag(picture.get("bCalibrated"), "bCalibrated", false);
   const cal = number(picture.get("dCalibration"), "dCalibration", null);
   let aspect = number(picture.get("dAspect"), "dAspect", 1);
+  const [m11, m12, m21, m22] = ([["11", 1], ["12", 0], ["21", 0], ["22", 1]] as const)
+    .map(([k, fallback]) => number(picture.get(`dStgLgCT${k}`), `dStgLgCT${k}`, fallback));
   const calibrated = bCalibrated && cal !== null && cal > 0;
   if (!(aspect > 0)) aspect = 1;
   const pp: LVObject = obj(picture.get("sPicturePlanes"), "sPicturePlanes", null) ?? new Map();
@@ -455,6 +464,18 @@ export async function virtualizeNd2(
   const json = (v: unknown) => utf8.encode(JSON.stringify(v, null, 2));
   const group = (attributes: unknown) => json({ zarr_format: 3, node_type: "group", attributes });
   const positions = p?.count ?? 1;
+  // §4.6 stage positions: where each position's image goes.
+  const det = m11 * m22 - m12 * m21;
+  let translations: number[][] | undefined;
+  if (p?.stage && calibrated && det !== 0 && p.stage.every(([x, y]) => x !== null && y !== null)) {
+    translations = p.stage.map(([sx, sy]) => {
+      const u = (m22 * sx! - m12 * sy!) / det;
+      const v = (m11 * sy! - m21 * sx!) / det;
+      const shift: Record<string, number> = { x: u - width * scale.x / 2, y: v - height * scale.y / 2 };
+      if (!Object.values(shift).every(Number.isFinite)) reject("a stage position is not finite");
+      return axes.map((a) => shift[a] ?? 0);
+    });
+  }
   const entries: EntryDesc[] = [
     { key: "zarr.json", bytes: group({ ome: { version: "0.5", "bioformats2raw.layout": 3 } }) },
     { key: "OME/zarr.json", bytes: group({ ome: { version: "0.5", series: Array.from({ length: positions }, (_, i) => String(i)) } }) },
@@ -470,7 +491,13 @@ export async function virtualizeNd2(
           multiscales: [{
             name: `position ${pi}`,
             axes: axes.map((a) => ({ name: a, type: type[a], ...(unit[a] ? { unit: unit[a] } : {}) })),
-            datasets: [{ path: "0", coordinateTransformations: [{ type: "scale", scale: axes.map((a) => scale[a]) }] }],
+            datasets: [{
+              path: "0",
+              coordinateTransformations: [
+                { type: "scale", scale: axes.map((a) => scale[a]) },
+                ...(translations ? [{ type: "translation", translation: translations[pi] }] : []),
+              ],
+            }],
           }],
           omero: {
             channels: labels.map((label, k) => ({ label, color: colors[k], active: true, ...window })),

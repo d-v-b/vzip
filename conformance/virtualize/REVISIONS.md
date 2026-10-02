@@ -241,3 +241,26 @@ maintained implementations, which they had missed:
 New synthetic files: `nd2_reject_too_many_components`,
 `nd2_reject_z_step_overflow` and `edge_subifd_next_ignored`. The round-4
 implementations differ only on the first, which is the one new rule.
+
+## Revision 6: stage positions
+
+Not from a spec round: revision 6 adds a rule. Each image of a multi-position
+ND2 now has an OME-NGFF `translation` that places it where the stage was:
+- the position's `dPosX`/`dPosY` (the centre of its field of view);
+- mapped into image coordinates by the inverse of the picture metadata's
+  stage-to-camera matrix (`dStgLgCT11`…`22`);
+- minus half the field of view.
+
+There is no translation when the image is uncalibrated, when a position
+lacks coordinates, or when the matrix is singular.
+
+The corpus shows that the matrix matters. S-BIAD3015's camera is rotated by
+180° (the matrix is about −I), so its stage axes run opposite to the image
+axes. No corpus file has overlapping fields, so the orientation convention
+has not been checked against image content.
+
+New synthetic files cover the rule: `nd2_edge_stage_positions` (a 90° camera
+and an invalid point), `nd2_edge_stage_singular` and
+`nd2_edge_stage_incomplete`. Both maintained implementations agree on all 101
+synthetic files and on the 323-input corpus, whose 14 multi-position ND2
+files now carry translations.

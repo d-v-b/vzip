@@ -76,14 +76,17 @@ def group_json(ome: dict) -> dict:
     return {"zarr_format": 3, "node_type": "group", "attributes": {"ome": ome}}
 
 
-def image_ome(axes: list[str], units: dict, scales: list[list[float]], name: str | None) -> dict:
-    """The OME-NGFF 0.5 object of an image (§2.2)."""
+def image_ome(axes: list[str], units: dict, scales: list[list[float]], name: str | None,
+              translations: list[list[float]] | None = None) -> dict:
+    """The OME-NGFF 0.5 object of an image (§2.2), with a translation per
+    level after its scale when `translations` is given."""
     ms = {}
     if name is not None:
         ms["name"] = name
     ms["axes"] = [{"name": a, "type": TYPES[a], **({"unit": units[a]} if units.get(a) else {})} for a in axes]
     ms["datasets"] = [
-        {"path": str(i), "coordinateTransformations": [{"type": "scale", "scale": s}]}
+        {"path": str(i), "coordinateTransformations": [{"type": "scale", "scale": s}] + (
+            [{"type": "translation", "translation": translations[i]}] if translations else [])}
         for i, s in enumerate(scales)
     ]
     return {"version": "0.5", "multiscales": [ms]}
