@@ -1065,6 +1065,25 @@ def crafted(root: Path) -> dict[str, dict]:
     case("large_deflate_entry")(
         patched_record("z", lambda s, c, o, x: (U32, U32, o, z64(5, 7) + x, 8)))
 
+    # -- revision 10 ----------------------------------------------------------
+    def orphan_local_header(path):
+        # a local header and body that no central directory record points to, as a
+        # SOZip index file is: not allowed (§3.1 rule 2), but readers never look for
+        # one, so the archive reads normally (§8.6)
+        f, w = _writer(path)
+        w.add_bytes("fine", b"ok")
+        name, body = b".fine.sozip.idx", b"\0" * 32
+        w._write(struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, 0x800, 0, 0, 0x21, zlib.crc32(body),
+                             len(body), len(body), len(name), 0) + name + body)
+        w.add_ref("x", "data/blob.bin", 3, 2)
+        w.close(); f.close()
+    orphan_local_header.expect = fine + [
+        (get("x"), [ok_value(BLOB[3:5])]),
+        ({"op": "list", "prefix": ""}, [{"ok": True, "keys": ["fine", "x"]}]),
+        (classify(".fine.sozip.idx"), [{"ok": True, "kind": "missing"}]),
+    ]
+    case("local_header_without_record")(orphan_local_header)
+
     def empty_url(path):
         f, w = _writer(path, sources=[Source(url="data/blob.bin"), Source(url="")])
         w._skip_checks = True
