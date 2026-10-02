@@ -1,0 +1,20 @@
+# Public DICOM files for compare.py (url|name).
+# pydicom's test files, pinned to v3.0.1:
+https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/CT_small.dcm|pydicom-CT_small
+https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/MR_small.dcm|pydicom-MR_small
+https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/MR_small_bigendian.dcm|pydicom-MR_small_bigendian
+https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/MR_small_implicit.dcm|pydicom-MR_small_implicit
+https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/JPEG2000.dcm|pydicom-JPEG2000
+https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/MR_small_jp2klossless.dcm|pydicom-MR_small_jp2klossless
+https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/SC_rgb_jpeg_dcmtk.dcm|pydicom-SC_rgb_jpeg_dcmtk
+https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/SC_rgb_jpeg_gdcm.dcm|pydicom-SC_rgb_jpeg_gdcm
+https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/SC_jpeg_no_color_transform.dcm|pydicom-SC_jpeg_no_color_transform
+https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/SC_rgb_small_odd_jpeg.dcm|pydicom-SC_rgb_small_odd_jpeg
+https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/rtdose.dcm|pydicom-rtdose
+# Whole-slide image levels from the NCI Imaging Data Commons (idc-open-data):
+https://storage.googleapis.com/idc-open-data/76f1a2b6-bb09-4736-aa91-bf89ef57f877/e0e21b65-c170-4d76-85f4-1302414cd758.dcm|idc-tcga_thym-jpeg
+https://storage.googleapis.com/idc-open-data/aa2237b2-abe7-403d-975a-0c7f3a77094e/148665d3-e9b0-4159-b123-5d85e698f684.dcm|idc-bonemarrow-jpeg
+https://storage.googleapis.com/idc-open-data/46481e31-d3d6-4621-8f10-73bc8cca5f2b/d3ec3a82-7191-4cef-938a-9bd413196844.dcm|idc-tcga_cesc-j2k
+https://storage.googleapis.com/idc-open-data/d42b19a9-89fe-47e1-9dcf-834d1ae510da/b03a7cd0-78c9-41f7-bae3-5f74e90d6194.dcm|idc-rms-j2k-lossless
+https://storage.googleapis.com/idc-open-data/53d54ceb-fb2a-46f4-8458-9ee5dcbd9fef/3cacf081-7ede-4b13-8566-dd96c480db49.dcm|idc-rms-native
+https://storage.googleapis.com/idc-open-data/a1a1e797-a747-4c2b-acbb-4f746a6ecf03/4d1159c0-e240-4b0b-a274-60c2e38d6976.dcm|idc-htan-native
