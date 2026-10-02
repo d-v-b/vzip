@@ -559,6 +559,11 @@ class VZipStore(Store):
             raise ResolutionError(f"{url} is shorter than {end} bytes")
         return data
 
+    # Reads of the same url source closer than this are combined into one
+    # request (spec §6.2 allows it): a Concat of many short ranges, such as
+    # one per image row, would otherwise cost one request per range.
+    MERGE_GAP = 1 << 16
+
     async def _ref_bytes(self, ref: Reference, start: int, end: int) -> bytes:
         """Bytes [start, end) of the value described by `ref` (spec §8.3)."""
         for r in parts(ref):  # payload errors: every range, even ones outside [start, end)
@@ -583,16 +588,42 @@ class VZipStore(Store):
                 elif src.key is not None:
                     pieces.append(self._key_bytes(src.key, a, b))
                 else:
-                    pieces.append(self._url_bytes(src, a, b))
+                    pieces.append((r.source, a, b))
             pos += r.size
-        coros = [p for p in pieces if not isinstance(p, bytes)]
+        # Combine nearby reads of each url source, then slice them apart.
+        reads = sorted({p for p in pieces if isinstance(p, tuple)}, key=lambda t: (t[0], t[1]))
+        runs: list[list] = []  # [source, a, b]
+        for source, a, b in reads:
+            if runs and runs[-1][0] == source and a - runs[-1][2] <= self.MERGE_GAP:
+                runs[-1][2] = max(runs[-1][2], b)
+            else:
+                runs.append([source, a, b])
+        coros = [p for p in pieces if not isinstance(p, (bytes, tuple))]
+        coros += [self._url_bytes(self._sources[s], a, b) for s, a, b in runs]
         try:
-            done = iter(await asyncio.gather(*coros))
+            done = await asyncio.gather(*coros)
         except ResolutionError:
             raise
         except Exception as exc:  # noqa: BLE001 - spec §8.4: failures resolving a range
             raise ResolutionError(f"{type(exc).__name__}: {exc}") from None
-        return b"".join(p if isinstance(p, bytes) else next(done) for p in pieces)
+        other = iter(done[: len(done) - len(runs)])
+        fetched = list(zip(runs, done[len(done) - len(runs):]))
+
+        def from_runs(source: int, a: int, b: int) -> bytes:
+            for (s, ra, rb), data in fetched:
+                if s == source and ra <= a and b <= rb:
+                    return data[a - ra : b - ra]
+            raise AssertionError("read not covered by a run")
+
+        out = []
+        for p in pieces:
+            if isinstance(p, bytes):
+                out.append(p)
+            elif isinstance(p, tuple):
+                out.append(from_runs(*p))
+            else:
+                out.append(next(other))
+        return b"".join(out)
 
     # ------------------------------------------------------------ zarr API
 

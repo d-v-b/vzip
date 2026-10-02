@@ -106,3 +106,34 @@ test("reports a request error for a range past the end", async () => {
   const a = await open({ sources: [], entries: [{ key: "b", bytes: utf8("abc") }] });
   await assert.rejects(a.read("b", 2, 5), (e) => e instanceof VzipError && e.errorClass === "request");
 });
+
+test("combines nearby reads of a url source into one request", async () => {
+  const blob = Uint8Array.from({ length: 300_000 }, (_, i) => i % 251);
+  const requests: string[] = [];
+  const openWith = async (desc: ArchiveDesc) =>
+    Archive.open(await writeVzip(desc), "https://data.test/dir/archive.vzip", async (url, s, e) => {
+      requests.push(`${url.split("/").pop()} ${s}-${e}`);
+      return { data: blob.subarray(s, e), size: blob.length };
+    });
+  const expect = (ranges: [number, number][]) =>
+    Uint8Array.from(ranges.flatMap(([o, n]) => [...blob.subarray(o, o + n)]));
+  const rows = Array.from({ length: 100 }, (_, i) => [i * 103, 100] as [number, number]); // 3 bytes of padding per row
+  const cases: { ranges: [number, number][]; sources?: number[]; requests: number }[] = [
+    { ranges: rows, requests: 1 },
+    { ranges: [[0, 10], [200_000, 10]], requests: 2 }, // more than MERGE_GAP apart
+    { ranges: [...rows].reverse(), requests: 1 }, // order on the wire does not matter
+    { ranges: [[0, 10], [20, 10]], sources: [0, 1], requests: 2 }, // never across sources
+  ];
+  for (const c of cases) {
+    requests.length = 0;
+    const a = await openWith({
+      sources: [{ url: "blob.bin" }, { url: "other.bin" }],
+      entries: [{
+        key: "v",
+        ranges: c.ranges.map(([o, n], i) => ({ source: c.sources?.[i] ?? 0, offset: BigInt(o), length: BigInt(n) })),
+      }],
+    });
+    assert.deepEqual(await a.read("v"), expect(c.ranges));
+    assert.equal(requests.length, c.requests, requests.join(", "));
+  }
+});

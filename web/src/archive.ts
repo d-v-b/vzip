@@ -48,6 +48,13 @@ export type RangeFetcher = (
   pins: Pick<Source, "size" | "etag" | "modifiedNotAfter">,
 ) => Promise<{ data: Uint8Array; size: number | undefined }>;
 
+/**
+ * Reads of the same url source at most this far apart are combined into one
+ * request (spec §6.2 allows it). A Concat of many short ranges, such as one
+ * per image row, would otherwise cost one request per range.
+ */
+export const MERGE_GAP = 1 << 16;
+
 const U16_ALL = 0xffff;
 const U32_ALL = 0xffffffff;
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -350,7 +357,8 @@ export class Archive {
     if (entry.reference === undefined) {
       return (await this.body(entry)).subarray(start, end);
     }
-    const parts: Promise<Uint8Array>[] = [];
+    type Read = { source: number; offset: bigint; length: bigint };
+    const parts: (Promise<Uint8Array> | Read)[] = [];
     let at = 0;
     for (const r of this.ranges(entry)) {
       const n = Number(rangeSize(r));
@@ -360,15 +368,43 @@ export class Archive {
       if (a < b) {
         const lo = BigInt(a - at);
         const hi = BigInt(b - at);
-        parts.push(
-          "data" in r
-            ? Promise.resolve(r.data.subarray(a - at, b - at))
-            : this.source({ source: r.source, offset: r.offset + lo, length: hi - lo }),
-        );
+        if ("data" in r) {
+          parts.push(Promise.resolve(r.data.subarray(a - at, b - at)));
+        } else {
+          const read = { source: r.source, offset: r.offset + lo, length: hi - lo };
+          parts.push(this.sources[r.source].url !== undefined ? read : this.source(read));
+        }
       }
       at += n;
     }
-    const chunks = await Promise.all(parts);
+    // Combine nearby reads of each url source into runs, fetch each run once,
+    // and slice the reads back out of it.
+    const reads = parts.filter((p): p is Read => !(p instanceof Promise));
+    const sorted = [...reads].sort((x, y) =>
+      x.source - y.source || (x.offset < y.offset ? -1 : x.offset > y.offset ? 1 : 0));
+    const runs: { source: number; offset: bigint; end: bigint; data?: Promise<Uint8Array> }[] = [];
+    const runOf = new Map<Read, (typeof runs)[number]>();
+    for (const read of sorted) {
+      const last = runs[runs.length - 1];
+      const readEnd = read.offset + read.length;
+      if (last && last.source === read.source && read.offset - last.end <= BigInt(MERGE_GAP)) {
+        if (readEnd > last.end) last.end = readEnd;
+      } else {
+        runs.push({ source: read.source, offset: read.offset, end: readEnd });
+      }
+      runOf.set(read, runs[runs.length - 1]);
+    }
+    for (const run of runs) {
+      run.data = this.source({ source: run.source, offset: run.offset, length: run.end - run.offset });
+    }
+    const chunks = await Promise.all(
+      parts.map(async (p) => {
+        if (p instanceof Promise) return p;
+        const run = runOf.get(p)!;
+        const from = Number(p.offset - run.offset);
+        return (await run.data!).subarray(from, from + Number(p.length));
+      }),
+    );
     const out = new Uint8Array(end - start);
     let o = 0;
     for (const c of chunks) {

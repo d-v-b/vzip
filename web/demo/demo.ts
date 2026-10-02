@@ -8,6 +8,10 @@ import { WORKER_HEADER } from "../src/server.ts";
 
 const EXAMPLE =
   "https://ftp.ebi.ac.uk/pub/databases/IDR/idr0096-tratwal-marrowquant/20210609-ftp-ome-tiffs/4000_d11_m5_LT_2%20(20x_01).ome.tiff";
+// A virtualized Nikon ND2 time-lapse (BioImage Archive S-BIAD3015, 4.6 GB),
+// made by experiments/nd2_to_vzip.py.
+const ND2_EXAMPLE =
+  "https://raw.githubusercontent.com/d-v-b/vzip/main/experiments/out/nd2/biad3015_1-SR_1_9_6hPre-C_MC1.vzip";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const input = $<HTMLInputElement>("url");
@@ -30,10 +34,17 @@ async function getJson(url: string) {
 }
 
 /** A Neuroglancer state for an OME-Zarr image; RGB as three additive layers. */
+const SECONDS: Record<string, number> = { second: 1, millisecond: 1e-3, minute: 60, hour: 3600 };
 const METERS: Record<string, number> = {
   meter: 1, millimeter: 1e-3, micrometer: 1e-6, nanometer: 1e-9, picometer: 1e-12, angstrom: 1e-10,
   centimeter: 1e-2, inch: 0.0254, foot: 0.3048,
 };
+
+interface OmeroChannel {
+  label?: string;
+  color?: string;
+  window?: { start: number; end: number };
+}
 
 function neuroglancerState(
   zarrUrl: string,
@@ -41,13 +52,34 @@ function neuroglancerState(
   scale: number[],
   shape: number[],
   dtype: string,
+  omero: OmeroChannel[] = [],
 ) {
   const source = `${zarrUrl}|zarr3:`;
-  // Fit the whole image in the view: crossSectionScale is in meters per
-  // screen pixel (or voxels per pixel if the axes have no unit).
   const n = shape.length;
-  const extent = (i: number) => shape[i] * scale[i] * (METERS[axes[i].unit ?? ""] ?? 1);
-  const view = { crossSectionScale: Math.max(extent(n - 2) / 600, extent(n - 1) / 850), layout: "xy" };
+  // The coordinate space, declared up front so that displayDimensions can
+  // name x and y before the layers load (otherwise Neuroglancer may display a
+  // non-spatial axis such as t).
+  const dimensions: Record<string, [number, string]> = {};
+  axes.forEach((a, i) => {
+    if (a.name === "c") return;
+    const unit = a.unit ?? "";
+    if (unit in METERS) dimensions[a.name] = [scale[i] * METERS[unit], "m"];
+    else if (unit in SECONDS) dimensions[a.name] = [scale[i] * SECONDS[unit], "s"];
+    else dimensions[a.name] = [scale[i], ""];
+  });
+  // Start at the first time point (Neuroglancer would pick the middle one),
+  // the middle z slice, and the centre of the image.
+  const position = axes.flatMap((a, i) =>
+    a.name === "c" ? [] : [a.name === "t" ? 0 : a.name === "z" ? Math.floor(shape[i] / 2) : shape[i] / 2]);
+  const view = {
+    dimensions,
+    position,
+    displayDimensions: ["x", "y"],
+    // Fit the whole image: with the coordinate space declared, this counts
+    // full-resolution voxels per screen pixel.
+    crossSectionScale: Math.max(shape[n - 2] / 600, shape[n - 1] / 850),
+    layout: "xy",
+  };
   const c = axes.findIndex((a) => a.name === "c");
   if (c >= 0 && shape[c] === 3 && dtype === "uint8") {
     const colors = ["v, 0.0, 0.0", "0.0, v, 0.0", "0.0, 0.0, v"];
@@ -57,6 +89,24 @@ function neuroglancerState(
         localDimensions: { "c'": [1, ""] }, localPosition: [i],
         shader: `void main() {\n  float v = toNormalized(getDataValue());\n  emitRGB(vec3(${rgb}));\n}\n`,
       })),
+      crossSectionBackgroundColor: "#000000", ...view,
+    };
+  }
+  // Other multi-channel images: one layer per channel, with the colours and
+  // contrast windows from OME's omero metadata when it has them.
+  if (c >= 0 && shape[c] > 1 && shape[c] <= 8) {
+    const hex = (s: string) => [0, 2, 4].map((i) => (parseInt(s.slice(i, i + 2), 16) / 255).toFixed(3));
+    return {
+      layers: Array.from({ length: shape[c] }, (_, i) => {
+        const ch = omero[i] ?? {};
+        const [r, g, b] = hex(ch.color ?? "FFFFFF");
+        const range = ch.window ? `(range=[${ch.window.start}, ${ch.window.end}])` : "";
+        return {
+          type: "image", source, name: ch.label ?? `channel ${i}`, opacity: 1, blend: "additive",
+          localDimensions: { "c'": [1, ""] }, localPosition: [i],
+          shader: `#uicontrol invlerp contrast${range}\nvoid main() {\n  emitRGB(vec3(${r}, ${g}, ${b}) * contrast());\n}\n`,
+        };
+      }),
       crossSectionBackgroundColor: "#000000", ...view,
     };
   }
@@ -80,10 +130,28 @@ async function virtualize(url: string) {
   const t0 = performance.now();
   const group = await getJson(`${zarrUrl}zarr.json`);
   const ms = Math.round(performance.now() - t0);
-  const ms0 = group.attributes?.ome?.multiscales?.[0];
+  // The image: the root itself, or one series of a bioformats2raw layout
+  // (e.g. one stage position of an ND2), chosen with ?series=.
+  let imageUrl = zarrUrl;
+  let ms0 = group.attributes?.ome?.multiscales?.[0];
+  const seriesRow = $("series-row");
+  seriesRow.hidden = true;
+  if (ms0 === undefined && group.attributes?.ome?.["bioformats2raw.layout"] !== undefined) {
+    const series: string[] = (await getJson(`${zarrUrl}OME/zarr.json`)).attributes?.ome?.series ?? [];
+    const chosen = here.searchParams.get("series") ?? series[0];
+    if (!series.includes(chosen)) throw new Error(`no series ${JSON.stringify(chosen)}`);
+    imageUrl = `${zarrUrl}${chosen}/`;
+    ms0 = (await getJson(`${imageUrl}zarr.json`)).attributes?.ome?.multiscales?.[0];
+    const select = $<HTMLSelectElement>("series");
+    select.replaceChildren(
+      ...series.map((s) => Object.assign(document.createElement("option"), { value: s, textContent: s, selected: s === chosen })),
+    );
+    $("series-count").textContent = `of ${series.length}`;
+    seriesRow.hidden = false;
+  }
   if (ms0 === undefined) throw new Error("not an OME-Zarr multiscale image");
   const rows = await Promise.all(
-    ms0.datasets.map(async (d: { path: string }) => [d.path, await getJson(`${zarrUrl}${d.path}/zarr.json`)]),
+    ms0.datasets.map(async (d: { path: string }) => [d.path, await getJson(`${imageUrl}${d.path}/zarr.json`)]),
   );
   const tbody = $("levels");
   tbody.replaceChildren(
@@ -104,12 +172,13 @@ async function virtualize(url: string) {
     }),
   );
   $("name").textContent = ms0.name ?? url.split("/").pop();
-  $("zarr-url").textContent = zarrUrl;
+  $("zarr-url").textContent = imageUrl;
   const [, level0] = rows[0];
   const scale = ms0.datasets[0].coordinateTransformations?.find(
     (t: { type: string }) => t.type === "scale",
   )?.scale ?? level0.shape.map(() => 1);
-  const state = neuroglancerState(zarrUrl, ms0.axes, scale, level0.shape, level0.data_type);
+  const omero = (await getJson(`${imageUrl}zarr.json`)).attributes?.ome?.omero?.channels ?? [];
+  const state = neuroglancerState(imageUrl, ms0.axes, scale, level0.shape, level0.data_type, omero);
   $<HTMLAnchorElement>("open-ng").href = new URL(
     `neuroglancer/#!${encodeURIComponent(JSON.stringify(state))}`,
     location.href,
@@ -119,15 +188,29 @@ async function virtualize(url: string) {
   setStatus(`Ready in ${ms} ms.`);
 }
 
-$("form").addEventListener("submit", (event) => {
-  event.preventDefault();
+$("series").addEventListener("change", () => {
+  const here = new URL(location.href);
+  here.searchParams.set("series", $<HTMLSelectElement>("series").value);
+  history.replaceState(null, "", here);
   virtualize(input.value.trim()).catch((e) => setStatus(String(e.message ?? e), true));
 });
-$("example").addEventListener("click", (event) => {
+$("form").addEventListener("submit", (event) => {
   event.preventDefault();
-  input.value = EXAMPLE;
-  $<HTMLFormElement>("form").requestSubmit();
+  // A new URL starts from its first series.
+  const here = new URL(location.href);
+  if (here.searchParams.get("url") !== input.value.trim()) {
+    here.searchParams.delete("series");
+    history.replaceState(null, "", here);
+  }
+  virtualize(input.value.trim()).catch((e) => setStatus(String(e.message ?? e), true));
 });
+for (const [id, url] of [["example", EXAMPLE], ["example-nd2", ND2_EXAMPLE]]) {
+  $(id).addEventListener("click", (event) => {
+    event.preventDefault();
+    input.value = url;
+    $<HTMLFormElement>("form").requestSubmit();
+  });
+}
 const fromQuery = new URLSearchParams(location.search).get("url");
 if (fromQuery) {
   input.value = fromQuery;
