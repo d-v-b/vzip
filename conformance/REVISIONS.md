@@ -826,7 +826,7 @@ changes, and every archive valid under revision 9 is still valid.
 
 | § | r9 | r10 |
 |---|---|---|
-| 1.5 | — | new, informative: how a vzip archive relates to an `.ozx` file (reference entries, comment, ZIP64, shards, `zarr.json` order, hidden entries) and to SOZip |
+| 1.5 | — | new, informative: vzip does not aim to produce `.ozx` files, and an `.ozx` file is one of the objects a vzip archive can refer to; vzip does not support SOZip |
 | 3.1 rule 2 | "every entry has exactly one local file header", silent on local headers that belong to no entry | a writer MUST NOT write a local header that no central directory record points to (SOZip's index files are such headers); readers never look for one |
 | 9.3 | — | new: archives SHOULD be named `.vzip`; an archive with reference entries SHOULD NOT be named `.ozx` |
 
@@ -841,14 +841,16 @@ is why it changes no reader result.
 
 **Not adopted, and why:**
 
-- **A JSON archive comment (issue 13).** It would let one archive carry
-  RFC 9's `ome` comment as well as vzip's. But an archive with reference
-  entries is not readable by an RFC 9 reader whatever its comment says
-  (§1.5), so the gain is limited to archives of `bytes` entries only, while
-  the cost (a variable-length comment found by a backward scan, numbers
-  limited to 2^53, an incompatible change) falls on every reader. It is
-  deferred until the project decides whether vzip should produce `.ozx`
-  files at all. If it does, the issue's design is the one to take.
+- **A JSON archive comment (issue 13), and `.ozx` compatibility in general
+  (issue 16).** Decided in
+  [the author's reply to issue 16](https://github.com/d-v-b/vzip/issues/16):
+  compatibility with `.ozx` is not a goal. An archive with reference entries
+  is not readable by an RFC 9 reader whatever its comment says, which is
+  decisive; an archive without them is close to zipped Zarr already. And
+  RFC 9 only restricts zipped Zarr, adding no meaning to entries, so there
+  is nothing for vzip to combine with it. Instead, an `.ozx` file is one of
+  the objects a vzip archive can refer to: its STORED entries are byte
+  ranges, which references name like chunks of any other file.
 - **A fixed-record-length index (issue 14).** Positional access (cursors,
   parallel listing, sampling) is not among vzip's current operations. The
   observation behind it stands: the page index is variable-length and is

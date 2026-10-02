@@ -142,38 +142,31 @@ any one language or library.
 
 ### 1.5 Related ZIP profiles (informative)
 
-Two other specifications constrain ZIP files for random access. Neither is
-required here, and nothing in this section is normative.
+Two other specifications define profiles of ZIP. Neither is required here,
+and nothing in this section is normative.
 
 - **OME-Zarr in a ZIP file**
   ([RFC 9](https://github.com/ome/ngff/blob/main/rfc/9/index.md), `.ozx`)
-  stores one OME-Zarr hierarchy in a ZIP file. A vzip archive and an `.ozx`
-  file relate as follows:
-  - **Reference entries.** An `.ozx` reader reads every entry's body. For a
-    reference entry that body is empty or the reference payload (§4.3), not
-    the value, so an archive with reference entries cannot be read as an
-    `.ozx` file, and its values may come from outside the file (§6), unlike
-    the single shareable file RFC 9 is meant for. An archive whose entries are
-    all `bytes` entries holds its values as ordinary ZIP files.
-  - **Archive comment.** RFC 9 recommends a JSON comment with an `ome` key.
-    A ZIP file has one comment, and a vzip archive's comment is the vzip
-    comment (§3.4), so a vzip archive cannot carry it.
-  - **ZIP64.** RFC 9 recommends ZIP64 whatever the size. Every vzip archive
-    has the zip64 end records (§3.2); records use ZIP64 fields only where a
-    value needs them.
-  - **Large shards.** RFC 9 recommends the Zarr sharding codec, which makes
-    entries large. Entries of 4 GiB or more are allowed (§3.1 rule 7), and
-    are STORED, as RFC 9 recommends for every entry. The two format entries
-    are always DEFLATEd (§4.1).
-  - **`zarr.json` first.** RFC 9 recommends putting the `zarr.json` entries
-    first, in the file and in the central directory. An archive with a page
-    index has its central directory in key order (§7.1), where `0/zarr.json`
-    sorts before `zarr.json`, so it cannot. Pinned entries (§7.1) serve the
-    same purpose: a reader finds them without reading the central directory.
-  - **Hidden entries.** The format entries are named under `__vz__/`, a
-    prefix Zarr reserves (keys beginning `__`), so they are never nodes of the
-    hierarchy. Whether RFC 9 readers tolerate them has not been confirmed.
-  - **File names:** see §9.3.
+  is Zarr in a ZIP file with further restrictions (one hierarchy, the root
+  `zarr.json` at the root, and recommendations on ZIP64, compression, entry
+  order and the archive comment). It adds no meaning to a ZIP file's
+  entries, so there is nothing for vzip to combine with it. vzip does not aim
+  to produce `.ozx` files:
+  - **Reference entries.** An `.ozx` reader takes every entry's body as its
+    value. For a reference entry the body is empty or the reference payload
+    (§4.3), so an archive with reference entries cannot be read as an `.ozx`
+    file, whatever its comment says. An archive with none is close to
+    zipped Zarr already, and its `bytes` entries read as ordinary ZIP files.
+  - **Archive comment.** A ZIP file has one comment, and a vzip archive's is
+    the vzip comment (§3.4), not RFC 9's JSON comment.
+  - **`zarr.json` first.** An archive with a page index has its central
+    directory in key order (§7.1), where `0/zarr.json` sorts before
+    `zarr.json`. Pinned entries (§7.1) serve the same purpose.
+
+  The relationship runs the other way: an `.ozx` file is one of the objects a
+  vzip archive can refer to. RFC 9 recommends STORED entries, and the body
+  of a STORED entry is a byte range of the `.ozx` file, which a reference
+  (§5.2) can name like a chunk in any other file. File names: see §9.3.
 - **Seek-optimized ZIP** ([SOZip](https://github.com/sozip/sozip-spec))
   makes ranges of one large DEFLATE entry readable without inflating it
   from the start, using an index stored in a file that has a local header
