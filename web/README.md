@@ -46,7 +46,10 @@ in a directory and lists them at https://d-v-b.github.io/vzip-demo/).
 
 ## What is supported
 
-The rules are [VIRTUALIZE.md](../VIRTUALIZE.md)'s TIFF and ND2 profiles. The
+The rules are [VIRTUALIZE.md](../VIRTUALIZE.md)'s profiles:
+[TIFF](../profiles/tiff.md), [NDPI](../profiles/ndpi.md) and
+[ND2](../profiles/nd2.md), each implemented in its own directory of
+`src/virtualize/`. The
 Python reference implementation (`python -m vzip.virtualize`) produces
 equivalent archives; `conformance/virtualize/compare.py` checks that.
 
@@ -63,12 +66,17 @@ TIFF:
   and JPEG (`imagecodecs_jpeg`), without a predictor. JPEG tiles that keep
   their tables in `JPEGTables`, as in Aperio SVS, become complete JPEG streams
   through references that prepend the tables and a colour marker.
-- Hamamatsu NDPI, including files over 4 GB: each level's single JPEG strip is
-  cut at its restart markers into chunks of about 1024 × 1024 pixels, each a
-  JPEG stream rebuilt from byte ranges of the file.
 
-Not supported, and refused with HTTP 422: images in strips (other than NDPI),
-LZW, old-style JPEG, predictors, multi-file OME-TIFF, and NDPI focal planes.
+Not supported, and refused with HTTP 422: images in strips, LZW, old-style
+JPEG, predictors, and multi-file OME-TIFF.
+
+Hamamatsu NDPI:
+
+- Pyramids of single JPEG strips, including in files over 4 GB: each level's
+  strip is cut at its restart markers into chunks of about 1024 × 1024 pixels, each a JPEG stream rebuilt
+  from byte ranges of the file.
+
+Not supported, and refused with HTTP 422: NDPI focal planes.
 
 ND2 (format version 3 and later):
 
@@ -103,19 +111,21 @@ lossy compression, tiled frames, and other loop types.
 ```bash
 node --test web/test/                                        # unit tests
 uv run python web/conformance/run_write.py /tmp/vzip-write   # the kit's write cases
-uv run python web/test/verify_tiff.py                        # TIFF fixtures vs tifffile
-uv run python web/test/verify_nd2.py                         # synthetic ND2 fixtures vs their pixels
+uv run python web/test/tiff/verify.py                        # TIFF fixtures vs tifffile
+uv run python web/test/ndpi/verify.py                        # NDPI fixtures vs tifffile
+uv run python web/test/nd2/verify.py                         # synthetic ND2 fixtures vs their pixels
 uv run python conformance/virtualize/compare.py /tmp/vcmp    # browser vs Python virtualizer
 node web/demo/e2e.mjs <tiff or nd2 url> <out dir>            # demo + Neuroglancer in Chromium
 ```
 
 - `run_write.py` checks every unpaged write case with `conformance/validate.py`
   and the reference reader, plus a zip64 archive and every invalid description.
-- `verify_tiff.py` virtualizes each fixture with the browser code. It then
+- `tiff/verify.py` virtualizes each fixture with the browser code. It then
   reads every level through the reference implementation (`src/vzip`) and
-  zarr-python and compares it with tifffile.
-- `verify_nd2.py` does the same for the synthetic ND2 files written by
-  `nd2_fixtures.py` (compressed frames, padded rows, multi-phase time loops,
+  zarr-python and compares it with tifffile. `ndpi/verify.py` does the same
+  for the NDPI files.
+- `nd2/verify.py` does the same for the synthetic ND2 files written by
+  `nd2/write_fixtures.py` (compressed frames, padded rows, multi-phase time loops,
   disabled positions, missing frames, float data, and inputs to reject),
   comparing every chunk with the pixels the generator wrote. The `nd2` package
   reads the generator's files too.

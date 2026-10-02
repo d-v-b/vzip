@@ -368,3 +368,17 @@ Both maintained implementations agree on all 120 synthetic files and on the
 
 **Not covered:** z positions (ND2 `dZLow`/`dZPos`, NDPI
 ZOffsetFromSlideCenter, OME `PositionZ`).
+
+## Revision 10: one document per profile
+
+Revision 10 changes no rules. VIRTUALIZE.md keeps what every profile shares
+(§1, §2) and the conformance notes (§6), and each profile is now a document
+of its own in `profiles/`: TIFF (`tiff.md`, §3), NDPI (`ndpi.md`, §4,
+formerly §3.7) and ND2 (`nd2.md`, §5, formerly §4). The conformance section
+moved from §5 to §6. Revision 9, the last single-file revision, is
+`spec_history/VIRTUALIZE.r9.md`.
+
+The implementations are organized the same way: `src/vzip/virtualize/` and
+`web/src/virtualize/` have one directory per profile (`tiff/`, `ndpi/`,
+`nd2/`) next to what they share (`common`), and the synthetic inputs are in
+`web/test/fixtures/<profile>/`, written by `web/test/<profile>/`.

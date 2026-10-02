@@ -5,8 +5,8 @@
 
 import fs from "node:fs";
 import { openHttpFile } from "../src/http.ts";
-import { blockReader } from "../src/tiff.ts";
-import { virtualizeImage } from "../src/image.ts";
+import { blockReader } from "../src/virtualize/common.ts";
+import { virtualizeImage } from "../src/virtualize/index.ts";
 import { writeVzip } from "../src/writer.ts";
 
 const [url, out] = process.argv.slice(2);

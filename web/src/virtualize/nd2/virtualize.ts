@@ -1,10 +1,10 @@
-// Virtualizing a Nikon ND2 file (format version 3+) by the ND2 profile of
-// VIRTUALIZE.md (§4): the frames become Zarr chunks that reference the file.
+// Virtualizing a Nikon ND2 file (format version 3+) by the ND2 profile
+// (profiles/nd2.md, §5): the frames become Zarr chunks that reference the file.
 
+import { type ByteReader, MAX_PAYLOAD, payloadSize } from "../common.ts";
 import { decodeLV, type LV, type LVObject, type Scalar } from "./lv.ts";
-import type { Range } from "./protobuf.ts";
-import type { ByteReader } from "./tiff.ts";
-import type { ArchiveDesc, EntryDesc } from "./writer.ts";
+import type { Range } from "../../protobuf.ts";
+import type { ArchiveDesc, EntryDesc } from "../../writer.ts";
 
 export class Nd2Error extends Error {}
 
@@ -13,7 +13,6 @@ const FILE_SIGNATURE = "ND2 FILE SIGNATURE CHUNK NAME01!";
 const MAP_SIGNATURE = "ND2 CHUNK MAP SIGNATURE 0000001!";
 const FILEMAP_NAME = "ND2 FILEMAP SIGNATURE NAME 0001!";
 const FRAME = /^ImageDataSeq\|(0|[1-9][0-9]*)!$/;
-const MAX_PAYLOAD = 65519;
 
 const ascii = (b: Uint8Array) => String.fromCharCode(...b);
 const dv = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset, b.byteLength);
@@ -43,7 +42,7 @@ async function header(read: ByteReader, offset: number): Promise<Header> {
   return { nameLength, dataLength, name };
 }
 
-// ---- typed member access (§4.2)
+// ---- typed member access (§5.2)
 
 const REQUIRED = Symbol("required");
 type Fallback<T> = T | typeof REQUIRED;
@@ -110,13 +109,13 @@ function members(v: LV | undefined, what: string): LV[] {
   return reject(`${what} is not an object or a list`);
 }
 
-/** The members of `items` that are valid by the validity list `flags` (§4.3). */
+/** The members of `items` that are valid by the validity list `flags` (§5.3). */
 function valid<T>(items: T[], flags: LV | undefined, what: string): T[] {
   const f = list(flags, what)?.map((x) => flag(x, `${what} entry`));
   return f === undefined ? items : items.filter((_, i) => i < f.length && f[i]);
 }
 
-// ---- experiment (§4.3)
+// ---- experiment (§5.3)
 
 interface Loop {
   kind: "t" | "p" | "z";
@@ -183,7 +182,7 @@ function nodeLoop(node: LVObject): Omit<Loop, "depth"> | "spectral" | undefined 
   return count ? loop : undefined;
 }
 
-/** Flattens the experiment tree into loops (§4.3). */
+/** Flattens the experiment tree into loops (§5.3). */
 export function flattenExperiment(root: LV | undefined): Loop[] {
   const loops: Loop[] = [];
   const visit = (node: LVObject, depth: number) => {
@@ -217,32 +216,6 @@ export function flattenExperiment(root: LV | undefined): Loop[] {
   return loops;
 }
 
-// ---- reference payloads (§1.2)
-
-function varintSize(v: number): number {
-  let n = 1;
-  while (v >= 128) {
-    v = Math.floor(v / 128);
-    n++;
-  }
-  return n;
-}
-
-function rangeSize(r: [number, number] | Uint8Array): number {
-  if (r instanceof Uint8Array) return 1 + varintSize(r.length) + r.length;
-  const [offset, length] = r;
-  return (offset ? 1 + varintSize(offset) : 0) + (length ? 1 + varintSize(length) : 0);
-}
-
-/** The encoded size of a reference to `ranges`: [offset, length] pairs or literal bytes (§1.2). */
-export function payloadSize(ranges: ([number, number] | Uint8Array)[]): number {
-  if (ranges.length === 1) return rangeSize(ranges[0]);
-  return ranges.reduce((n, range) => {
-    const r = rangeSize(range);
-    return n + 1 + varintSize(r) + r;
-  }, 0);
-}
-
 function hexColor(abgr: number): string {
   const h = (v: number) => v.toString(16).toUpperCase().padStart(2, "0");
   return h(abgr & 255) + h((abgr >>> 8) & 255) + h((abgr >>> 16) & 255);
@@ -266,7 +239,7 @@ export async function virtualizeNd2(
   read: ByteReader,
   fileSize: number,
 ): Promise<ArchiveDesc & { summary: Nd2Summary }> {
-  // §4.1: signature and chunk map.
+  // §5.1: signature and chunk map.
   const sig = await header(read, 0);
   if (sig.name !== FILE_SIGNATURE || sig.nameLength !== 32 || sig.dataLength !== 64) {
     reject("not an ND2 file (bad signature chunk)");
@@ -298,7 +271,7 @@ export async function virtualizeNd2(
     return decodeLV(await read(offset + 16 + h.nameLength, h.dataLength));
   };
 
-  // §4.3: attributes.
+  // §5.3: attributes.
   const attributes = await chunk("ImageAttributesLV!");
   if (attributes === undefined) return reject("no ImageAttributesLV! chunk");
   const attrs = obj(attributes.get("SLxImageAttributes"), "SLxImageAttributes");
@@ -326,11 +299,11 @@ export async function virtualizeNd2(
   if (widthBytes < rowBytes) reject("uiWidthBytes is less than a row");
   if (compressed && widthBytes !== rowBytes) reject("compressed frames with padded rows are not supported");
 
-  // §4.3: experiment.
+  // §5.3: experiment.
   const exp = await chunk("ImageMetadataLV!");
   const loops = flattenExperiment(exp?.get("SLxExperiment"));
 
-  // §4.3: picture metadata.
+  // §5.3: picture metadata.
   const seq = await chunk("ImageMetadataSeqLV|0!");
   const picture: LVObject = (seq && obj(seq.get("SLxPictureMetadata"), "SLxPictureMetadata", null)) ??
     new Map();
@@ -339,7 +312,7 @@ export async function virtualizeNd2(
   let aspect = number(picture.get("dAspect"), "dAspect", 1);
   const [m11, m12, m21, m22] = ([["11", 1], ["12", 0], ["21", 0], ["22", 1]] as const)
     .map(([k, fallback]) => number(picture.get(`dStgLgCT${k}`), `dStgLgCT${k}`, fallback));
-  // The stage position without a position loop (§4.6).
+  // The stage position without a position loop (§5.6).
   const pictureStage: [number | null, number | null] = [
     number(picture.get("dXPos"), "dXPos", null),
     number(picture.get("dYPos"), "dYPos", null),
@@ -361,7 +334,7 @@ export async function virtualizeNd2(
     });
   }
 
-  // §4.5: channels.
+  // §5.5: channels.
   let labels: string[] = [];
   let colors: string[] = [];
   const counts = [...planes.values()].map((p) => p.k);
@@ -384,7 +357,7 @@ export async function virtualizeNd2(
     colors = labels.map(() => "FFFFFF");
   }
 
-  // §4.4: frames.
+  // §5.4: frames.
   const total = loops.reduce((n, l) => n * l.count, 1);
   if (total > Number.MAX_SAFE_INTEGER) reject("more than 2^53 - 1 frames");
   const frameOffsets = new Map<number, number>();
@@ -430,7 +403,7 @@ export async function virtualizeNd2(
     };
   }
 
-  // §4.6: output.
+  // §5.6: output.
   const loopOf = (kind: string) => loops.find((l) => l.kind === kind);
   const t = loopOf("t");
   const z = loopOf("z");
@@ -471,7 +444,7 @@ export async function virtualizeNd2(
   const json = (v: unknown) => utf8.encode(JSON.stringify(v, null, 2));
   const group = (attributes: unknown) => json({ zarr_format: 3, node_type: "group", attributes });
   const positions = p?.count ?? 1;
-  // §4.6 stage positions: where each position's image goes.
+  // §5.6 stage positions: where each position's image goes.
   const det = m11 * m22 - m12 * m21;
   let translations: number[][] | undefined;
   const stages = p ? p.stage ?? [] : [pictureStage];

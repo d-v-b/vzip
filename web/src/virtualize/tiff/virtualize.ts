@@ -1,15 +1,14 @@
 // Describing a tiled (OME-)TIFF as an OME-NGFF 0.5 multiscale image whose
-// chunks are vzip references to the TIFF's tiles: the TIFF profile of
-// VIRTUALIZE.md (§3).
+// chunks are vzip references to the TIFF's tiles: the TIFF profile
+// (profiles/tiff.md, §3).
 
-import type { Range, Source } from "./protobuf.ts";
-import { type ByteReader, type Ifd, num, nums, readTiff, Tag, TiffError } from "./tiff.ts";
-import { payloadSize } from "./nd2.ts";
-import type { ArchiveDesc, EntryDesc } from "./writer.ts";
+import type { Range, Source } from "../../protobuf.ts";
+import { type ByteReader, MAX_PAYLOAD, payloadSize } from "../common.ts";
+import { type Ifd, num, nums, readTiff, Tag, TiffError } from "./ifd.ts";
+import type { ArchiveDesc, EntryDesc } from "../../writer.ts";
 
 const JPEG2000 = new Set([33003, 33004, 33005, 34712]);
 const JPEG = 7;
-const MAX_PAYLOAD = 65519;
 // The Adobe APP14 marker without its last byte, the colour transform (§3.6).
 const ADOBE = [0xff, 0xee, 0x00, 0x0e, 0x41, 0x64, 0x6f, 0x62, 0x65, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00];
 

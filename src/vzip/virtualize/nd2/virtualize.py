@@ -1,4 +1,4 @@
-"""The ND2 profile of VIRTUALIZE.md (§4)."""
+"""The ND2 profile (profiles/nd2.md, §5)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import struct
 from vzip.virtualize.common import (
     MAX_PAYLOAD, Output, Reader, Rejected, array_json, group_json, image_ome, payload_size, transpose_codec,
 )
-from vzip.virtualize.lv import LVList, Scalar, decode_lv
+from vzip.virtualize.nd2.lv import LVList, Scalar, decode_lv
 
 CHUNK_MAGIC = 0x0ABECEDA
 FILE_SIGNATURE = b"ND2 FILE SIGNATURE CHUNK NAME01!"
@@ -35,7 +35,7 @@ def _header(read: Reader, offset: int) -> tuple[int, int, bytes]:
     return name_length, data_length, read(offset + 16, name_length).split(b"\0", 1)[0]
 
 
-# ---- typed member access (§4.2)
+# ---- typed member access (§5.2)
 
 def _missing(what: str, default):
     if default is REQUIRED:
@@ -48,7 +48,7 @@ def number(value, what: str, default=REQUIRED):
         return _missing(what, default)
     if not isinstance(value, Scalar) or value.type not in (2, 3, 4, 5, 6):
         raise Rejected(f"{what} is not a number")
-    v = float(value.value)  # every number is used as binary64 (§4.2)
+    v = float(value.value)  # every number is used as binary64 (§5.2)
     if not math.isfinite(v):
         raise Rejected(f"{what} is not finite")
     return v
@@ -122,7 +122,7 @@ def _valid(items: list, flags, what: str) -> list:
     return [m for i, m in enumerate(items) if i < len(f) and f[i]]
 
 
-# ---- experiment (§4.3)
+# ---- experiment (§5.3)
 
 def _node_loop(node: dict):
     """A node's loop as (kind, count, period or step), "spectral", or None (skipped)."""
@@ -213,7 +213,7 @@ def _check_range(offset: int, length: int, size: int) -> None:
 
 
 def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
-    # §4.1
+    # §5.1
     name_length, data_length, name = _header(read, 0)
     if name != FILE_SIGNATURE or name_length != 32 or data_length != 64:
         raise Rejected("not an ND2 file (bad signature chunk)")
@@ -250,7 +250,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
         n, d, _ = _header(read, chunks[cname])
         return decode_lv(read(chunks[cname] + 16 + n, d))
 
-    # §4.3 attributes
+    # §5.3 attributes
     attributes = chunk(b"ImageAttributesLV!")
     if attributes is None:
         raise Rejected("no ImageAttributesLV! chunk")
@@ -281,11 +281,11 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
     if compressed and width_bytes != row_bytes:
         raise Rejected("compressed frames with padded rows are not supported")
 
-    # §4.3 experiment
+    # §5.3 experiment
     exp = chunk(b"ImageMetadataLV!")
     loops = flatten_experiment(exp.get("SLxExperiment") if exp is not None else None)
 
-    # §4.3 picture metadata
+    # §5.3 picture metadata
     seq = chunk(b"ImageMetadataSeqLV|0!")
     picture = (obj(seq.get("SLxPictureMetadata"), "SLxPictureMetadata", None) if seq is not None else None) or {}
     bcal = flag(picture.get("bCalibrated"), "bCalibrated", False)
@@ -293,7 +293,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
     aspect = number(picture.get("dAspect"), "dAspect", 1)
     camera = [number(picture.get(f"dStgLgCT{k}"), f"dStgLgCT{k}", default)
               for k, default in (("11", 1.0), ("12", 0.0), ("21", 0.0), ("22", 1.0))]
-    # The stage position without a position loop (§4.6).
+    # The stage position without a position loop (§5.6).
     picture_stage = (number(picture.get("dXPos"), "dXPos", None), number(picture.get("dYPos"), "dYPos", None))
     calibrated = bcal and cal is not None and cal > 0
     if not aspect > 0:
@@ -310,7 +310,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
                                  color(p.get("uiColor"), "uiColor", 0xFFFFFF),
                                  integer(p.get("uiCompCount"), "uiCompCount", 1))
 
-    # §4.5
+    # §5.5
     labels, colors = [], []
     if (plane_count >= 1 and len(planes) == plane_count
             and all(k in (1, 3) for _, _, k in planes.values())
@@ -327,7 +327,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
         labels = [f"C{k}" for k in range(comp)]
         colors = ["FFFFFF"] * comp
 
-    # §4.4
+    # §5.4
     total = 1
     for l in loops:
         total *= l["count"]
@@ -376,7 +376,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
             rows = [(start(f) + r * width_bytes, row_bytes) for r in range(height)]
             return [rows[j : j + h] for j in range(0, height, h)]
 
-    # §4.6
+    # §5.6
     def loop(kind):
         return next((l for l in loops if l["kind"] == kind), None)
 
@@ -400,7 +400,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
     b = int(significant) if significant == int(significant) and 1 <= significant <= bpc else bpc
     window = {} if data_type == "float32" else {"window": {"min": 0, "max": 2**b - 1, "start": 0, "end": 2**b - 1}}
     positions = p["count"] if p else 1
-    # §4.6 stage positions: where each position's image goes.
+    # §5.6 stage positions: where each position's image goes.
     translations = None
     m11, m12, m21, m22 = camera
     det = m11 * m22 - m12 * m21

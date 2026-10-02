@@ -1,9 +1,9 @@
-// The NDPI JPEG header parser of the browser virtualizer (VIRTUALIZE.md §3.7).
-// Whole files are checked against tifffile by verify_tiff.py.
+// The NDPI JPEG header parser of the browser virtualizer (profiles/ndpi.md §4).
+// Whole files are checked against tifffile by ndpi/verify.py.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { jpegHeader } from "../src/ndpi.ts";
+import { jpegHeader } from "../../src/virtualize/ndpi/virtualize.ts";
 
 /** SOI, SOF0 for a 16 × 32 image with the given sampling factors, DRI 4, SOS. */
 function header(factors: number[], sofMarker = 0xc0): Uint8Array {

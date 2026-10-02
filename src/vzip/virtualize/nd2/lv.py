@@ -1,4 +1,4 @@
-"""The lite variant (LV) metadata encoding of ND2 files (VIRTUALIZE.md §4.2)."""
+"""The lite variant (LV) metadata encoding of ND2 files (profiles/nd2.md §5.2)."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ MAX_DEPTH = 100
 
 
 def _records(data: bytes, pos: int, end: int, count: int | None, depth: int = 0):
-    """The records in data[pos:end], which are at `depth` (§4.2)."""
+    """The records in data[pos:end], which are at `depth` (§5.2)."""
     if depth > MAX_DEPTH:
         raise Rejected(f"LV levels nested more than {MAX_DEPTH} deep")
     out = []

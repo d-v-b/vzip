@@ -1,4 +1,4 @@
-// The NDPI variant of the TIFF profile of VIRTUALIZE.md (§3.7).
+// The NDPI profile (profiles/ndpi.md, §4), a variant of the TIFF profile.
 //
 // Hamamatsu NDPI is a little-endian classic TIFF with 64-bit offsets (an
 // 8-byte first-IFD offset, 8-byte next-IFD offsets, and a high word per entry
@@ -6,20 +6,19 @@
 // markers. Each chunk is a JPEG stream rebuilt from the strip's header, a
 // literal frame header for the chunk's size, and a × b restart intervals.
 
-import { payloadSize } from "./nd2.ts";
-import type { Range } from "./protobuf.ts";
-import { type ByteReader, TiffError } from "./tiff.ts";
-import type { ArchiveDesc, EntryDesc } from "./writer.ts";
+import { type ByteReader, MAX_PAYLOAD, payloadSize } from "../common.ts";
+import type { Range } from "../../protobuf.ts";
+import { TiffError } from "../tiff/ifd.ts";
+import type { ArchiveDesc, EntryDesc } from "../../writer.ts";
 
 const MAX_IFDS = 100000;
-const MAX_PAYLOAD = 65519;
 const CHUNK = 1024; // target chunk size in pixels
 const SIZES: Record<number, number> = {
   1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4, 16: 8, 17: 8, 18: 8,
 };
 const INTEGER = new Set([1, 3, 4, 13, 16, 18]);
 const OFFSET = new Set([3, 4, 8, 9]); // X/YOffsetFromSlideCenter may be signed
-// The tags of §3.7: allowed field types, and whether each is a scalar.
+// The tags of §4: allowed field types, and whether each is a scalar.
 const TAGS: Record<number, [Set<number>, boolean]> = {
   256: [INTEGER, true], 257: [INTEGER, true], 258: [INTEGER, false], 259: [INTEGER, true],
   262: [INTEGER, true], 277: [INTEGER, true], 273: [INTEGER, true], 279: [INTEGER, true],
@@ -37,7 +36,7 @@ const u64 = (v: DataView, at: number) => {
   return x > BigInt(Number.MAX_SAFE_INTEGER) ? reject("an NDPI offset is above 2^53 - 1") : Number(x);
 };
 
-/** The first IFD's offset if the file is NDPI (§3.7), else undefined. */
+/** The first IFD's offset if the file is NDPI (§4), else undefined. */
 export async function detectNdpi(read: ByteReader, size: number): Promise<number | undefined> {
   if (size < 12) return undefined;
   const head = await read(0, 12);
@@ -53,7 +52,7 @@ export async function detectNdpi(read: ByteReader, size: number): Promise<number
 
 type Values = number[] | [number, number][];
 
-/** The main chain's IFDs, as tag → values (§3.7). */
+/** The main chain's IFDs, as tag → values (§4). */
 async function readIfds(read: ByteReader, first: number): Promise<Map<number, Values>[]> {
   const seen = new Set<number>();
   const ifds: Map<number, Values>[] = [];
@@ -120,7 +119,7 @@ function one(tags: Map<number, Values>, tag: number, what: string, fallback?: nu
   return v[0];
 }
 
-/** [SOF0 start, SOF0 end, MCU width, MCU height, restart interval] of a strip's header (§3.7). */
+/** [SOF0 start, SOF0 end, MCU width, MCU height, restart interval] of a strip's header (§4). */
 export function jpegHeader(header: Uint8Array): [number, number, number, number, number] {
   if (header[0] !== 0xff || header[1] !== 0xd8) reject("an NDPI strip does not start with a JPEG SOI marker");
   const v = view(header);
@@ -191,7 +190,7 @@ export async function virtualizeNdpi(
   }
   if (levels.length === 0) reject("no NDPI levels");
 
-  // Scale (§3.7).
+  // Scale (§4).
   const base = levels[0];
   const perUnit = ({ 3: 10000, 2: 25400 } as Record<number, number>)[one(base.tags, 296, "ResolutionUnit", 2)];
   const physical = (tag: number) => {
@@ -241,7 +240,7 @@ export async function virtualizeNdpi(
     });
   }
   const unit = (p: number | undefined) => (p === undefined ? {} : { unit: "micrometer" });
-  // Position (§3.7): the image's centre, from the slide's centre in nm.
+  // Position (§4): the image's centre, from the slide's centre in nm.
   const offsetX = (base.tags.get(65422) as number[] | undefined)?.[0];
   const offsetY = (base.tags.get(65423) as number[] | undefined)?.[0];
   if (px !== undefined && py !== undefined && offsetX !== undefined && offsetY !== undefined) {
@@ -270,7 +269,7 @@ export async function virtualizeNdpi(
   };
 }
 
-/** Adds a McuStarts level's chunk references (§3.7); returns its chunk shape. */
+/** Adds a McuStarts level's chunk references (§4); returns its chunk shape. */
 async function intervals(
   refs: [string, Part[]][], li: number, read: ByteReader, tags: Map<number, Values>,
   startsLow: number[], s0: number, n: number, w: number, h: number,

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { test } from "node:test";
-import { virtualizeImage } from "../src/image.ts";
-import { Nd2Error } from "../src/nd2.ts";
+import { virtualizeImage } from "../../src/virtualize/index.ts";
+import { Nd2Error } from "../../src/virtualize/nd2/virtualize.ts";
 
-const FIXTURES = new URL("fixtures/", import.meta.url);
+const FIXTURES = new URL("../fixtures/nd2/", import.meta.url);
 
 async function virtualize(name: string) {
   const bytes = new Uint8Array(fs.readFileSync(new URL(name, FIXTURES)));

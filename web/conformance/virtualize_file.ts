@@ -1,10 +1,11 @@
 // Virtualizes a local TIFF (or NDPI) with the browser code, under Node:
-//   node web/conformance/tiff.ts <tiff> <out.vzip> <source url>
+//   node web/conformance/virtualize_file.ts <tiff> <out.vzip> <source url>
 // Prints the summary as JSON; exits 1 if the TIFF is not supported, 2 on a crash.
 
 import fs from "node:fs";
-import { blockReader, TiffError } from "../src/tiff.ts";
-import { ImageError, virtualizeImage } from "../src/image.ts";
+import { blockReader, ImageError } from "../src/virtualize/common.ts";
+import { virtualizeImage } from "../src/virtualize/index.ts";
+import { TiffError } from "../src/virtualize/tiff/ifd.ts";
 import { writeVzip } from "../src/writer.ts";
 
 const [tiffPath, outPath, url] = process.argv.slice(2);

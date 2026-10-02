@@ -1,4 +1,4 @@
-"""Writes NDPI files to web/test/fixtures/ for VIRTUALIZE.md §3.7, cut from
+"""Writes NDPI files to web/test/fixtures/ndpi/ for profiles/ndpi.md §4, cut from
 the restart intervals of level 2 of OpenSlide's CMU-1.ndpi (CC0 1.0), which
 is downloaded once into a cache.
 
@@ -7,11 +7,11 @@ is downloaded once into a cache.
   and bottom edges repeat intervals; level 1 is a small McuStarts level;
   level 2 is a single JPEG strip without McuStarts. A macro image (negative
   magnification) is skipped.
-- `edge_reject_ndpi_*.ndpi`: inputs §3.7 rejects.
+- `edge_reject_ndpi_*.ndpi`: inputs §4 rejects.
 
-Pixels are checked against tifffile by verify_tiff.py.
+Pixels are checked against tifffile by verify.py.
 
-Usage: uv run python web/test/ndpi_fixtures.py
+Usage: uv run python web/test/ndpi/write_fixtures.py
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from pathlib import Path
 import imagecodecs
 import numpy as np
 
-OUT = Path(__file__).parent / "fixtures"
+OUT = Path(__file__).parents[1] / "fixtures" / "ndpi"
 SOURCE = "https://openslide.cs.cmu.edu/download/openslide-testdata/Hamamatsu/CMU-1.ndpi"
 CACHE = Path("/tmp/vzip-fixture-cache/CMU-1-level2.bin")
 
