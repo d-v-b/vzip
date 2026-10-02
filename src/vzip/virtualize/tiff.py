@@ -7,10 +7,12 @@ import re
 import struct
 
 from vzip.virtualize.common import (
-    MAX_PAYLOAD, UNITS, Output, Reader, Rejected, array_json, group_json, image_ome, payload_size, transpose_codec,
+    LENGTHS, MAX_PAYLOAD, UNITS, Output, Reader, Rejected, array_json, centred, group_json, image_ome, payload_size,
+    transpose_codec,
 )
 
-TAGS = {256, 257, 258, 259, 262, 270, 277, 284, 317, 322, 323, 324, 325, 330, 339, 347}
+TAGS = {256, 257, 258, 259, 262, 270, 277, 282, 283, 284, 296, 317, 322, 323, 324, 325, 330, 339, 347}
+RATIONAL_TAGS = {282, 283}
 SIZES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4, 16: 8, 17: 8, 18: 8}
 FORMATS = {1: "B", 6: "b", 7: "B", 3: "H", 8: "h", 4: "I", 13: "I", 9: "i", 16: "Q", 18: "Q", 17: "q",
            11: "f", 12: "d"}
@@ -19,7 +21,7 @@ MAX_IFDS = 100000
 MAX_PLANES = 100000
 MAX_SAFE = 2**53 - 1
 INTEGER_TYPES = {1, 3, 4, 13, 16, 18}
-SCALARS = {256, 257, 259, 262, 277, 284, 317, 322, 323}
+SCALARS = {256, 257, 259, 262, 277, 282, 283, 284, 296, 317, 322, 323}
 JPEG = 7
 # The Adobe APP14 marker, with its colour transform byte last (§3.6).
 ADOBE = bytes.fromhex("FFEE000E41646F626500640000000000")[:-1]
@@ -94,7 +96,7 @@ def read_tiff(read: Reader, size: int):
             tag, typ = struct.unpack(e + "HH", body[at : at + 4])
             if tag not in TAGS or tag in tags:
                 continue  # unused, or a duplicate (the first is used)
-            allowed = SIZES if tag == 270 else (1, 7) if tag == 347 else INTEGER_TYPES
+            allowed = SIZES if tag == 270 else (1, 7) if tag == 347 else (5,) if tag in RATIONAL_TAGS else INTEGER_TYPES
             if typ not in allowed:
                 raise Rejected(f"tag {tag} has field type {typ}")
             n = struct.unpack(e + ("Q" if big else "I"), body[at + 4 : at + 4 + (8 if big else 4)])[0]
@@ -108,6 +110,11 @@ def read_tiff(read: Reader, size: int):
                 tags[tag] = values(read(where, n * SIZES[typ]), typ, n)
             if tag == 347:
                 tags[tag] = bytes(tags[tag])  # JPEGTables: its bytes
+            elif tag in RATIONAL_TAGS:  # (numerator, denominator) pairs
+                raw = (body[vat : vat + 8 * n] if 8 * n <= field_size
+                       else read(struct.unpack(e + ("Q" if big else "I"), body[vat : vat + field_size])[0], 8 * n))
+                v = struct.unpack(e + "I" * (2 * n), raw)
+                tags[tag] = [(v[2 * i], v[2 * i + 1]) for i in range(n)]
             types[tag] = typ
         nxt = struct.unpack(e + ("Q" if big else "I"), body[count * entry_size : count * entry_size + field_size])[0]
         return Ifd(offset, tags, types), nxt
@@ -170,13 +177,14 @@ def is_ome(xml: str) -> bool:
 
 
 def parse_ome(xml: str):
-    """(image name, Pixels attributes, TiffData list) of the first image (§3.2)."""
+    """(image name, Pixels attributes, TiffData list, Plane attributes or None)
+    of the first image (§3.2)."""
     tags, skipped = scan(xml)
     image = next((t for t in tags if not t[2] and t[3] == "Image"), None)
     name = image[4].get("Name") if image else None
     pi = next((i for i, t in enumerate(tags) if not t[2] and t[3] == "Pixels"), None)
     if pi is None:
-        return name, {}, []
+        return name, {}, [], None
     pixels = tags[pi]
     inside = []
     if not pixels[5]:
@@ -215,7 +223,9 @@ def parse_ome(xml: str):
                         td["uuid"] = text(u[1], tags[tags.index(u) + 1][0] if tags.index(u) + 1 < len(tags) else len(xml))
                     break
         tiff_data.append(td)
-    return name, pixels[4], tiff_data
+    plane = next((t[4] for t in inside if not t[2] and t[3] == "Plane"
+                  and all(_int(t[4], k, 0) == 0 for k in ("TheZ", "TheC", "TheT"))), None)
+    return name, pixels[4], tiff_data, plane
 
 
 def _int(attrs: dict, key: str, default: int, minimum: int = 0) -> int:
@@ -231,11 +241,31 @@ def _int(attrs: dict, key: str, default: int, minimum: int = 0) -> int:
 
 
 def _physical(attrs: dict, d: str):
-    v = attrs.get(f"PhysicalSize{d}")
+    return _decimal(attrs.get(f"PhysicalSize{d}"), positive=True)
+
+
+def _decimal(v: str | None, positive: bool = False):
+    """A decimal value (§3.2), or None."""
     if v is None or not DECIMAL.fullmatch(v):
         return None
     x = float(v)
-    return x if math.isfinite(x) and x > 0 else None
+    return x if math.isfinite(x) and (x > 0 or not positive) else None
+
+
+def aperio_fields(description: bytes) -> dict | None:
+    """The `name = value` fields of an Aperio ImageDescription (§3.6), or None."""
+    if not description.startswith(b"Aperio"):
+        return None
+    try:
+        text = description.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    fields = {}
+    for part in text.split("|"):
+        if "=" in part:
+            name, value = part.split("=", 1)
+            fields.setdefault(name.strip(" \t\r\n"), value.strip(" \t\r\n"))
+    return fields
 
 
 # ---- profile
@@ -425,13 +455,36 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
     if contig:
         codecs.insert(0, transpose_codec(axes))
 
-    # §3.6 output.
-    units = {}
-    for d, a in (("Z", "z"), ("Y", "y"), ("X", "x")):
-        if _physical(px, d) is not None:
-            unit = UNITS.get(px.get(f"PhysicalSize{d}Unit", "µm"))
-            if unit:
-                units[a] = unit
+    # §3.6 pixel size and position.
+    units, sizes, centre, corner = {}, {}, None, None
+    if ome is not None:
+        for d, a in (("Z", "z"), ("Y", "y"), ("X", "x")):
+            if _physical(px, d) is not None:
+                sizes[a] = _physical(px, d)
+                unit = UNITS.get(px.get(f"PhysicalSize{d}Unit", "µm"))
+                if unit:
+                    units[a] = unit
+        stage = ome[3] or {}  # the OME Plane's attributes
+        pos = {a: _decimal(stage.get(f"Position{d}")) for d, a in (("X", "x"), ("Y", "y"))}
+        pos_units = {a: UNITS.get(stage.get(f"Position{d}Unit", "")) for d, a in (("X", "x"), ("Y", "y"))}
+        if all(pos[a] is not None and pos_units[a] in LENGTHS and units.get(a) in LENGTHS for a in "xy"):
+            centre = {a: pos[a] * (LENGTHS[pos_units[a]] / LENGTHS[units[a]]) for a in "xy"}
+    else:
+        fields = aperio_fields(raw) if raw is not None else None
+        mpp = _decimal(fields.get("MPP"), positive=True) if fields else None
+        if mpp is not None:
+            sizes = {"x": mpp, "y": mpp}
+            units = {"x": "micrometer", "y": "micrometer"}
+            left, top = _decimal(fields.get("Left")), _decimal(fields.get("Top"))
+            if left is not None and top is not None:
+                corner = {"x": left * 1000, "y": top * 1000}
+        else:
+            per_unit = {2: 25400.0, 3: 10000.0}.get(ifd0.num(296, 2))
+            for tag, a in ((282, "x"), (283, "y")):
+                r = ifd0.tags.get(tag)
+                if per_unit is not None and r and r[0][0] > 0 and r[0][1] > 0:
+                    sizes[a] = per_unit / (r[0][0] / r[0][1])
+                    units[a] = "micrometer"
     out = Output(url)
     base = levels[0]
     scales = []
@@ -475,11 +528,18 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
                             if payload_size(ranges) > MAX_PAYLOAD:
                                 raise Rejected(f"tile {k}'s reference payload exceeds {MAX_PAYLOAD} bytes")
                             out.refs[f"{li}/c/" + "/".join(map(str, coords))] = ranges
-        pxs, pys, pzs = (_physical(px, d) or 1 for d in "XYZ")
+        pxs, pys, pzs = (sizes.get(a, 1) for a in "xyz")
         sc = {"t": 1, "c": 1, "z": pzs, "y": pys * (base["h"] / lv["h"]), "x": pxs * (base["w"] / lv["w"])}
         scales.append([sc[a] for a in axes])
+    translation = None
+    if "x" in units and "y" in units:
+        if centre is not None:
+            corner = centred(centre["x"], centre["y"], base["w"], base["h"], sizes.get("x", 1), sizes.get("y", 1))
+        if corner is not None:
+            translation = [corner.get(a, 0) for a in axes]
     name = ome[0] if ome else None
-    out.json("zarr.json", group_json(image_ome(axes, units, scales, name or None)))
+    out.json("zarr.json", group_json(image_ome(axes, units, scales, name or None,
+                                               [translation] * len(levels) if translation else None)))
     if xml is not None:
         out.bytes_entries["OME/METADATA.ome.xml"] = raw
     out.summary = {"axes": axes, "levels": [[{"t": size_t, "c": size_c, "z": size_z, "y": lv["h"], "x": lv["w"]}[a] for a in axes] for lv in levels],

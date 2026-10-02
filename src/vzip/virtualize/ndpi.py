@@ -13,13 +13,14 @@ import math
 import struct
 
 from vzip.virtualize.common import (
-    MAX_PAYLOAD, Output, Reader, Rejected, array_json, group_json, image_ome, payload_size, transpose_codec,
+    MAX_PAYLOAD, Output, Reader, Rejected, array_json, centred, group_json, image_ome, payload_size, transpose_codec,
 )
 
 MAX_IFDS = 100000
 MAX_SAFE = 2**53 - 1
 SIZES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4, 16: 8, 17: 8, 18: 8}
-FORMATS = {1: "B", 3: "H", 4: "I", 13: "I", 16: "Q", 18: "Q", 11: "f", 12: "d"}
+FORMATS = {1: "B", 3: "H", 4: "I", 8: "h", 9: "i", 13: "I", 16: "Q", 18: "Q", 11: "f", 12: "d"}
+OFFSET_TYPES = {3, 4, 8, 9}  # X/YOffsetFromSlideCenter may be signed
 INTEGER_TYPES = {1, 3, 4, 13, 16, 18}
 # The tags of §3.7, with their allowed field types and whether they are scalars.
 TAGS = {
@@ -27,6 +28,7 @@ TAGS = {
     259: (INTEGER_TYPES, True), 262: (INTEGER_TYPES, True), 277: (INTEGER_TYPES, True),
     273: (INTEGER_TYPES, True), 279: (INTEGER_TYPES, True), 282: ({5}, True), 283: ({5}, True),
     296: (INTEGER_TYPES, True), 65420: (INTEGER_TYPES, True), 65421: ({11, 12}, True),
+    65422: (OFFSET_TYPES, True), 65423: (OFFSET_TYPES, True),
     65426: (INTEGER_TYPES, False), 65432: (INTEGER_TYPES, False),
 }
 CHUNK = 1024  # target chunk size in pixels
@@ -209,7 +211,14 @@ def virtualize_ndpi(url: str, read: Reader, size: int, first: int) -> Output:
             chunk_shape = _intervals(out, li, read, tags, starts, s0, n, w, h)
         out.json(f"{li}/zarr.json", array_json([3, h, w], "uint8", chunk_shape, codecs, axes))
         scales.append([1, (py or 1) * (base["h"] / h), (px or 1) * (base["w"] / w)])
-    out.json("zarr.json", group_json(image_ome(axes, units, scales, None)))
+    # Position (§3.7): the image's centre, from the slide's centre in nm.
+    translation = None
+    offset_x, offset_y = base["tags"].get(65422), base["tags"].get(65423)
+    if px is not None and py is not None and offset_x and offset_y:
+        corner = centred(offset_x[0] / 1000, offset_y[0] / 1000, base["w"], base["h"], px, py)
+        translation = [0, corner["y"], corner["x"]]
+    out.json("zarr.json", group_json(image_ome(axes, units, scales, None,
+                                               [translation] * len(levels) if translation else None)))
     out.summary = {"axes": axes, "levels": [[3, lv["h"], lv["w"]] for lv in levels], "references": len(out.refs),
                    "codec": "imagecodecs_jpeg"}
     return out

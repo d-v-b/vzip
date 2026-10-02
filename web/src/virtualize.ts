@@ -91,6 +91,8 @@ interface Ome {
   name?: string;
   pixels: Record<string, string>;
   tiffData: TiffData[];
+  /** The attributes of the first Plane at z, c, t = 0 (its stage position). */
+  plane?: Record<string, string>;
 }
 
 export function parseOme(xml: string): Ome | undefined {
@@ -139,7 +141,9 @@ export function parseOme(xml: string): Ome | undefined {
     }
     tiffData.push(td);
   });
-  return { name, pixels: tags[pi].attrs, tiffData };
+  const plane = inside.find((t) => !t.closing && t.name === "Plane" &&
+    ["TheZ", "TheC", "TheT"].every((k) => intAttr(t.attrs, k, 0) === 0))?.attrs;
+  return { name, pixels: tags[pi].attrs, tiffData, plane };
 }
 
 function intAttr(attrs: Record<string, string>, key: string, fallback: number, minimum = 0): number {
@@ -154,11 +158,41 @@ function intAttr(attrs: Record<string, string>, key: string, fallback: number, m
 }
 
 function physical(attrs: Record<string, string>, d: string): number | undefined {
-  const v = attrs[`PhysicalSize${d}`];
+  return decimal(attrs[`PhysicalSize${d}`], true);
+}
+
+/** A decimal value (§3.2), or undefined. */
+function decimal(v: string | undefined, positive = false): number | undefined {
   if (v === undefined || !DECIMAL.test(v)) return undefined;
   const x = Number(v);
-  return Number.isFinite(x) && x > 0 ? x : undefined;
+  return Number.isFinite(x) && (x > 0 || !positive) ? x : undefined;
 }
+
+/** The `name = value` fields of an Aperio ImageDescription (§3.6), or undefined. */
+function aperioFields(description: Uint8Array): Map<string, string> | undefined {
+  if (String.fromCharCode(...description.subarray(0, 6)) !== "Aperio") return undefined;
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(description);
+  } catch {
+    return undefined;
+  }
+  const fields = new Map<string, string>();
+  const trim = (s: string) => s.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+  for (const part of text.split("|")) {
+    const at = part.indexOf("=");
+    if (at < 0) continue;
+    const name = trim(part.slice(0, at));
+    if (!fields.has(name)) fields.set(name, trim(part.slice(at + 1)));
+  }
+  return fields;
+}
+
+// Sizes of the length units in metres (§2.3).
+const LENGTHS: Record<string, number> = {
+  micrometer: 1e-6, nanometer: 1e-9, millimeter: 1e-3, centimeter: 1e-2, meter: 1,
+  angstrom: 1e-10, picometer: 1e-12, inch: 0.0254, foot: 0.3048,
+};
 
 const UNITS: Record<string, string> = {
   "µm": "micrometer", "um": "micrometer", "μm": "micrometer", "nm": "nanometer",
@@ -275,9 +309,11 @@ export async function virtualizeTiff(
   const description = ifd0.tags.get(Tag.ImageDescription);
   let raw: Uint8Array | undefined;
   let ome: Ome | undefined;
+  let ascii: Uint8Array | undefined; // D: the ASCII description up to its first NUL
   if (ifd0.types.get(Tag.ImageDescription) === 2 && description instanceof Uint8Array) {
     const nul = description.indexOf(0);
     const d = nul < 0 ? description : description.subarray(0, nul);
+    ascii = d;
     let text: string | undefined;
     try {
       text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(d);
@@ -364,14 +400,54 @@ export async function virtualizeTiff(
 
   // §3.5: data type and codecs.
   const contig = f.spp > 1 && f.planar === 1;
+  // §3.6: pixel size and position.
+  const sizes: Record<string, number> = {};
+  const units: Record<string, string> = {};
+  let centre: Record<string, number> | undefined;
+  let corner: Record<string, number> | undefined;
+  if (ome !== undefined) {
+    for (const [d, a] of [["Z", "z"], ["Y", "y"], ["X", "x"]]) {
+      const v = physical(px, d);
+      if (v === undefined) continue;
+      sizes[a] = v;
+      const u = UNITS[px[`PhysicalSize${d}Unit`] ?? "µm"];
+      if (u) units[a] = u;
+    }
+    const stage = ome.plane ?? {};
+    const pos = { x: decimal(stage.PositionX), y: decimal(stage.PositionY) };
+    const posUnits = { x: UNITS[stage.PositionXUnit ?? ""], y: UNITS[stage.PositionYUnit ?? ""] };
+    if ((["x", "y"] as const).every((a) => pos[a] !== undefined && posUnits[a] in LENGTHS && units[a] in LENGTHS)) {
+      centre = {
+        x: pos.x! * (LENGTHS[posUnits.x] / LENGTHS[units.x]),
+        y: pos.y! * (LENGTHS[posUnits.y] / LENGTHS[units.y]),
+      };
+    }
+  } else {
+    const fields = ascii === undefined ? undefined : aperioFields(ascii);
+    const mpp = decimal(fields?.get("MPP"), true);
+    if (mpp !== undefined) {
+      sizes.x = sizes.y = mpp;
+      units.x = units.y = "micrometer";
+      const left = decimal(fields!.get("Left"));
+      const top = decimal(fields!.get("Top"));
+      if (left !== undefined && top !== undefined) corner = { x: left * 1000, y: top * 1000 };
+    } else {
+      const perUnit = ({ 2: 25400, 3: 10000 } as Record<number, number>)[num(ifd0, Tag.ResolutionUnit, 2)];
+      for (const [tag, a] of [[Tag.XResolution, "x"], [Tag.YResolution, "y"]] as const) {
+        const r = ifd0.tags.get(tag) as number[] | undefined;
+        if (perUnit !== undefined && r !== undefined && r[0] > 0 && r[1] > 0) {
+          sizes[a] = perUnit / (r[0] / r[1]);
+          units[a] = "micrometer";
+        }
+      }
+    }
+  }
   const axes: { name: string; type: string; unit?: string; size: number }[] = [];
-  const unit = (d: string) =>
-    physical(px, d) === undefined ? undefined : UNITS[px[`PhysicalSize${d}Unit`] ?? "µm"];
   if (sizeT > 1) axes.push({ name: "t", type: "time", size: sizeT });
   if (sizeC > 1) axes.push({ name: "c", type: "channel", size: sizeC });
-  if (sizeZ > 1) axes.push({ name: "z", type: "space", unit: unit("Z"), size: sizeZ });
-  axes.push({ name: "y", type: "space", unit: unit("Y"), size: 0 });
-  axes.push({ name: "x", type: "space", unit: unit("X"), size: 0 });
+  if (sizeZ > 1) axes.push({ name: "z", type: "space", unit: units.z, size: sizeZ });
+  axes.push({ name: "y", type: "space", unit: units.y, size: 0 });
+  axes.push({ name: "x", type: "space", unit: units.x, size: 0 });
   const cAxis = axes.findIndex((a) => a.name === "c");
 
   const dataType = dtype(f.bits, f.sampleFormat);
@@ -486,12 +562,23 @@ export async function virtualizeTiff(
       }
     }
     const scale = axes.map((a) => {
-      if (a.name === "y") return (physical(px, "Y") ?? 1) * (base.height / l.height);
-      if (a.name === "x") return (physical(px, "X") ?? 1) * (base.width / l.width);
-      if (a.name === "z") return physical(px, "Z") ?? 1;
+      if (a.name === "y") return (sizes.y ?? 1) * (base.height / l.height);
+      if (a.name === "x") return (sizes.x ?? 1) * (base.width / l.width);
+      if (a.name === "z") return sizes.z ?? 1;
       return 1;
     });
-    datasets.push({ path: String(li), coordinateTransformations: [{ type: "scale", scale }] });
+    datasets.push({ path: String(li), coordinateTransformations: [{ type: "scale", scale }] as unknown[] });
+  }
+  // The same translation at every level (§2.3).
+  if (units.x !== undefined && units.y !== undefined) {
+    if (centre !== undefined) {
+      corner = { x: centre.x - base.width * (sizes.x ?? 1) / 2, y: centre.y - base.height * (sizes.y ?? 1) / 2 };
+    }
+    if (corner !== undefined) {
+      const translation = axes.map((a) => corner![a.name] ?? 0);
+      if (!translation.every(Number.isFinite)) reject("a translation is not finite");
+      for (const d of datasets) d.coordinateTransformations.push({ type: "translation", translation });
+    }
   }
   const name = ome?.name || undefined;
   meta.push({

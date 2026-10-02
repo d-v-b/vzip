@@ -1,6 +1,6 @@
 # Virtualizing image files as OME-Zarr in vzip
 
-Profiles version: 0 (**draft**) · Revision: 9
+Profiles version: 0 (**draft**) · Revision: 8
 
 ## 1. Introduction
 
@@ -196,18 +196,6 @@ OME-XML unit symbols map to OME-NGFF units:
 
 Any other symbol gives no unit (the scale is still used).
 
-A **length** in one of these units converts to another by the units'
-sizes in metres: micrometer 1e-6, nanometer 1e-9, millimeter 1e-3,
-centimeter 1e-2, meter 1, angstrom 1e-10, picometer 1e-12, inch 0.0254,
-foot 0.3048. A value `v` in unit `a` is `v × (size(a) / size(b))` in unit
-`b` (the division first).
-
-**Translations.** Where a profile places an image in space (§2.2), the
-translation applies to every level, and is 0 for every axis it does not
-name. A position given for the centre of an image of level-0 size
-`W0 × H0` with x and y scales `sx`, `sy` becomes the translation
-`x = cx − W0 × sx / 2`, `y = cy − H0 × sy / 2` (products first).
-
 ## 3. TIFF profile
 
 ### 3.1 Reading
@@ -248,8 +236,6 @@ Tags used (absent tags take the defaults shown):
 | 322, 323 | TileWidth, TileLength | scalar | required for tiled images |
 | 324, 325 | TileOffsets, TileByteCounts | array | required for tiled images |
 | 330 | SubIFDs | array | none |
-| 282, 283 | XResolution, YResolution | scalar | none |
-| 296 | ResolutionUnit | scalar | 2 |
 | 339 | SampleFormat | array | 1 |
 | 347 | JPEGTables | bytes | none |
 
@@ -258,8 +244,7 @@ read (whether or not that IFD is used):
 
 - **Field type:** ImageDescription may have any field type that TIFF 6.0 or
   BigTIFF defines (1–12, 16–18), or 13 (IFD). JPEGTables MUST have type
-  BYTE (1) or UNDEFINED (7); its value is its bytes. XResolution and
-  YResolution MUST have type RATIONAL (5). Every other tag MUST
+  BYTE (1) or UNDEFINED (7); its value is its bytes. Every other tag MUST
   have an unsigned integer type: BYTE (1), SHORT (3), LONG (4), IFD (13), LONG8
   (16) or IFD8 (18), in either TIFF variant. Any other type rejects.
 - **Value:** its value MUST lie within the file, and each of its values
@@ -346,10 +331,6 @@ From `X` the virtualizer uses:
 - the attributes of the first `Pixels` start tag:
   - `SizeZ`, `SizeC`, `SizeT` and `DimensionOrder`;
   - `PhysicalSizeX/Y/Z` and `PhysicalSizeX/Y/ZUnit`;
-- the first `Plane` start tag after that `Pixels` start tag and before the
-  first `Pixels` end tag after it whose `TheZ`, `TheC` and `TheT` are each
-  absent or `0` (as integer attributes): its `PositionX`, `PositionY`,
-  `PositionXUnit` and `PositionYUnit` (the stage position of the plane);
 - the `TiffData` start tags after that `Pixels` start tag and before the
   first `Pixels` end tag after it (or the end of `X`), in order:
   - with attributes `IFD`, `FirstZ`, `FirstC`, `FirstT` and `PlaneCount`;
@@ -374,9 +355,6 @@ are no `TiffData` tags.
   value MUST be one or more digits, optionally preceded and followed by
   whitespace, and at most 2^53 − 1. `SizeZ`, `SizeC`, `SizeT` and
   `PlaneCount` MUST be at least 1. Otherwise the input is rejected.
-- **`PositionX`, `PositionY`:** like `PhysicalSize*` below, but any finite
-  value counts (zero and negative too); the unit has no default (OME's
-  default, "reference frame", is not a length).
 - **`PhysicalSize*`:** a value counts as present only if the whole value
   (with no whitespace) matches
   `[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?` and its value is
@@ -477,39 +455,15 @@ One image at the archive root (§2.2), with one array per level at path
 - **Axes:** `t` if `SizeT > 1`; `c` if the channel count (`SizeC` after
   §3.3, or `spp` without OME-XML) is more than 1; `z` if `SizeZ > 1`; then
   `y`, `x`.
-- **Pixel size.** `PX`, `PY`, `PZ` and the units of `x`, `y`, `z` come from
-  the first of these that applies:
-  1. **OME-XML:** `PX`, `PY`, `PZ` are `PhysicalSizeX/Y/Z`, and `x`, `y`, `z`
-     have the unit (§2.3) of `PhysicalSizeXUnit` etc. (default `µm`), each
-     only when that `PhysicalSize` is present.
-  2. **Aperio:** IFD 0 has an ImageDescription of type ASCII whose bytes up
-     to the first NUL start with `Aperio` and are valid UTF-8. Its fields are
-     the parts of that text between `|` characters; a field `name = value`
-     is split at its first `=`, with whitespace around each part removed, and
-     of fields with the same name the first is used. A field named `MPP`
-     whose value is a
-     present decimal (as `PhysicalSize*`, §3.2) gives `PX = PY` = that
-     value, and `x`, `y` the unit `micrometer`.
-  3. **Resolution tags:** IFD 0 has XResolution `n / d` with `n` and `d`
-     positive and ResolutionUnit 2 (inch) or 3 (centimetre): `PX` is
-     `25400 / (n / d)` or `10000 / (n / d)`, with unit `micrometer`. `PY`
-     likewise from YResolution.
-
-  Otherwise `PX`, `PY`, `PZ` are 1 with no unit. `t` and `c` have no unit.
-- **Position.** The image has a translation (§2.3), the same at every level,
-  when `x` and `y` have units and either
-  - the OME-XML's `Plane` has `PositionX` and `PositionY` with units that
-    are lengths (§2.3): their values converted to the units of `x` and `y`
-    are the centre of the image; or, without OME-XML,
-  - the Aperio description has fields `Left` and `Top` (millimetres, the
-    scanned area's top-left on the slide) whose values are present decimals
-    or zero: the translation is `x = Left × 1000`, `y = Top × 1000`
-    (micrometres).
+- **Units** (only with OME-XML): `z`, `y`, `x` have the unit (§2.3) of
+  `PhysicalSizeZUnit` etc. (default `µm`) when that `PhysicalSize` is
+  present; `t` and `c` have none.
 - **Shape:** the counts of `t`, `c`, `z`, then the level's length and width.
 - **Chunk shape:** 1 for `t` and `z`; for `c`, `spp` if interleaved, else 1;
   then the level's TileLength and TileWidth (levels may differ).
 - **Scale** of level `L` (level 0 has width `W0`, length `H0`):
-  `y = PY × (H0 / HL)`, `x = PX × (W0 / WL)`, `z = PZ`, `t = c = 1`. (The
+  `y = PY × (H0 / HL)`, `x = PX × (W0 / WL)`, `z = PZ`, `t = c = 1`, where
+  `PX`, `PY`, `PZ` are `PhysicalSizeX/Y/Z` when present, else 1. (The
   division is computed first.)
 - **Name:** the OME `Image` name, if present and not empty.
 - **Chunks:** for each plane (t, c, z) of a level, its IFD's tiles are numbered
@@ -570,7 +524,6 @@ Tags used, besides 256, 257, 258, 259, 262 and 277 of §3.1:
 | 296 | ResolutionUnit | scalar | integer | 2 |
 | 65420 | NDPI format flag | scalar | integer | required |
 | 65421 | Magnification | scalar | FLOAT (11) or DOUBLE (12) | required |
-| 65422, 65423 | X, YOffsetFromSlideCenter | scalar | SHORT, LONG, SSHORT, SLONG (3, 4, 8, 9) | absent |
 | 65426 | McuStarts | array | integer | absent |
 | 65432 | McuStartsHighBytes | array | integer | absent |
 
@@ -588,11 +541,6 @@ unit `micrometer` and level 0 scale `10000 / rx`; with unit 2 (inch),
 `25400 / rx`; otherwise no unit and scale 1. `y` likewise from YResolution.
 Level `L`'s scale is level 0's times `(W0 / WL)` (x) or `(H0 / HL)` (y), as
 in §3.6.
-
-**Position.** When `x` and `y` have units and level 0's IFD has
-XOffsetFromSlideCenter (65422) and YOffsetFromSlideCenter (65423), in
-nanometres, the image's centre is at `(X / 1000, Y / 1000)` micrometres,
-which gives its translation (§2.3).
 
 **Strips.** A level's strip is the JPEG stream `S` = bytes
 `[StripOffsets, StripOffsets + StripByteCounts)` of the file.
@@ -807,8 +755,7 @@ its value ends up in the output.
   `SLxPictureMetadata`; if the chunk or the member is absent there are no
   planes and the image is not calibrated):
   - flag `bCalibrated` (default false), number `dCalibration` (default
-    absent), number `dAspect` (default 1), numbers `dXPos` and `dYPos` (the
-    stage position, default absent);
+    absent), number `dAspect` (default 1);
   - planes: object `sPicturePlanes` (default absent: no planes), with
     integer `uiCount` (default 0) and object `sPlaneNew` (default absent).
     Plane `i` is the member `sPlaneNew/a<i>`, for `i < uiCount`. Each one
@@ -911,12 +858,11 @@ Each array:
   - `t`: `second` with scale `period / 1000` when the period is positive,
     else no unit and scale 1;
   - `c`: scale 1.
-- **Stage positions:** each image also has a translation (§2.2) placing it
-  where the stage was, when all of these hold: the image is calibrated;
-  every position's stage position is present (with a position loop,
-  `dPosX` and `dPosY` of the position loop's `p`-th valid member of
-  `Points`, for position `p`; without one, the picture metadata's numbers
-  `dXPos` and `dYPos`, default absent); and `d = dStgLgCT11 × dStgLgCT22 −
+- **Stage positions:** with a position loop, each image also has a
+  translation (§2.2) placing it where the stage was, when all of these hold:
+  the image is calibrated; every position's stage position (`dPosX` and
+  `dPosY` of the position loop's `p`-th valid member of `Points`, for
+  position `p`) is present; and `d = dStgLgCT11 × dStgLgCT22 −
   dStgLgCT12 × dStgLgCT21` is not 0. Otherwise no image has one. The
   stage position `(sx, sy)` is the centre of the field of view; in image
   coordinates it is

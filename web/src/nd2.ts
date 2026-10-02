@@ -339,6 +339,11 @@ export async function virtualizeNd2(
   let aspect = number(picture.get("dAspect"), "dAspect", 1);
   const [m11, m12, m21, m22] = ([["11", 1], ["12", 0], ["21", 0], ["22", 1]] as const)
     .map(([k, fallback]) => number(picture.get(`dStgLgCT${k}`), `dStgLgCT${k}`, fallback));
+  // The stage position without a position loop (§4.6).
+  const pictureStage: [number | null, number | null] = [
+    number(picture.get("dXPos"), "dXPos", null),
+    number(picture.get("dYPos"), "dYPos", null),
+  ];
   const calibrated = bCalibrated && cal !== null && cal > 0;
   if (!(aspect > 0)) aspect = 1;
   const pp: LVObject = obj(picture.get("sPicturePlanes"), "sPicturePlanes", null) ?? new Map();
@@ -469,8 +474,9 @@ export async function virtualizeNd2(
   // §4.6 stage positions: where each position's image goes.
   const det = m11 * m22 - m12 * m21;
   let translations: number[][] | undefined;
-  if (p?.stage && calibrated && det !== 0 && p.stage.every(([x, y]) => x !== null && y !== null)) {
-    translations = p.stage.map(([sx, sy]) => {
+  const stages = p ? p.stage ?? [] : [pictureStage];
+  if (calibrated && det !== 0 && stages.every(([x, y]) => x !== null && y !== null)) {
+    translations = stages.map(([sx, sy]) => {
       const u = (m22 * sx! - m12 * sy!) / det;
       const v = (m11 * sy! - m21 * sx!) / det;
       const shift: Record<string, number> = { x: u - width * scale.x / 2, y: v - height * scale.y / 2 };

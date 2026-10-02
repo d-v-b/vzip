@@ -18,12 +18,14 @@ const SIZES: Record<number, number> = {
   1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4, 16: 8, 17: 8, 18: 8,
 };
 const INTEGER = new Set([1, 3, 4, 13, 16, 18]);
+const OFFSET = new Set([3, 4, 8, 9]); // X/YOffsetFromSlideCenter may be signed
 // The tags of §3.7: allowed field types, and whether each is a scalar.
 const TAGS: Record<number, [Set<number>, boolean]> = {
   256: [INTEGER, true], 257: [INTEGER, true], 258: [INTEGER, false], 259: [INTEGER, true],
   262: [INTEGER, true], 277: [INTEGER, true], 273: [INTEGER, true], 279: [INTEGER, true],
   282: [new Set([5]), true], 283: [new Set([5]), true], 296: [INTEGER, true],
-  65420: [INTEGER, true], 65421: [new Set([11, 12]), true], 65426: [INTEGER, false], 65432: [INTEGER, false],
+  65420: [INTEGER, true], 65421: [new Set([11, 12]), true], 65422: [OFFSET, true], 65423: [OFFSET, true],
+  65426: [INTEGER, false], 65432: [INTEGER, false],
 };
 
 const reject = (message: string): never => {
@@ -102,6 +104,8 @@ function decode(bytes: Uint8Array, type: number, count: number): Values {
     switch (type) {
       case 1: return v.getUint8(i);
       case 3: return v.getUint16(2 * i, true);
+      case 8: return v.getInt16(2 * i, true);
+      case 9: return v.getInt32(4 * i, true);
       case 4: case 13: return v.getUint32(4 * i, true);
       case 11: return v.getFloat32(4 * i, true);
       case 12: return v.getFloat64(8 * i, true);
@@ -237,6 +241,13 @@ export async function virtualizeNdpi(
     });
   }
   const unit = (p: number | undefined) => (p === undefined ? {} : { unit: "micrometer" });
+  // Position (§3.7): the image's centre, from the slide's centre in nm.
+  const offsetX = (base.tags.get(65422) as number[] | undefined)?.[0];
+  const offsetY = (base.tags.get(65423) as number[] | undefined)?.[0];
+  if (px !== undefined && py !== undefined && offsetX !== undefined && offsetY !== undefined) {
+    const translation = [0, offsetY / 1000 - base.h * py / 2, offsetX / 1000 - base.w * px / 2];
+    for (const d of datasets) (d.coordinateTransformations as unknown[]).push({ type: "translation", translation });
+  }
   entries.push({
     key: "zarr.json",
     bytes: json({

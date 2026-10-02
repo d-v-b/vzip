@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+import math
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -72,6 +73,17 @@ UNITS = {
 
 TYPES = {"t": "time", "c": "channel", "z": "space", "y": "space", "x": "space"}
 
+# Sizes of the length units in metres (§2.3).
+LENGTHS = {
+    "micrometer": 1e-6, "nanometer": 1e-9, "millimeter": 1e-3, "centimeter": 1e-2, "meter": 1.0,
+    "angstrom": 1e-10, "picometer": 1e-12, "inch": 0.0254, "foot": 0.3048,
+}
+
+
+def centred(cx: float, cy: float, w0: int, h0: int, sx: float, sy: float) -> dict:
+    """The translation of an image whose centre is at (cx, cy) (§2.3)."""
+    return {"x": cx - w0 * sx / 2, "y": cy - h0 * sy / 2}
+
 
 def array_json(shape, data_type: str, chunk_shape, codecs: list, axes: list[str]) -> dict:
     """An array's zarr.json (§2.1)."""
@@ -101,6 +113,9 @@ def group_json(ome: dict) -> dict:
 
 def image_ome(axes: list[str], units: dict, scales: list[list[float]], name: str | None,
               translations: list[list[float]] | None = None) -> dict:
+    for t in translations or []:
+        if not all(math.isfinite(v) for v in t):
+            raise Rejected("a translation is not finite")
     """The OME-NGFF 0.5 object of an image (§2.2), with a translation per
     level after its scale when `translations` is given."""
     ms = {}

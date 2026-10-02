@@ -17,7 +17,7 @@ from pathlib import Path
 OUT = Path(__file__).parent / "fixtures"
 
 SHORT, LONG, ASCII, UNDEFINED = 3, 4, 2, 7
-SIZE = {1: 1, 2: 1, 3: 2, 4: 4, 7: 1, 8: 2, 13: 4, 16: 8, 99: 1}
+SIZE = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 8: 2, 13: 4, 16: 8, 99: 1}
 PACK = {1: "B", 2: "B", 3: "H", 4: "I", 7: "B", 8: "h", 13: "I", 16: "Q", 99: "B"}
 
 
@@ -242,6 +242,18 @@ def main() -> None:
     struct.pack_into("<I", t.buf, t.next_at, 0xFFFFFFF0)
     t.chain([image(t, subifds=[sub])])
     t.write("edge_subifd_next_ignored.tif")
+    # Revision 9: pixel size and position.
+    rational = lambda n, d: struct.pack("<II", n, d)  # noqa: E731
+    aperio = (b"Aperio Image Library v1 \r\n64x64 (32x32) RAW|AppMag = 20| MPP = 0.5 |MPP = 9"
+              b"|Left = 1.5|Top = 2.25|Date = 01/01/26\0")
+    single("edge_aperio_position.tif", description=(ASCII, aperio))
+    single("edge_resolution_cm.tif", extra=[(282, 5, rational(20000, 1)), (283, 5, rational(40000, 2)), (296, SHORT, [3])])
+    single("edge_resolution_inch.tif", extra=[(282, 5, rational(50800, 1)), (283, 5, rational(50800, 1))])
+    single("edge_resolution_unitless.tif", extra=[(282, 5, rational(72, 1)), (283, 5, rational(72, 1)), (296, SHORT, [1])])
+    planes("edge_ome_plane_position.tif", ome(
+        tz + ' PhysicalSizeX="0.5" PhysicalSizeY="0.25"',
+        '<Plane TheZ="1" PositionX="9" PositionXUnit="mm" PositionY="9" PositionYUnit="mm"/>'
+        '<Plane TheZ="0" PositionX="1000" PositionXUnit="nm" PositionY="-2" PositionYUnit="µm"/>'), 2)
     (OUT / "edge_reject_no_ifds.tif").write_bytes(b"II*\0\0\0\0\0" + b"\0" * 64)
     for p in sorted(OUT.glob("edge_*.tif")):
         print(p.name, p.stat().st_size)

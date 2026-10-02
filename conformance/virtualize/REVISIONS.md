@@ -331,3 +331,40 @@ fall outside the array. Pixel size comes from XResolution/YResolution.
   Hamamatsu-2 are in the comparison corpus.
 - Neuroglancer: the fork renders the rebuilt streams to within 0.5 grey
   levels of tifffile, across a chunk boundary.
+
+## Revision 9: spatial metadata
+
+Revision 9 adds rules; it does not come from a spec round. Every format now
+carries the pixel size and position it declares, as OME-NGFF `scale` and
+`translation`.
+
+| format | pixel size | position |
+|---|---|---|
+| OME-TIFF | `PhysicalSize*` (as before) | the `Plane` at z = c = t = 0: `PositionX/Y`, converted to the axes' units; taken as the image's centre |
+| Aperio SVS | `MPP` from the ImageDescription's fields | `Left`/`Top` (mm): the scanned area's top-left |
+| other TIFF | XResolution/YResolution with ResolutionUnit inch or cm | none |
+| NDPI | resolution tags (as before) | X/YOffsetFromSlideCenter (nm): the image's centre |
+| ND2 | `dCalibration` (as before) | stage positions, now also for a single image (`dXPos`/`dYPos`) |
+
+§2.3 now defines length conversion and how a centre becomes a translation.
+A translation is the same at every level.
+
+**Tests.** New synthetic files check each rule against a hand calculation:
+- Aperio fields, including a duplicate `MPP`, where the first wins;
+- resolution tags in centimetres and inches, and an unusable unit;
+- an OME `Plane` position in nm on µm axes, where a non-zero-z `Plane`
+  comes first;
+- NDPI slide offsets;
+- an ND2 single image under a 180° camera.
+
+Both maintained implementations agree on all 120 synthetic files and on the
+343-input corpus.
+
+**Assumptions not verified against image content:**
+- an OME `Plane` position is the image's centre (as ND2 and NDPI stage
+  positions are);
+- Aperio `Left`/`Top` are the scanned area's top-left, in slide
+  coordinates with x right and y down.
+
+**Not covered:** z positions (ND2 `dZLow`/`dZPos`, NDPI
+ZOffsetFromSlideCenter, OME `PositionZ`).

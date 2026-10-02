@@ -117,6 +117,7 @@ class Ndpi:
             256: (4, [width]), 257: (4, [height]), 258: (3, [8, 8, 8]), 259: (3, [7]), 262: (3, [6]),
             273: (4, [so]), 277: (3, [3]), 279: (4, [len(strip)]), 282: (5, [(21910 // 4, 1)]),
             283: (5, [(21910 // 4, 1)]), 296: (3, [3]), 65420: (4, [1]), 65421: (11, [mag]),
+            65422: (9, [4876667]), 65423: (9, [-2340000]),  # the image's centre from the slide's, in nm
         }
         if starts is not None:
             tags[65426] = (4, starts)
@@ -127,7 +128,7 @@ class Ndpi:
             if typ == 5:
                 raw = b"".join(struct.pack("<II", *v) for v in values)
             else:
-                raw = struct.pack(f"<{len(values)}{ {3: 'H', 4: 'I', 11: 'f'}[typ] }", *values)
+                raw = struct.pack(f"<{len(values)}{ {3: 'H', 4: 'I', 9: 'i', 11: 'f'}[typ] }", *values)
             field = raw.ljust(4, b"\x00") if len(raw) <= 4 else struct.pack("<I", self.blob(raw))
             entries.append(struct.pack("<HHI", tag, typ, len(values)) + field)
         n = len(entries)
