@@ -47,7 +47,7 @@ const reject = (m: string): never => {
   throw new InvalidInputError(m);
 };
 
-type Built = {
+export type Built = {
   name: Buffer; // UTF-8
   nameStr: string; // latin1 byte string, for sorting
   method: number;
@@ -61,33 +61,54 @@ type Built = {
   lho: number;
 };
 
-function localHeader(b: Built): Buffer {
+/** Whether an entry needs ZIP64 sizes (§3.1 rule 7). */
+const isLarge = (b: Built) => b.usize >= U32_ALL || b.csize >= U32_ALL;
+
+/** The local header; a large entry's sizes go in a 20-byte ZIP64 extra field (§3.1 rules 4, 7). */
+export function localHeader(b: Built): Buffer {
+  const large = isLarge(b);
   const h = Buffer.alloc(30);
   h.writeUInt32LE(0x04034b50, 0);
-  h.writeUInt16LE(20, 4);
+  h.writeUInt16LE(large ? 45 : 20, 4);
   h.writeUInt16LE(0x0800, 6);
   h.writeUInt16LE(b.method, 8);
   h.writeUInt16LE(0, 10); // time 00:00
   h.writeUInt16LE(0x21, 12); // 1980-01-01
   h.writeUInt32LE(b.crc, 14);
-  h.writeUInt32LE(b.csize, 18);
-  h.writeUInt32LE(b.usize, 22);
+  h.writeUInt32LE(large ? U32_ALL : b.csize, 18);
+  h.writeUInt32LE(large ? U32_ALL : b.usize, 22);
   h.writeUInt16LE(b.name.length, 26);
-  h.writeUInt16LE(0, 28);
-  return Buffer.concat([h, b.name]);
+  if (!large) {
+    h.writeUInt16LE(0, 28);
+    return Buffer.concat([h, b.name]);
+  }
+  const z = Buffer.alloc(20);
+  z.writeUInt16LE(0x0001, 0);
+  z.writeUInt16LE(16, 2);
+  z.writeBigUInt64LE(BigInt(b.usize), 4);
+  z.writeBigUInt64LE(BigInt(b.csize), 12);
+  h.writeUInt16LE(z.length, 28);
+  return Buffer.concat([h, b.name, z]);
 }
 
-function cdRecord(b: Built): Buffer {
+/** The central directory record; its ZIP64 block holds the sizes of a large
+ * entry, then an offset that does not fit, and nothing else (§3.2). */
+export function cdRecord(b: Built): Buffer {
+  const large = isLarge(b);
+  const bigOff = b.lho >= U32_ALL;
+  const vals: bigint[] = [];
+  if (large) vals.push(BigInt(b.usize), BigInt(b.csize));
+  if (bigOff) vals.push(BigInt(b.lho));
+  const zip64 = vals.length > 0;
   const extras: Buffer[] = [];
-  if (b.refBlock) extras.push(b.refBlock);
-  const zip64 = b.lho >= U32_ALL;
   if (zip64) {
-    const z = Buffer.alloc(12);
+    const z = Buffer.alloc(4 + 8 * vals.length);
     z.writeUInt16LE(0x0001, 0);
-    z.writeUInt16LE(8, 2);
-    z.writeBigUInt64LE(BigInt(b.lho), 4);
+    z.writeUInt16LE(8 * vals.length, 2);
+    vals.forEach((v, i) => z.writeBigUInt64LE(v, 4 + 8 * i));
     extras.push(z);
   }
+  if (b.refBlock) extras.push(b.refBlock);
   const extra = Buffer.concat(extras);
   const h = Buffer.alloc(46);
   h.writeUInt32LE(0x02014b50, 0);
@@ -98,22 +119,22 @@ function cdRecord(b: Built): Buffer {
   h.writeUInt16LE(0, 12);
   h.writeUInt16LE(0x21, 14);
   h.writeUInt32LE(b.crc, 16);
-  h.writeUInt32LE(b.csize, 20);
-  h.writeUInt32LE(b.usize, 24);
+  h.writeUInt32LE(large ? U32_ALL : b.csize, 20);
+  h.writeUInt32LE(large ? U32_ALL : b.usize, 24);
   h.writeUInt16LE(b.name.length, 28);
   h.writeUInt16LE(extra.length, 30);
   h.writeUInt16LE(0, 32);
   h.writeUInt16LE(0, 34);
   h.writeUInt16LE(0, 36);
   h.writeUInt32LE(0, 38);
-  h.writeUInt32LE(zip64 ? U32_ALL : b.lho, 42);
+  h.writeUInt32LE(bigOff ? U32_ALL : b.lho, 42);
   return Buffer.concat([h, b.name, extra]);
 }
 
 function makeBytes(name: string, data: Uint8Array, compress: boolean, pinned: boolean): Built {
   const nameBuf = Buffer.from(name, "utf8");
+  if (compress && data.length >= U32_ALL) throw new InvalidInputError(`entry ${JSON.stringify(name)} of 4 GiB or more must be STORED`);
   const body = compress ? zlib.deflateRawSync(data) : data;
-  if (data.length >= U32_ALL || body.length >= U32_ALL) reject(`entry ${JSON.stringify(name)}: too large (4 GiB or more)`);
   return {
     name: nameBuf,
     nameStr: nameBuf.toString("latin1"),
@@ -239,7 +260,7 @@ export function buildArchive(a: WArchive): Buffer[] {
     out.push(h, Buffer.from(b.body.buffer, b.body.byteOffset, b.body.byteLength));
     off += h.length + b.body.length;
   };
-  const bodyOffset = (b: Built) => b.lho + 30 + b.name.length;
+  const bodyOffset = (b: Built) => b.lho + 30 + b.name.length + (isLarge(b) ? 20 : 0);
 
   for (const b of built) if (!b.pinned) emit(b);
   const sources = makeBytes(SOURCES_KEY, encodeSourceTable(srcMsgs), true, false);

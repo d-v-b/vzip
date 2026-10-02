@@ -1,4 +1,5 @@
 import io
+import struct
 import zipfile
 
 import pytest
@@ -7,7 +8,7 @@ from zarr.abc.store import OffsetByteRequest, RangeByteRequest, SuffixByteReques
 from zarr.core.buffer import default_buffer_prototype
 from zarr.core.sync import sync
 
-from vzip.archive import VZipWriter
+from vzip.archive import VZipWriter, parse_central_directory
 from vzip.pb import Range
 from vzip.store import VZipStore
 
@@ -96,6 +97,62 @@ def test_zip64_many_entries_paged(tmp_path):
 
 async def _list(s):
     return [k async for k in s.list()]
+
+
+def test_add_file(tmp_path):
+    files = {"empty": b"", "small": b"abc", "blocks": bytes(range(256)) * 3}
+    for name, data in files.items():
+        (tmp_path / name).write_bytes(data)
+    arc = tmp_path / "f.vzip"
+    with open(arc, "wb") as f, VZipWriter(f) as w:
+        for name in files:
+            w.add_file(f"k/{name}", tmp_path / name, block=100)
+    with zipfile.ZipFile(arc) as z:
+        assert z.testzip() is None
+        assert {n: z.read(f"k/{n}") for n in files} == files
+    s = VZipStore(str(arc))
+    assert {n: _get(s, f"k/{n}") for n in files} == files
+
+
+def test_add_file_reserved_key_rejected(tmp_path):
+    (tmp_path / "a").write_bytes(b"x")
+    with pytest.raises(ValueError, match="reserved"):
+        VZipWriter(io.BytesIO()).add_file("__vz__/x", tmp_path / "a")
+
+
+def test_add_file_duplicate_key_rejected(tmp_path):
+    (tmp_path / "a").write_bytes(b"x")
+    w = VZipWriter(io.BytesIO())
+    w.add_bytes("k", b"1")
+    with pytest.raises(ValueError, match="duplicate"):
+        w.add_file("k", tmp_path / "a")
+
+
+def test_large_entry_headers():
+    # spec §3.1 rules 4 and 7, §3.2: sizes of 4 GiB or more go in ZIP64 fields
+    # of both headers; the record's block holds the sizes, then the offset
+    big, off = 0x100000000 + 7, 0x200000000
+    out = io.BytesIO()
+    w = VZipWriter(out)
+    w._local_header(b"k", 0, 0x1234, big, big)
+    lfh = out.getvalue()
+    assert struct.unpack_from("<II", lfh, 18) == (0xFFFFFFFF, 0xFFFFFFFF)
+    assert struct.unpack_from("<HH", lfh, 26) == (1, 20)
+    assert lfh[31:] == struct.pack("<HHQQ", 1, 16, big, big)
+    for size, offset, block in [
+        (big, 0, struct.pack("<QQ", big, big)),
+        (big, off, struct.pack("<QQQ", big, big, off)),
+        (0xFFFFFFFF, 0, struct.pack("<QQ", 0xFFFFFFFF, 0xFFFFFFFF)),
+        (5, off, struct.pack("<Q", off)),
+        (5, 0, b""),
+    ]:
+        rec = VZipWriter._cd_record("k", offset, size, size, 0, 0x1234, b"")
+        assert rec[47:] == (struct.pack("<HH", 1, len(block)) + block if block else b"")
+        e = parse_central_directory(rec, trust_offsets=True)["k"]
+        assert e.error is None
+        large = size >= 0xFFFFFFFF
+        assert (e.size, e.csize) == (size, size)
+        assert e.data_offset == offset + 31 + (20 if large else 0)
 
 
 def test_unregistered_source_rejected():

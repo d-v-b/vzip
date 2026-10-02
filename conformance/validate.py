@@ -88,6 +88,7 @@ def parse(buf: bytes, problems: list) -> dict:
             problems.append(f"non-UTF-8 name {raw_name!r}")
             name = raw_name.decode("utf-8", "replace")
         blocks = _extra_blocks(extra, problems, name)
+        sizes32 = (size, csize)
         for hid, data in blocks:
             if hid == ZIP64_ID:
                 any_zip64_extra = True
@@ -99,7 +100,7 @@ def parse(buf: bytes, problems: list) -> dict:
                 if off == U32:
                     off = vals.pop(0)
         recs.append({"name": name, "flags": flags, "method": method, "crc": crc, "csize": csize,
-                     "size": size, "off": off, "blocks": blocks, "rec_off": pos - cd_off,
+                     "size": size, "off": off, "sizes32": sizes32, "blocks": blocks, "rec_off": pos - cd_off,
                      "rec_len": 46 + nlen + xlen + cmlen, "comment_len": cmlen})
         pos += 46 + nlen + xlen + cmlen
     if pos != cd_off + cd_size:
@@ -140,8 +141,24 @@ def validate(path: Path, desc: dict) -> list[str]:
         if sig != 0x04034B50:
             problems.append(f"{nm}: bad local header")
             continue
-        if lxlen != 0:
-            problems.append(f"{nm}: local extra field length {lxlen} (must be 0)")
+        # spec §3.1 rules 4 and 7: only a large entry has a local extra field, and
+        # it is exactly the 20-byte ZIP64 one; both headers' size fields are all ones
+        large = r["size"] >= U32 or r["csize"] >= U32
+        if large:
+            if r["sizes32"] != (U32, U32):
+                problems.append(f"{nm}: large entry whose CD size fields are not both all ones")
+            want = struct.pack("<HHQQ", ZIP64_ID, 16, r["size"], r["csize"])
+            if (lxlen, bytes(buf[o + 30 + lnlen : o + 50 + lnlen])) != (20, want):
+                problems.append(f"{nm}: large entry without the 20-byte ZIP64 local extra field")
+            if (lsize, lcsize) != (U32, U32):
+                problems.append(f"{nm}: large entry whose local size fields are not all ones")
+            if any(h in (0x7A76, 0x7A77) for h, _ in r["blocks"]):
+                problems.append(f"{nm}: reference entry is large")
+        else:
+            if lxlen != 0:
+                problems.append(f"{nm}: local extra field length {lxlen} (must be 0)")
+            if (lsize, lcsize) != (r["size"], r["csize"]):
+                problems.append(f"{nm}: local sizes differ from central directory")
         if buf[o + 30 : o + 30 + lnlen] != nm.encode():
             problems.append(f"{nm}: local header name differs")
         if not lflags & 0x0800:
@@ -159,8 +176,6 @@ def validate(path: Path, desc: dict) -> list[str]:
             problems.append(f"{nm}: size {len(body)} != declared {r['size']}")
         if zlib.crc32(body) != r["crc"] or lcrc != r["crc"]:
             problems.append(f"{nm}: CRC-32 mismatch")
-        if lsize not in (r["size"], U32) or lcsize not in (r["csize"], U32):
-            problems.append(f"{nm}: local sizes differ from central directory")
         bodies[nm] = body
 
     # ---- comment and source table

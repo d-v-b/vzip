@@ -460,6 +460,10 @@ def test_reader_errors():
         {"name": "z64", "body": b"", "lho": 0xFFFFFFFF},
         {"name": "z64twice", "body": b"", "extra": struct.pack("<HHQ", 1, 8, 0) * 2},
         {"name": "sizeff", "body": b"", "usize": 0xFFFFFFFF},
+        {"name": "largeshort", "body": b"", "usize": 0xFFFFFFFF, "csize": 0xFFFFFFFF,
+         "extra": struct.pack("<HHQ", 1, 8, 1 << 32)},
+        {"name": "largeref", "body": b"", "usize": 0xFFFFFFFF, "csize": 0xFFFFFFFF,
+         "extra": ref_extra(pb_range(data=b"a")) + struct.pack("<HHQQ", 1, 16, 1 << 32, 1 << 32)},
         {"name": "trail", "body": raw_deflate(b"hi") + b"\x00", "method": 8, "usize": 2},
         {"name": "wrongsize", "body": raw_deflate(b"hi"), "method": 8, "usize": 3},
         {"name": "storeddiff", "body": b"hi", "usize": 3},
@@ -493,7 +497,7 @@ def test_reader_errors():
         q.append(d)
         expect.append((op + " " + key + (" " + json.dumps(kw) if kw else ""), cls, extra))
 
-    for k in ["m9", "enc", "two", "badextra", "ref8", "z64", "z64twice", "sizeff"]:
+    for k in ["m9", "enc", "two", "badextra", "ref8", "z64", "z64twice", "sizeff", "largeshort", "largeref"]:
         add("classify", k, "entry")
         add("get", k, "entry")
         add("get_raw", k, "entry")

@@ -2,8 +2,9 @@
 
 Layout written by `VZipWriter`:
 
-    [local header + body]*      one per entry, STORED unless compress=True, no local
-                                extra field
+    [local header + body]*      one per entry, STORED unless compress=True; no local
+                                extra field, except a 20-byte ZIP64 field on an entry
+                                of 4 GiB or more (spec §3.1 rules 4 and 7)
     [SourceTable]               reserved entry "__vz__/sources" (deflated)
     [late entries]              entries added with late=True (e.g. zarr.json), so a
                                 reader's open request covers them
@@ -17,8 +18,9 @@ Layout written by `VZipWriter`:
                                 of the (deflated) SourceTable body [+ the same for
                                 the CdIndex]
 
-The comment promises that every local header has an empty extra field, so a
-reader can compute the offset of any body from the central directory alone,
+The comment promises that every local header has an empty extra field (or, for
+an entry of 4 GiB or more, exactly the 20-byte ZIP64 one), so a reader can
+compute the offset of any body from the central directory alone,
 and lets a reader fetch the central directory and URL table in one request.
 Archives without the comment are still readable; the reader then reads each
 local header before trusting the body offset.
@@ -155,30 +157,63 @@ class VZipWriter:
         self._f.write(b)
         self._pos += len(b)
 
-    def _entry(self, name: str, body: bytes, extra: bytes = b"", compress: bool = False) -> None:
+    def _check_new_key(self, name: str) -> None:
         if not name:
             raise ValueError("empty key")
         if name in self._names:
             raise ValueError(f"duplicate key {name!r}")
-        if len(body) >= _U32:
-            raise ValueError("entries of 0xFFFFFFFF bytes or more cannot be stored (spec §3.1)")
+
+    def _local_header(self, bname: bytes, method: int, crc: int, size: int, csize: int) -> None:
+        """Write a local file header; a large entry's sizes go in a 20-byte
+        ZIP64 extra field (spec §3.1 rules 4 and 7)."""
+        if _is_large(size, csize):
+            extra = struct.pack("<HHQQ", ZIP64_EXTRA_ID, 16, size, csize)
+            self._write(_LFH.pack(_SIG_LFH, 45, _FLAG_UTF8, method, 0, _DOS_DATE, crc, _U32, _U32,
+                                  len(bname), len(extra)))
+            self._write(bname + extra)
+        else:
+            self._write(_LFH.pack(_SIG_LFH, 20, _FLAG_UTF8, method, 0, _DOS_DATE, crc, csize, size,
+                                  len(bname), 0))
+            self._write(bname)
+
+    def _entry(self, name: str, body: bytes, extra: bytes = b"", compress: bool = False) -> None:
+        self._check_new_key(name)
         self._names.add(name)
         bname = name.encode()
         crc = zlib.crc32(body)
         method, stored = 0, body
         if compress:
+            if len(body) >= _U32:
+                raise ValueError("entries of 4 GiB or more must be STORED (spec §3.1 rule 7)")
             c = zlib.compressobj(9, zlib.DEFLATED, -15)
             method, stored = 8, c.compress(body) + c.flush()
-            if len(stored) >= _U32:
-                raise ValueError("compressed size of 0xFFFFFFFF bytes or more (spec §3.1)")
         off = self._pos
-        self._write(
-            _LFH.pack(_SIG_LFH, 20, _FLAG_UTF8, method, 0, _DOS_DATE, crc, len(stored), len(body),
-                      len(bname), 0)
-        )
-        self._write(bname)
+        self._local_header(bname, method, crc, len(body), len(stored))
         self._write(stored)
         self._cd.append((name, off, len(body), len(stored), method, crc, extra))
+
+    def add_file(self, key: str, path, *, block: int = 1 << 24) -> None:
+        """Add the bytes of the file at `path` as a STORED entry, streaming it
+        (twice: once for its CRC-32, once to copy it), so entries of any size,
+        such as Zarr shards of 4 GiB or more, never sit in memory."""
+        if key.startswith(RESERVED_PREFIX):
+            raise ValueError(f"{RESERVED_PREFIX!r} is reserved")
+        self._check_new_key(key)
+        crc, size = 0, 0
+        with open(path, "rb") as src:
+            while chunk := src.read(block):
+                crc, size = zlib.crc32(chunk, crc), size + len(chunk)
+        self._names.add(key)
+        off = self._pos
+        self._local_header(key.encode(), 0, crc, size, size)
+        with open(path, "rb") as src:
+            copied = 0
+            while chunk := src.read(block):
+                self._write(chunk)
+                copied += len(chunk)
+        if copied != size:
+            raise ValueError(f"{path} changed while it was being added")
+        self._cd.append((key, off, size, size, 0, crc, b""))
 
     def _entry_raw(self, name: str, body: bytes, stored: bytes) -> None:
         """Test hook: a DEFLATE entry whose stored bytes are given verbatim."""
@@ -305,20 +340,26 @@ class VZipWriter:
     @staticmethod
     def _cd_record(name, off, size, csize, method, crc, extra) -> bytes:
         bname = name.encode()
+        # spec §3.2: the ZIP64 block holds the sizes of a large entry, then an
+        # offset that does not fit, in that order, and nothing else.
+        z64, size32, csize32, off32 = b"", size, csize, off
+        if _is_large(size, csize):
+            z64 += struct.pack("<QQ", size, csize)
+            size32 = csize32 = _U32
         if off >= _U32:
-            extra = struct.pack("<HHQ", ZIP64_EXTRA_ID, 8, off) + extra
-            off32, need = _U32, 45
-        else:
-            off32, need = off, 20
+            z64 += struct.pack("<Q", off)
+            off32 = _U32
+        if z64:
+            extra = struct.pack("<HH", ZIP64_EXTRA_ID, len(z64)) + z64 + extra
         hdr = _CDH.pack(
-            _SIG_CDH, _MADE_BY, need, _FLAG_UTF8, method, 0, _DOS_DATE, crc, csize, size,
-            len(bname), len(extra), 0, 0, 0, _EXT_ATTR, off32,
+            _SIG_CDH, _MADE_BY, 45 if z64 else 20, _FLAG_UTF8, method, 0, _DOS_DATE, crc, csize32,
+            size32, len(bname), len(extra), 0, 0, 0, _EXT_ATTR, off32,
         )
         return hdr + bname + extra
 
     def _data_offset(self, i: int) -> tuple[int, int]:
-        name, off, _, csize, *_ = self._cd[i]
-        return off + _LFH.size + len(name.encode()), csize
+        name, off, size, csize, *_ = self._cd[i]
+        return off + _LFH.size + len(name.encode()) + (20 if _is_large(size, csize) else 0), csize
 
     def close(self) -> None:
         sources = self._source_list
@@ -454,6 +495,11 @@ def parse_tail(tail: bytes, file_size: int) -> Directory:
     return Directory(cd_off, cd_size, n, True, soff, ssize, ioff, isize)
 
 
+def _is_large(size: int, csize: int) -> bool:
+    """Whether an entry needs ZIP64 sizes (spec §3.1 rule 7)."""
+    return size >= _U32 or csize >= _U32
+
+
 def _iter_extra(extra: bytes):
     pos = 0
     while pos < len(extra):
@@ -509,16 +555,23 @@ def parse_central_directory(cd: bytes, *, trust_offsets: bool) -> dict[str, Entr
                     z64.append(data)
         except (ValueError, IndexError, struct.error) as e:
             error = f"unparseable extra field: {e}"
-        # spec §3.2: sizes never use ZIP64; only the offset may, in one 8-byte block
+        # spec §3.2: a large entry's sizes, then an offset of 4 GiB or more,
+        # come from the one ZIP64 block, in that order
+        large = size == _U32 and csize == _U32
+        need = (16 if large else 0) + (8 if off == _U32 else 0)
         if error is None and len(z64) > 1:
             error = "more than one ZIP64 extra block"
-        elif error is None and _U32 in (size, csize):
-            error = "a size field is 0xFFFFFFFF"
-        elif error is None and off == _U32:
-            if not z64 or len(z64[0]) < 8:
+        elif error is None and (size == _U32) != (csize == _U32):
+            error = "exactly one size field is 0xFFFFFFFF"
+        elif error is None and need:
+            if not z64 or len(z64[0]) < need:
                 error = "ZIP64 extra block missing or too short"
             else:
-                (off,) = struct.unpack_from("<Q", z64[0])
+                block = z64[0]
+                if large:
+                    size, csize = struct.unpack_from("<QQ", block)
+                if off == _U32:
+                    (off,) = struct.unpack_from("<Q", block, 16 if large else 0)
         if error is None:
             if ref_blocks > 1:
                 error = "more than one reference extra field block"
@@ -526,9 +579,13 @@ def parse_central_directory(cd: bytes, *, trust_offsets: bool) -> dict[str, Entr
                 error = f"unsupported compression method {method}"
             elif flags & 1:
                 error = "encrypted entry"
+            elif large and method != 0:
+                error = "large entry is not STORED"
             elif payload is not None and method != 0:
                 error = "reference entry is not STORED"
-        data_offset = off + _LFH.size + nlen if trust_offsets else None
+            elif payload is not None and large:
+                error = "reference entry is large"
+        data_offset = off + _LFH.size + nlen + (20 if large else 0) if trust_offsets else None
         entries[name] = Entry(name, off, size, csize, method, payload, data_offset, error)
     return entries
 

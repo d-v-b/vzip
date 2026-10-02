@@ -686,16 +686,63 @@ the end records ("option A") is adopted, for these reasons:
 **What did not change:**
 
 - **Central directory records.** A record still carries a ZIP64 block only
-  when its local header offset is 0xFFFFFFFF or more. Putting the block on
+  when a value does not fit its field (its local header offset, or, since
+  large entries were added below, its sizes). Putting the block on
   every record ("option B") would add 12 bytes to each record, about 16% of
   the central directory of a per-chunk archive, and remove no reader rule.
-- **The 4 GiB limit on an entry's size** (§3.1 rule 7). Lifting it needs a
-  ZIP64 extra field in local headers ("option C"), which costs 48 bytes per
-  entry. Most entries are references, whose bodies are at most 65,519 bytes.
-  A later version can lift the limit with a rule that depends only on the
-  central directory record, and every archive valid today would stay valid
-  under it.
 - **The magic** stays `vzip/0`.
+
+**Large entries (added to this revision after review of
+[PR #5](https://github.com/d-v-b/vzip/pull/5)).** Revision 8 limited every
+entry to less than 4 GiB, so that sizes never needed ZIP64 and no local header
+had an extra field. A Zarr shard can be 4 GiB or more, and a vzip archive
+holding shards as bytes entries could not store it. The limit is lifted with
+the standard ZIP64 layout, applied only to the entries that need it:
+
+| § | r8 | r9 |
+|---|---|---|
+| 3.1 rule 4 | every local header has an empty extra field | the same, except that a large entry's has exactly the 20-byte ZIP64 field (sizes only); its body offset is 20 bytes further on |
+| 3.1 rule 7 | sizes are less than 0xFFFFFFFF | an entry of 0xFFFFFFFF bytes or more (compressed or not) is **large**: both size fields are all ones in both headers, and the sizes are in the ZIP64 field. A large entry MUST be STORED (method 8 is an entry error), and the format entries are never large |
+| 3.2 | a record's ZIP64 block holds only the offset; a size field of 0xFFFFFFFF is an entry error | the block holds the sizes of a large entry, then an offset that needs it, in APPNOTE order; exactly one all-ones size field, a block too short for what the record needs, or two blocks are entry errors |
+| 4.3 | — | a large reference entry is an entry error (payloads are at most 65,519 bytes, so it is never needed) |
+| 9.1 | writers reject bytes entries of 0xFFFFFFFF bytes or more | removed |
+
+Why this layout and not the alternatives considered when the end records
+were changed:
+
+- **The body offset still comes from the central directory record alone.**
+  Whether an entry is large is decided by its two size fields, and the local
+  extra field's length is then fixed (20 bytes), so a reader never reads a
+  local header to find a body.
+- **It costs nothing for entries under 4 GiB.** A ZIP64 field in every local
+  header ("option C" in the issue) would cost 20 bytes per entry, which in a
+  per-chunk archive is mostly reference entries that can never be large.
+- **Large entries are STORED.** A DEFLATE body is inflated in full even for
+  a small window (§8.4), which for an entry of 4 GiB or more defeats range
+  reads; [issue 15](https://github.com/d-v-b/vzip/issues/15) points out this
+  is the cost SOZip exists to remove. Shards are compressed inside, and OME-Zarr
+  RFC 9 asks for ZIP-level compression to be off, so nothing is lost.
+- **It is what ZIP64 tools expect.** APPNOTE requires the local ZIP64 field
+  when the local size fields are all ones; tools that read local headers (and
+  `unzip -t`, which checks them) find the sizes where they look for them.
+
+This part of the revision is **compatible**: every revision-8 archive is
+still valid. A revision-8 reader gives an entry error for a large entry and
+reads the rest of the archive normally.
+
+The reference writer gains `add_file`, which streams a file into a STORED
+entry (one pass for the CRC-32, one to copy), so a shard of any size is never
+held in memory.
+
+**Checked by hand on the large-entry crafted archive** (8 GiB, sparse):
+Python's `zipfile` reads every size, offset and body; `bsdtar -tv` lists
+every size. macOS's UnZip 6.00 reads the large entries but reports "extra
+field (type: 0x0001) corrupt" for the entry whose central directory record
+follows the large ones and holds only an offset in its ZIP64 block, and
+fails to find its local header; the bytes are as APPNOTE describes, and the
+same layout would come from any ZIP64 writer (the entry needs the offset
+block because it lies past 4 GiB). UnZip appears to carry state over from
+the previous entry when it decodes a ZIP64 block.
 
 **Compatibility:**
 
@@ -728,6 +775,15 @@ A tool without ZIP64 support cannot read a vzip archive any more.
   revision-8 archive, unpaged and paged; a locator that does not immediately
   precede the end record; a zip64 record with a wrong signature, with a size
   field of 45, or outside the file; a central directory outside the file.
+- **Large entries:** the validator requires the 20-byte local ZIP64 field
+  and all-ones size fields in both headers of a large entry, and an empty
+  local extra field and equal local sizes on every other entry. New crafted
+  cases: `large_entries` (an entry of exactly 0xFFFFFFFF bytes, one of
+  2^32 + 3, and entries after them past 8 GiB, read by range from sparse
+  files), and entry errors for a ZIP64 block too short for the sizes, one
+  holding the sizes but not the offset, no block at all, a large
+  reference entry, and a large entry with method 8. `size_field_all_ones` now tests "exactly one size field
+  is all ones".
 - **New crafted cases that must read normally:** end-record fields of zero,
   of garbage (unpaged and paged), and of the actual values; wrong entry
   counts in the zip64 record; a last file name full of end-record
@@ -744,7 +800,8 @@ not been tested the way revisions 1–7 were.
 **Result:** the reference and all three implementations pass everything
 revision 9 changed:
 
-- 5140/5140 read queries, over 73 crafted archives (61 before);
+- 5169/5169 read queries, over 79 crafted archives (61 before; 6 of the 18
+  new ones test large entries);
 - 11/11 write cases, each valid under the new validator;
 - 19892/19892 cross-reads.
 
