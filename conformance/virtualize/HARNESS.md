@@ -72,9 +72,9 @@ compared as binary64, so `1` equals `1.0`), or equal bytes.
 ## Test inputs
 
 The synthetic files in `web/test/fixtures/`, one directory per format
-(`tiff/`, `ndpi/`, `nd2/`), are good first inputs. Their names say what they
-exercise, and `unsupported_*`, `edge_reject_*` and `nd2_reject_*` files must
-be rejected. To serve them the way the harness
+(`tiff/`, `ndpi/`, `nd2/`, `dicom/`, `nifti/`, `ims/`), are good first
+inputs. Their names say what they exercise, and `unsupported_*`,
+`edge_reject_*` and `<profile>_reject_*` files must be rejected. To serve them the way the harness
 does, run:
 
 ```

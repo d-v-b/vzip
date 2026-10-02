@@ -382,3 +382,31 @@ The implementations are organized the same way: `src/vzip/virtualize/` and
 `web/src/virtualize/` have one directory per profile (`tiff/`, `ndpi/`,
 `nd2/`) next to what they share (`common`), and the synthetic inputs are in
 `web/test/fixtures/<profile>/`, written by `web/test/<profile>/`.
+
+## Revision 11: DICOM, NIfTI and IMS
+
+Revision 11 adds three profiles; they do not come from a spec round. §1.2's
+table now chooses among six profiles from the file's first 552 bytes. It
+tests for `DICM` at byte 128 first, so DICOM files whose preamble holds a TIFF
+header (as four of pydicom's sample files do) are read as DICOM. It then
+tests the full four-byte TIFF magic, which the implementations had shortened
+to the byte-order mark. §2.2 lets a profile add one attribute member of its
+own, beside `ome`, for what OME-NGFF cannot express. Conformance moved from
+§6 to §9.
+
+| profile | inputs | rejected |
+|---|---|---|
+| DICOM (§6) | Part 10 files: native pixel data (implicit/explicit VR, either byte order), JPEG Baseline and JPEG 2000 frames over one or more fragments; multi-frame along `z`; TILED_FULL whole-slide levels | other transfer syntaxes, palette colour, native YBR, TILED_SPARSE, several focal planes or optical paths |
+| NIfTI (§7) | NIfTI-1 and NIfTI-2 single files, either byte order, up to 5 dimensions, integer, float and RGB(A) voxels; slices split into row blocks above 128 KiB; intensity scaling recorded as a `nifti` attribute | gzip, header-and-image pairs, complex types, dimensions 6–7 (CIFTI) |
+| IMS (§8) | Imaris 5.5–10 files: a hand-read HDF5 subset (superblock 0–3, object headers v1/v2, symbol-table, compact and dense groups and attributes, v1 B-tree, single-chunk and fixed-array chunk indexes, absolute soft links), uncompressed or deflate chunks | LZ4, shuffle and other filters, contiguous layouts, other chunk indexes, shared messages |
+
+**Tests.** Each profile has synthetic files in `web/test/fixtures/<profile>/`
+(42 DICOM, 64 NIfTI, 27 IMS, about 580 KB in all), checked pixel by pixel
+against pydicom, nibabel and h5py. Both maintained implementations agree on
+all 254 synthetic files of the six profiles, on mutants of the new ones
+(420 DICOM, 1920 NIfTI, 1350 IMS) and on public files: 17 DICOM (pydicom
+samples and NCI Imaging Data Commons whole-slide levels), 12 NIfTI and 21
+IMS.
+
+**Not yet done.** No independent implementation round has read the new
+profiles.

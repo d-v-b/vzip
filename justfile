@@ -27,8 +27,8 @@ conformance out="conformance/results/latest": impls::build
     uv run python conformance/run.py --out {{out}} \
         --impl rust=impls/rust/vzip --impl typescript=impls/typescript/vzip --impl python=impls/python/vzip
 
-# Regenerate the synthetic TIFF and ND2 files in web/test/fixtures/<format>
-fixtures: fixtures-tiff fixtures-nd2
+# Regenerate the synthetic files in web/test/fixtures/<format> (all but NDPI, which needs the network)
+fixtures: fixtures-tiff fixtures-nd2 fixtures-dicom fixtures-nifti fixtures-ims
 
 # Regenerate the synthetic TIFFs (including JPEG-tiled, SVS-like ones)
 fixtures-tiff:
@@ -44,8 +44,20 @@ fixtures-ndpi:
 fixtures-nd2:
     uv run python web/test/nd2/write_fixtures.py
 
+# Regenerate the synthetic DICOM files
+fixtures-dicom:
+    uv run python web/test/dicom/write_fixtures.py
+
+# Regenerate the synthetic NIfTI files
+fixtures-nifti:
+    uv run python web/test/nifti/write_fixtures.py
+
+# Regenerate the synthetic Imaris IMS files
+fixtures-ims:
+    uv run python web/test/ims/write_fixtures.py
+
 # Check the browser virtualizer's pixels for every format
-verify: verify-tiff verify-ndpi verify-nd2
+verify: verify-tiff verify-ndpi verify-nd2 verify-dicom verify-nifti verify-ims
 
 # Check the browser virtualizer's TIFF pixels against tifffile
 verify-tiff:
@@ -59,6 +71,18 @@ verify-ndpi:
 verify-nd2:
     uv run python web/test/nd2/verify.py
 
+# Check the browser virtualizer's DICOM pixels against pydicom
+verify-dicom:
+    uv run python web/test/dicom/verify.py
+
+# Check the browser virtualizer's NIfTI pixels against nibabel
+verify-nifti:
+    uv run python web/test/nifti/verify.py
+
+# Check the browser virtualizer's IMS pixels against h5py
+verify-ims:
+    uv run python web/test/ims/verify.py
+
 # VIRTUALIZE.md: compare implementations on the corpus (network; e.g. `just compare --quick`)
 compare *args:
     uv run python conformance/virtualize/compare.py conformance/results/virtualize {{args}}
@@ -70,7 +94,7 @@ compare-mutants count="10" seed="0" *args:
     uv run python conformance/virtualize/compare.py conformance/results/mutants-out \
         --fixtures conformance/results/mutants {{args}}
 
-# Virtualize a TIFF or ND2 file (a URL or a path) into a vzip archive
+# Virtualize an image file (TIFF, NDPI, ND2, DICOM, NIfTI or IMS; a URL or a path) into a vzip archive
 virtualize src out:
     uv run python -m vzip.virtualize {{quote(src)}} {{quote(out)}}
 

@@ -176,7 +176,10 @@ always present; the profile says when the others are.
 
 An image is a group whose `zarr.json` is
 `{"zarr_format": 3, "node_type": "group", "attributes": {"ome": M}}`, where `M`
-is the OME-NGFF 0.5 object:
+is the OME-NGFF 0.5 object below. A profile MAY add one more member to
+`attributes`, named after the profile, for what the source declares about
+its pixels that OME-NGFF cannot express (the NIfTI profile's intensity
+scaling, §7); no other member is allowed:
 
 ```json
 {
@@ -252,8 +255,8 @@ This section is informative. There are two maintained implementations:
 - the browser one, `web/src/virtualize/`, run under Node by
   `web/conformance/virtualize.ts`.
 
-Both are organized by profile: `tiff/`, `ndpi/` and `nd2/`, next to the
-parts they share (`common`).
+Both are organized by profile: `tiff/`, `ndpi/`, `nd2/`, `dicom/`, `nifti/`
+and `ims/`, next to the parts they share (`common`).
 
 Implementations written from this document alone, round by round, are in
 `impls/virtualize/`; `conformance/virtualize/REVISIONS.md` records what each
@@ -262,13 +265,18 @@ round found and how this document changed.
 `conformance/virtualize/compare.py` runs implementations on a corpus and
 compares their outputs by §1.1 (`conformance/virtualize/HARNESS.md`
 describes the command an implementation provides). The corpus has:
-- the synthetic files in `web/test/fixtures/tiff/`, `ndpi/` and `nd2/`,
-  including inputs each profile rejects;
+- the synthetic files in `web/test/fixtures/<profile>/`, including inputs
+  each profile rejects;
 - the 205 OME-TIFFs of IDR idr0096;
-- public TIFF, SVS and NDPI files (`conformance/virtualize/corpus_tiff.txt`)
-  and ND2 files (`conformance/virtualize/corpus_nd2.txt`).
+- public files of every profile, listed in `conformance/virtualize/corpus_*.txt`:
+  TIFF, SVS and NDPI (`corpus_tiff.txt`), ND2, DICOM (including
+  whole-slide levels from the NCI Imaging Data Commons), NIfTI and IMS.
 
-Pixel correctness is checked separately, against independent readers:
-`web/test/tiff/verify.py` and `web/test/ndpi/verify.py` against tifffile,
-`web/test/nd2/verify.py` against the synthetic files' known pixels, and `experiments/verify_nd2_vzip.py`
-against the `nd2` package on public files.
+Pixel correctness is checked separately, against independent readers, by
+`web/test/<profile>/verify.py`: TIFF and NDPI against tifffile, ND2 against
+the synthetic files' known pixels (and `experiments/verify_nd2_vzip.py`
+against the `nd2` package on public files), DICOM against pydicom, NIfTI
+against nibabel, and IMS against h5py.
+
+The DICOM, NIfTI and IMS profiles (revision 11) have not yet been through an
+independent implementation round.
