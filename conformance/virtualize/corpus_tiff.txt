@@ -1,7 +1,12 @@
-# url|name of public TIFF files in the corpus besides IDR idr0096: Aperio SVS
+# url|name of public TIFF files in the corpus besides IDR idr0096. Aperio SVS
 # whole-slide images from the OpenSlide test data (https://openslide.org/demo/,
 # CC0 1.0), with JPEG and JPEG 2000 tiles.
 https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/CMU-1-Small-Region.svs|svs-CMU-1-Small-Region
 https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/CMU-1.svs|svs-CMU-1
 https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/CMU-1-JP2K-33005.svs|svs-CMU-1-JP2K-33005
 https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/JP2K-33003-1.svs|svs-JP2K-33003-1
+# Hamamatsu NDPI slides from the OpenSlide test data (CC0 1.0); Hamamatsu-1
+# is 6.9 GB, with offsets above 4 GiB.
+https://openslide.cs.cmu.edu/download/openslide-testdata/Hamamatsu/CMU-1.ndpi|ndpi-CMU-1
+https://openslide.cs.cmu.edu/download/openslide-testdata/Hamamatsu/Hamamatsu-1.ndpi|ndpi-Hamamatsu-1
+https://openslide.cs.cmu.edu/download/openslide-testdata/Hamamatsu/Hamamatsu-2.ndpi|ndpi-Hamamatsu-2

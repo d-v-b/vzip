@@ -149,7 +149,7 @@ def check(item: tuple[str, str], impls: dict, out_dir: Path) -> dict:
 
 def corpus(proxy: Proxy, fixtures: Path, quick: bool, local_only: bool) -> list[tuple[str, str]]:
     items = [(f"fixture-{p.stem}", proxy.local(p.name))
-             for p in sorted([*fixtures.glob("*.tif"), *fixtures.glob("*.nd2")])]
+             for p in sorted([*fixtures.glob("*.tif"), *fixtures.glob("*.ndpi"), *fixtures.glob("*.nd2")])]
     if local_only:
         return items
     listing = urllib.request.urlopen(IDR, timeout=60).read().decode()
