@@ -8,6 +8,10 @@ import { WORKER_HEADER } from "../src/server.ts";
 
 const EXAMPLE =
   "https://ftp.ebi.ac.uk/pub/databases/IDR/idr0096-tratwal-marrowquant/20210609-ftp-ome-tiffs/4000_d11_m5_LT_2%20(20x_01).ome.tiff";
+// A virtualized Nikon ND2 time-lapse (BioImage Archive S-BIAD3015, 4.6 GB),
+// made by experiments/nd2_to_vzip.py.
+const ND2_EXAMPLE =
+  "https://raw.githubusercontent.com/d-v-b/vzip/main/experiments/out/nd2/biad3015_1-SR_1_9_6hPre-C_MC1.vzip";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const input = $<HTMLInputElement>("url");
@@ -80,10 +84,28 @@ async function virtualize(url: string) {
   const t0 = performance.now();
   const group = await getJson(`${zarrUrl}zarr.json`);
   const ms = Math.round(performance.now() - t0);
-  const ms0 = group.attributes?.ome?.multiscales?.[0];
+  // The image: the root itself, or one series of a bioformats2raw layout
+  // (e.g. one stage position of an ND2), chosen with ?series=.
+  let imageUrl = zarrUrl;
+  let ms0 = group.attributes?.ome?.multiscales?.[0];
+  const seriesRow = $("series-row");
+  seriesRow.hidden = true;
+  if (ms0 === undefined && group.attributes?.ome?.["bioformats2raw.layout"] !== undefined) {
+    const series: string[] = (await getJson(`${zarrUrl}OME/zarr.json`)).attributes?.ome?.series ?? [];
+    const chosen = here.searchParams.get("series") ?? series[0];
+    if (!series.includes(chosen)) throw new Error(`no series ${JSON.stringify(chosen)}`);
+    imageUrl = `${zarrUrl}${chosen}/`;
+    ms0 = (await getJson(`${imageUrl}zarr.json`)).attributes?.ome?.multiscales?.[0];
+    const select = $<HTMLSelectElement>("series");
+    select.replaceChildren(
+      ...series.map((s) => Object.assign(document.createElement("option"), { value: s, textContent: s, selected: s === chosen })),
+    );
+    $("series-count").textContent = `of ${series.length}`;
+    seriesRow.hidden = false;
+  }
   if (ms0 === undefined) throw new Error("not an OME-Zarr multiscale image");
   const rows = await Promise.all(
-    ms0.datasets.map(async (d: { path: string }) => [d.path, await getJson(`${zarrUrl}${d.path}/zarr.json`)]),
+    ms0.datasets.map(async (d: { path: string }) => [d.path, await getJson(`${imageUrl}${d.path}/zarr.json`)]),
   );
   const tbody = $("levels");
   tbody.replaceChildren(
@@ -104,12 +126,12 @@ async function virtualize(url: string) {
     }),
   );
   $("name").textContent = ms0.name ?? url.split("/").pop();
-  $("zarr-url").textContent = zarrUrl;
+  $("zarr-url").textContent = imageUrl;
   const [, level0] = rows[0];
   const scale = ms0.datasets[0].coordinateTransformations?.find(
     (t: { type: string }) => t.type === "scale",
   )?.scale ?? level0.shape.map(() => 1);
-  const state = neuroglancerState(zarrUrl, ms0.axes, scale, level0.shape, level0.data_type);
+  const state = neuroglancerState(imageUrl, ms0.axes, scale, level0.shape, level0.data_type);
   $<HTMLAnchorElement>("open-ng").href = new URL(
     `neuroglancer/#!${encodeURIComponent(JSON.stringify(state))}`,
     location.href,
@@ -119,15 +141,29 @@ async function virtualize(url: string) {
   setStatus(`Ready in ${ms} ms.`);
 }
 
-$("form").addEventListener("submit", (event) => {
-  event.preventDefault();
+$("series").addEventListener("change", () => {
+  const here = new URL(location.href);
+  here.searchParams.set("series", $<HTMLSelectElement>("series").value);
+  history.replaceState(null, "", here);
   virtualize(input.value.trim()).catch((e) => setStatus(String(e.message ?? e), true));
 });
-$("example").addEventListener("click", (event) => {
+$("form").addEventListener("submit", (event) => {
   event.preventDefault();
-  input.value = EXAMPLE;
-  $<HTMLFormElement>("form").requestSubmit();
+  // A new URL starts from its first series.
+  const here = new URL(location.href);
+  if (here.searchParams.get("url") !== input.value.trim()) {
+    here.searchParams.delete("series");
+    history.replaceState(null, "", here);
+  }
+  virtualize(input.value.trim()).catch((e) => setStatus(String(e.message ?? e), true));
 });
+for (const [id, url] of [["example", EXAMPLE], ["example-nd2", ND2_EXAMPLE]]) {
+  $(id).addEventListener("click", (event) => {
+    event.preventDefault();
+    input.value = url;
+    $<HTMLFormElement>("form").requestSubmit();
+  });
+}
 const fromQuery = new URLSearchParams(location.search).get("url");
 if (fromQuery) {
   input.value = fromQuery;

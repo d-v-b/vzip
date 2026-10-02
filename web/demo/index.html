@@ -20,6 +20,7 @@
   h1 { font-size: 1.6rem; margin: 0 0 4px; }
   p.lede { color: var(--muted); margin: 0 0 24px; }
   form { display: flex; gap: 8px; flex-wrap: wrap; }
+  select { font: inherit; padding: 2px 4px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--fg); }
   input { flex: 1 1 420px; min-width: 0; padding: 8px 10px; font: inherit; font-size: 0.9rem;
     border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--fg); }
   button, a.button { padding: 8px 14px; font: inherit; border-radius: 6px; border: 1px solid var(--accent);
@@ -50,10 +51,12 @@
     <input id="url" type="url" required aria-label="TIFF or vzip URL">
     <button type="submit">Virtualize</button>
   </form>
-  <div class="examples">Example: <a href="#" id="example">IDR idr0096, mouse bone marrow (OME-TIFF, 487 MB, JPEG 2000)</a></div>
+  <div class="examples">Examples: <a href="#" id="example">IDR idr0096, mouse bone marrow (OME-TIFF, 487 MB, JPEG 2000)</a>
+    · <a href="#" id="example-nd2">S-BIAD3015, E. coli time-lapse (Nikon ND2, 4.6 GB, virtualized ahead of time)</a></div>
   <div id="status" role="status"></div>
   <section id="result" hidden>
     <div><strong id="name"></strong></div>
+    <div id="series-row" hidden>Image: <select id="series" aria-label="series"></select> <span id="series-count"></span></div>
     <div>Zarr URL: <code id="zarr-url"></code></div>
     <table><thead><tr><th>level</th><th>shape</th><th>chunk</th><th>data type</th><th>codecs</th></tr></thead>
       <tbody id="levels"></tbody></table>
