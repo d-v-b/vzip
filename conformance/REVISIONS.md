@@ -586,6 +586,34 @@ The new informative §1.4 credits the work vzip builds on:
 
 PITCH.md gains a matching section, "Where the ideas come from".
 
+## Revision 8.2: coalescing reads
+
+Format version 0, specification revision 8.2. **Status: provisional.** No
+result changes, so the revision 8 conformance suite applies unchanged.
+
+**What prompted it.** Virtualizing Nikon ND2 files whose image rows are
+padded (`widthBytes` larger than a row) gives one Concat per frame, with one
+range per row. Every reader in this project fetched each range separately:
+877 requests for one frame, which Zenodo answered with HTTP 429.
+
+**The conflict.** §6.2 said a reader MAY combine reads of nearby ranges of
+the same object into one request, but §8.3 said readers SHOULD fetch only
+the bytes of the ranges, which a combined read with gaps does not.
+
+**The change.**
+- **§8.3:** readers SHOULD coalesce. Nearby reads of the same source become
+  one read covering the gaps between them, and the gap bytes are never
+  returned. "Nearby" is up to the reader; this project's readers use 64 KiB.
+  The section also notes that coalescing cannot change a result: a combined
+  read ends where one of its ranges ends, so it fails only where that range
+  would.
+- **§6.2:** the MAY becomes a SHOULD, pointing to §8.3.
+
+**Implementations.** All three readers now coalesce: the reference reader
+(`src/vzip/store.py`), the browser reader (`web/src/archive.ts`) and the
+Neuroglancer driver (d-v-b/neuroglancer, `vzip` branch). An ND2 frame of 877
+padded rows is now one request.
+
 ## Open feedback: browser readers (from the Neuroglancer driver)
 
 The Neuroglancer driver

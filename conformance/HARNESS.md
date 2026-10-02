@@ -1,7 +1,7 @@
 # vzip conformance harness interface
 
-For format version 0 (provisional), specification revision 8 (and 8.1, which
-is editorial and changes no rule).
+For format version 0 (provisional), specification revision 8 (and 8.1 and
+8.2, which change no result).
 
 Every implementation provides one executable (the "CLI") with two commands.
 The conformance runner calls it as a subprocess. All JSON is UTF-8. Byte
