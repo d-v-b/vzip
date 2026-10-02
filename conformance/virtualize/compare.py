@@ -2,7 +2,7 @@
 
 Every implementation runs on every input of the corpus, which the caching
 proxy (proxy.py) serves over local HTTP: the synthetic files in
-web/test/fixtures/, the 205 OME-TIFFs of IDR idr0096, and the public ND2 files
+web/test/fixtures/, the 205 OME-TIFFs of IDR idr0096, and the public ND2 and TIFF files
 in corpus_nd2.txt. For each input, all implementations must either reject it
 (exit status 3) or produce equivalent outputs; outputs are compared with the
 reference implementation's (the first one).
@@ -59,10 +59,9 @@ def from_vzip(path: Path) -> dict:
         while p < len(ex):
             hid, n = struct.unpack_from("<HH", ex, p)
             if hid == 0x7A76:
-                r = Range.decode(ex[p + 4 : p + 4 + n])
-                ref = [[r.source, r.offset, r.length]]
+                ref = [_range(Range.decode(ex[p + 4 : p + 4 + n]))]
             elif hid == 0x7A77:
-                ref = [[r.source, r.offset, r.length] for r in Concat.decode(ex[p + 4 : p + 4 + n]).parts]
+                ref = [_range(r) for r in Concat.decode(ex[p + 4 : p + 4 + n]).parts]
             p += 4 + n
         if ref is not None:
             entries[info.filename] = ("ranges", ref)
@@ -73,13 +72,20 @@ def from_vzip(path: Path) -> dict:
     return {"sources": sources, "entries": entries}
 
 
+def _range(r: Range) -> list:
+    """A range as compared: [source, offset, length], or ["data", base64] for a literal."""
+    if r.data is not None:
+        return ["data", base64.b64encode(r.data).decode()]
+    return [r.source, r.offset, r.length]
+
+
 def from_json(path: Path) -> dict:
     """A HARNESS.md JSON description's output."""
     d = json.loads(path.read_text())
     entries = {}
     for key, v in d["entries"].items():
         if "ranges" in v:
-            entries[key] = ("ranges", [list(r) for r in v["ranges"]])
+            entries[key] = ("ranges", [["data", r["data"]] if isinstance(r, dict) else list(r) for r in v["ranges"]])
         elif "json" in v:
             entries[key] = ("json", v["json"])
         else:
@@ -149,9 +155,10 @@ def corpus(proxy: Proxy, fixtures: Path, quick: bool, local_only: bool) -> list[
     listing = urllib.request.urlopen(IDR, timeout=60).read().decode()
     tiffs = sorted(set(re.findall(r'href="([^"?/][^"]*\.ome\.tiff)"', listing)))
     items += [(f"idr-{i:03d}", proxy.remote(IDR + n)) for i, n in enumerate(tiffs[:3] if quick else tiffs)]
-    nd2 = [line.split("|") for line in (HERE / "corpus_nd2.txt").read_text().split("\n")
-           if line and not line.startswith("#")]
-    items += [(f"nd2-{name}", proxy.remote(url)) for url, name in (nd2[:3] if quick else nd2)]
+    for corpus_file, prefix in (("corpus_nd2.txt", "nd2-"), ("corpus_tiff.txt", "")):
+        listed = [line.split("|") for line in (HERE / corpus_file).read_text().split("\n")
+                  if line and not line.startswith("#")]
+        items += [(f"{prefix}{name}", proxy.remote(url)) for url, name in (listed[:3] if quick else listed)]
     return items
 
 

@@ -264,3 +264,37 @@ and an invalid point), `nd2_edge_stage_singular` and
 `nd2_edge_stage_incomplete`. Both maintained implementations agree on all 101
 synthetic files and on the 323-input corpus, whose 14 multi-position ND2
 files now carry translations.
+
+## Revision 7: JPEG tiles (Aperio SVS)
+
+Revision 7 adds a rule; it does not come from a spec round. Tiled TIFFs with
+JPEG tiles (Compression 7) are virtualized, with a new `imagecodecs_jpeg`
+codec. Supported layouts: 8-bit, greyscale, or 3 interleaved samples in RGB
+or YCbCr. This covers Aperio SVS, the common whole-slide format.
+
+**Why the reference adds literal bytes.** A JPEG-in-TIFF tile is not a
+stand-alone JPEG. Its tables are in the IFD's JPEGTables, and Aperio stores
+RGB samples (component IDs 0, 1, 2), which decoders take for YCbCr.
+
+**The rebuilt tile.** Each tile's reference is a concatenation:
+- a literal prefix: SOI, an Adobe colour marker from
+  PhotometricInterpretation, and the tables;
+- the tile's bytes, without its SOI.
+
+The result is a complete standard JPEG, with no pixel data copied.
+
+**Other changes:**
+- §1.1 now compares literal ranges;
+- §1.2 gives their payload size, and its tag bytes for source ranges are
+  corrected (fields 3 and 4: `0x18`, `0x20`);
+- HARNESS.md writes a literal range as `{"data": base64}`.
+
+**Tests.**
+- Synthetic files:
+  - `jpeg_aperio_rgb` (abbreviated RGB tiles with shared tables);
+  - `jpeg_ycbcr` and `jpeg_gray` (written by tifffile);
+  - five rejections.
+- Pixels: both implementations match tifffile pixel for pixel.
+- Real slides: OpenSlide's Aperio samples (CC0) are now in the comparison
+  corpus (`corpus_tiff.txt`). Every pyramid level of CMU-1 and
+  CMU-1-Small-Region matches tifffile.

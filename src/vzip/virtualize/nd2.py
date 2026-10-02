@@ -6,7 +6,9 @@ import math
 import re
 import struct
 
-from vzip.virtualize.common import Output, Reader, Rejected, array_json, group_json, image_ome, transpose_codec
+from vzip.virtualize.common import (
+    MAX_PAYLOAD, Output, Reader, Rejected, array_json, group_json, image_ome, payload_size, transpose_codec,
+)
 from vzip.virtualize.lv import LVList, Scalar, decode_lv
 
 CHUNK_MAGIC = 0x0ABECEDA
@@ -14,7 +16,6 @@ FILE_SIGNATURE = b"ND2 FILE SIGNATURE CHUNK NAME01!"
 MAP_SIGNATURE = b"ND2 CHUNK MAP SIGNATURE 0000001!"
 FILEMAP_NAME = b"ND2 FILEMAP SIGNATURE NAME 0001!"
 FRAME = re.compile(rb"ImageDataSeq\|(0|[1-9][0-9]*)!")
-MAX_PAYLOAD = 65519
 MAX_SAFE = 2**53 - 1
 REQUIRED = object()
 
@@ -204,22 +205,6 @@ def flatten_experiment(root) -> list[dict]:
     if len(set(kinds)) != len(kinds):
         raise Rejected(f"repeated loop kinds {kinds}")
     return loops
-
-
-# ---- reference payloads (§1.2)
-
-def _varint_size(v: int) -> int:
-    return max(1, (v.bit_length() + 6) // 7)
-
-
-def _range_size(offset: int, length: int) -> int:
-    return (1 + _varint_size(offset) if offset else 0) + (1 + _varint_size(length) if length else 0)
-
-
-def payload_size(ranges: list[tuple[int, int]]) -> int:
-    if len(ranges) == 1:
-        return _range_size(*ranges[0])
-    return sum(1 + _varint_size(r) + r for r in (_range_size(o, n) for o, n in ranges))
 
 
 def _check_range(offset: int, length: int, size: int) -> None:
