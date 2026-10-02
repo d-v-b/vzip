@@ -1,11 +1,11 @@
 # Virtualizing image files as OME-Zarr in vzip
 
-Profiles version: 0 (**draft**) · Revision: 10
+Profiles version: 0 (**draft**) · Revision: 11
 
 ## 1. Introduction
 
-A **virtualizer** reads the structure of an image file (TIFF, Hamamatsu NDPI or Nikon ND2)
-and writes a vzip archive ([SPEC.md](SPEC.md)) that presents the file's
+A **virtualizer** reads the structure of an image file (TIFF, Hamamatsu NDPI, Nikon ND2,
+DICOM, NIfTI or Imaris IMS) and writes a vzip archive ([SPEC.md](SPEC.md)) that presents the file's
 pixels as an OME-Zarr dataset. The pixels stay in the original file: each
 Zarr chunk is a reference to byte ranges of it. This document specifies, for
 each supported input format (a **profile**), exactly which archive a
@@ -21,8 +21,11 @@ is a document of its own, numbered as a section of this one:
 | 3 | [TIFF](profiles/tiff.md) | TIFF and BigTIFF, including OME-TIFF and JPEG-tiled slides such as Aperio SVS |
 | 4 | [NDPI](profiles/ndpi.md) | Hamamatsu NDPI slides, a TIFF variant with 64-bit offsets |
 | 5 | [ND2](profiles/nd2.md) | Nikon ND2, format version 3 and later |
+| 6 | [DICOM](profiles/dicom.md) | DICOM Part 10 files with native or JPEG-encapsulated pixel data, including whole-slide images |
+| 7 | [NIfTI](profiles/nifti.md) | NIfTI-1 and NIfTI-2 single files (`.nii`) |
+| 8 | [IMS](profiles/ims.md) | Imaris IMS files (HDF5) |
 
-§6 is informative: the implementations and how they are compared.
+§9 is informative: the implementations and how they are compared.
 
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be
 interpreted as described in RFC 2119.
@@ -60,13 +63,23 @@ is exactly one `url` source whose value is `U` as given, without pins.
 (`U` MUST be a valid absolute URI; virtualizers do not normalize it.)
 Every reference in the output is a range of source 0.
 
-**Choosing the profile.** The file's first bytes decide:
+**Choosing the profile.** The file's first bytes decide, by the first row
+of this table that matches. `H` is the file's first `min(552, size)` bytes;
+a test that needs a byte beyond `H` does not match.
 
-| first bytes | |
+| test on `H` | |
 |---|---|
-| `49 49 2A 00`, `4D 4D 00 2A`, `49 49 2B 00`, `4D 4D 00 2B` | NDPI profile (§4) if the file passes its detection test (§4), else TIFF profile (§3) |
-| `DA CE BE 0A` (the ND2 chunk magic, §5.1) | ND2 profile (§5) |
-| anything else, including the JPEG 2000 signature box `00 00 00 0C 6A 50 20 20 0D 0A 87 0A` that starts legacy ND2 files | rejected |
+| bytes 0–3 are `49 49 2A 00`, `4D 4D 00 2A`, `49 49 2B 00` or `4D 4D 00 2B` | NDPI profile (§4) if the file passes its detection test (§4), else TIFF profile (§3) |
+| bytes 0–3 are `DA CE BE 0A` (the ND2 chunk magic, §5.1) | ND2 profile (§5) |
+| bytes 0–7 are `89 48 44 46 0D 0A 1A 0A` (the HDF5 signature) | IMS profile (§8) |
+| bytes 0–3 are the 32-bit integer 348 in either byte order, and bytes 344–347 are `6E 2B 31 00` (`n+1`) | NIfTI profile (§7), NIfTI-1 |
+| bytes 0–3 are the 32-bit integer 540 in either byte order, and bytes 4–11 are `6E 2B 32 00 0D 0A 1A 0A` (`n+2`) | NIfTI profile (§7), NIfTI-2 |
+| bytes 128–131 are `44 49 43 4D` (`DICM`) | DICOM profile (§6) |
+| anything else, including the JPEG 2000 signature box `00 00 00 0C 6A 50 20 20 0D 0A 87 0A` that starts legacy ND2 files, and NIfTI header-and-image pairs (`ni1`, `ni2`) | rejected |
+
+A DICOM file whose 128-byte preamble holds a TIFF header (a dual-personality
+file) is therefore read by the TIFF profile. An HDF5 file that is not an
+Imaris file is rejected by the IMS profile.
 
 **Rejection.** A virtualizer MUST reject an input the profile does not
 accept, producing no output. That includes every input that is not well
@@ -220,15 +233,18 @@ name. A position given for the centre of an image of level-0 size
 `W0 × H0` with x and y scales `sx`, `sy` becomes the translation
 `x = cx − W0 × sx / 2`, `y = cy − H0 × sy / 2` (products first).
 
-## 3–5. Profiles
+## 3–8. Profiles
 
 Each profile is a separate document:
 
 - §3, the TIFF profile: [profiles/tiff.md](profiles/tiff.md);
 - §4, the NDPI profile: [profiles/ndpi.md](profiles/ndpi.md);
-- §5, the ND2 profile: [profiles/nd2.md](profiles/nd2.md).
+- §5, the ND2 profile: [profiles/nd2.md](profiles/nd2.md);
+- §6, the DICOM profile: [profiles/dicom.md](profiles/dicom.md);
+- §7, the NIfTI profile: [profiles/nifti.md](profiles/nifti.md);
+- §8, the IMS profile: [profiles/ims.md](profiles/ims.md).
 
-## 6. Conformance
+## 9. Conformance
 
 This section is informative. There are two maintained implementations:
 - the Python reference, `python -m vzip.virtualize <url> <out.vzip>`

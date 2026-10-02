@@ -1,4 +1,4 @@
-"""Compares virtualizers (VIRTUALIZE.md §1.1, §6; HARNESS.md).
+"""Compares virtualizers (VIRTUALIZE.md §1.1, §9; HARNESS.md).
 
 Every implementation runs on every input of the corpus, which the caching
 proxy (proxy.py) serves over local HTTP: the synthetic files in
