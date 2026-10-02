@@ -1,6 +1,6 @@
-"""Writes the TIFF fixtures in web/test/fixtures/ with tifffile.
+"""Writes the TIFF fixtures in web/test/fixtures/tiff/ with tifffile.
 
-Usage: uv run python web/test/tiff_fixtures.py
+Usage: uv run python web/test/tiff/write_fixtures.py
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
-OUT = Path(__file__).parent / "fixtures"
+OUT = Path(__file__).parents[1] / "fixtures" / "tiff"
 rng = np.random.default_rng(0)
 
 

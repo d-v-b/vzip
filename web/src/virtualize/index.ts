@@ -1,13 +1,11 @@
 // Virtualizing an image file by the profile its first bytes select
-// (VIRTUALIZE.md): TIFF (including NDPI) or ND2.
+// (VIRTUALIZE.md): TIFF, NDPI or ND2, each in its own directory.
 
-import { isNd2, virtualizeNd2 } from "./nd2.ts";
-import { detectNdpi, virtualizeNdpi } from "./ndpi.ts";
-import type { ByteReader } from "./tiff.ts";
-import { virtualizeTiff } from "./virtualize.ts";
-import type { ArchiveDesc } from "./writer.ts";
-
-export class ImageError extends Error {}
+import { type ByteReader, ImageError } from "./common.ts";
+import { isNd2, virtualizeNd2 } from "./nd2/virtualize.ts";
+import { detectNdpi, virtualizeNdpi } from "./ndpi/virtualize.ts";
+import { virtualizeTiff } from "./tiff/virtualize.ts";
+import type { ArchiveDesc } from "../writer.ts";
 
 export async function virtualizeImage(
   url: string,

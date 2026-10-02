@@ -1,4 +1,7 @@
-"""Virtualizing TIFF (including NDPI) and ND2 files as OME-Zarr in vzip archives (VIRTUALIZE.md).
+"""Virtualizing TIFF, NDPI and ND2 files as OME-Zarr in vzip archives (VIRTUALIZE.md).
+
+Each profile is a subpackage: tiff (profiles/tiff.md), ndpi (profiles/ndpi.md) and
+nd2 (profiles/nd2.md); common holds what they share.
 
     python -m vzip.virtualize <url or path> <out.vzip> [--url <source url>]
 
@@ -10,8 +13,8 @@ how a local file is described by the URL it will be served from).
 
 from __future__ import annotations
 
-from vzip.virtualize.common import Output, Rejected, file_reader, http_reader
 from vzip.virtualize import ndpi
+from vzip.virtualize.common import Output, Rejected, file_reader, http_reader
 from vzip.virtualize.nd2 import is_nd2, virtualize_nd2
 from vzip.virtualize.tiff import virtualize_tiff
 

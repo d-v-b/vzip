@@ -1,12 +1,12 @@
-"""Writes TIFFs to web/test/fixtures/ that exercise the edges of the TIFF
-profile (VIRTUALIZE.md §3) which tifffile does not write: odd OME-XML,
+"""Writes TIFFs to web/test/fixtures/tiff/ that exercise the edges of the TIFF
+profile (profiles/tiff.md §3) which tifffile does not write: odd OME-XML,
 duplicate tags, SubIFD mismatches, tiles outside the file, and so on.
 
 They are compared between implementations (conformance/virtualize/
 compare.py). `edge_reject_*` files must be rejected; the other `edge_*`
 files must be accepted.
 
-Usage: uv run python web/test/tiff_edge_fixtures.py
+Usage: uv run python web/test/tiff/write_edge_fixtures.py
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
-OUT = Path(__file__).parent / "fixtures"
+OUT = Path(__file__).parents[1] / "fixtures" / "tiff"
 
 SHORT, LONG, ASCII, UNDEFINED = 3, 4, 2, 7
 SIZE = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 8: 2, 13: 4, 16: 8, 99: 1}

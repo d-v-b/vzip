@@ -5,7 +5,7 @@ import { HttpResolutionError } from "../src/http.ts";
 import { ARCHIVE_KEY, encodeId, makeHandler } from "../src/server.ts";
 
 const PREFIX = "https://viewer.test/vz/";
-const FIXTURES = new URL("fixtures/", import.meta.url);
+const FIXTURES = new URL("fixtures/tiff/", import.meta.url);
 const remote = (name: string) => `https://data.test/${name}`;
 const local = (url: string) => new Uint8Array(fs.readFileSync(new URL(url.slice("https://data.test/".length), FIXTURES)));
 

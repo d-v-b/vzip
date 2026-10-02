@@ -1,12 +1,12 @@
-"""Writes synthetic ND2 files (format version 3) to web/test/fixtures/, with
+"""Writes synthetic ND2 files (format version 3) to web/test/fixtures/nd2/, with
 the pixels each one should decode to, covering the rules of the ND2 profile
-(VIRTUALIZE.md §4) that the public corpus does not: compressed frames, padded
+(profiles/nd2.md §5) that the public corpus does not: compressed frames, padded
 rows, multi-period time loops, disabled positions, sibling and spectral
 experiment nodes, missing frames, float data, and the inputs it rejects.
 
 Each `<name>.nd2` has `<name>.npz`: one array per expected chunk key.
 
-Usage: uv run python web/test/nd2_fixtures.py
+Usage: uv run python web/test/nd2/write_fixtures.py
 """
 
 from __future__ import annotations
@@ -17,12 +17,12 @@ from pathlib import Path
 
 import numpy as np
 
-OUT = Path(__file__).parent / "fixtures"
+OUT = Path(__file__).parents[1] / "fixtures" / "nd2"
 MAGIC = 0x0ABECEDA
 NAME_PAD = 4072  # NIS-Elements pads chunk names so that headers are 4 KiB
 
 
-# ---- lite variant (VIRTUALIZE.md §4.2)
+# ---- lite variant (profiles/nd2.md §5.2)
 
 def _name(name: str) -> bytes:
     return bytes([len(name) + 1]) + (name + "\0").encode("utf-16le")
@@ -57,7 +57,7 @@ def compressed(structure: bytes) -> bytes:
     return bytes([76, 0]) + b"\0" * 10 + zlib.compress(structure)
 
 
-# ---- file layout (§4.1)
+# ---- file layout (§5.1)
 
 class Nd2:
     def __init__(self, version: bytes = b"Ver3.0") -> None:
@@ -224,7 +224,7 @@ def record(typ: int, name: str, payload: bytes) -> bytes:
 
 
 def edges() -> None:
-    """The edges of §4 that the files above do not reach."""
+    """The edges of §5 that the files above do not reach."""
     h, w = 3, 4
 
     def frames(f: Nd2, n: int, comp: int = 1, dtype=np.uint16, width_bytes=None, skip=()) -> dict:
@@ -348,7 +348,7 @@ def edges() -> None:
 
 
 def revision3() -> None:
-    """The typed-member and loop-kind rules of revision 3 (§4.2, §4.3)."""
+    """The typed-member and loop-kind rules of revision 3 (§5.2, §5.3)."""
     h, w = 3, 4
 
     def frames(f: Nd2, n: int) -> dict:
@@ -411,7 +411,7 @@ def revision3() -> None:
 
 
 def revision4() -> None:
-    """Whole-tree checks, validity lists everywhere, and nesting (§4.2, §4.3)."""
+    """Whole-tree checks, validity lists everywhere, and nesting (§5.2, §5.3)."""
     h, w = 3, 4
 
     def write_case(name: str, exp: bytes | None = None, attrs: bytes | None = None, accept: bool = False) -> None:
@@ -447,7 +447,7 @@ def revision4() -> None:
     # A z step that overflows rejects, even on a node the flattening skips.
     write_case("nd2_reject_z_step_overflow", experiment(node(1, {"uiCount": 0}, [
         node(4, {"uiCount": 2, "dZStep": 0.0, "dZLow": -1e308, "dZHigh": 1e308})])))
-    # A single image's stage position, from the picture metadata (§4.6).
+    # A single image's stage position, from the picture metadata (§5.6).
     f = Nd2()
     f.chunk("ImageAttributesLV!", attributes(w, h, 1, 16, sequence=1))
     f.chunk("ImageMetadataSeqLV|0!", level("SLxPictureMetadata", [
@@ -462,7 +462,7 @@ def revision4() -> None:
 
 
 def revision6() -> None:
-    """Stage positions become translations (§4.6)."""
+    """Stage positions become translations (§5.6)."""
     h, w = 3, 4
 
     def case(name: str, points: list[dict], camera: tuple | None, valid: bytes | None = None) -> None:

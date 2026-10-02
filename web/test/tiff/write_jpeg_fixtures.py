@@ -1,5 +1,5 @@
-"""Writes JPEG-in-TIFF files to web/test/fixtures/ for the JPEG rule of
-VIRTUALIZE.md §3.5-§3.6.
+"""Writes JPEG-in-TIFF files to web/test/fixtures/tiff/ for the JPEG rule of
+profiles/tiff.md §3.5-§3.6.
 
 - `jpeg_aperio_rgb.tif`: like Aperio SVS. The IFD's JPEGTables holds the
   quantization and Huffman tables, and each tile is an abbreviated stream
@@ -9,9 +9,9 @@ VIRTUALIZE.md §3.5-§3.6.
 - `jpeg_ycbcr.tif`, `jpeg_gray.tif`: written by tifffile.
 - `edge_reject_jpeg_*.tif`: inputs the rule rejects.
 
-Pixels are checked against tifffile by verify_tiff.py.
+Pixels are checked against tifffile by verify.py.
 
-Usage: uv run python web/test/tiff_jpeg_fixtures.py
+Usage: uv run python web/test/tiff/write_jpeg_fixtures.py
 """
 
 from __future__ import annotations
@@ -23,9 +23,9 @@ import imagecodecs
 import numpy as np
 import tifffile
 
-from tiff_edge_fixtures import LONG, SHORT, UNDEFINED, Tiff
+from write_edge_fixtures import LONG, SHORT, UNDEFINED, Tiff
 
-OUT = Path(__file__).parent / "fixtures"
+OUT = Path(__file__).parents[1] / "fixtures" / "tiff"
 rng = np.random.default_rng(7)
 
 

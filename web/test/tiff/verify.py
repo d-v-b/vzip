@@ -1,12 +1,12 @@
 """Checks the browser TIFF virtualizer against tifffile.
 
-Each supported fixture in web/test/fixtures/ is virtualized by
-web/conformance/tiff.ts (the browser code, run under Node). The archive is
+Each supported fixture in web/test/fixtures/tiff/ (or, given as an argument,
+another directory) is virtualized by web/conformance/virtualize_file.ts (the browser code, run under Node). The archive is
 then read by the reference reader (src/vzip) and zarr-python, and every
 pyramid level must equal what tifffile reads from the TIFF directly. The
 unsupported fixtures must be refused.
 
-Usage: uv run python web/test/verify_tiff.py
+Usage: uv run python web/test/tiff/verify.py [<fixture directory>]
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ class ZlibCodec(BytesBytesCodec):
 register_codec("zlib", ZlibCodec)
 
 HERE = Path(__file__).parent
-CLI = ["node", str(HERE.parent / "conformance" / "tiff.ts")]
+CLI = ["node", str(HERE.parents[1] / "conformance" / "virtualize_file.ts")]
 AXIS = {"T": "t", "C": "c", "S": "c", "Z": "z", "Y": "y", "X": "x"}
 
 
@@ -71,10 +71,10 @@ def expected_levels(path: Path) -> list[tuple[np.ndarray, str]]:
         return [(level.asarray(), series.axes) for level in series.levels]
 
 
-def main() -> int:
+def main(fixtures: Path = HERE.parent / "fixtures" / "tiff") -> int:
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
-        for tiff in sorted([*(HERE / "fixtures").glob("*.tif"), *(HERE / "fixtures").glob("*.ndpi")]):
+        for tiff in sorted([*fixtures.glob("*.tif"), *fixtures.glob("*.ndpi")]):
             out = Path(tmp) / (tiff.stem + ".vzip")
             p = subprocess.run(CLI + [str(tiff), str(out), tiff.resolve().as_uri()],
                                capture_output=True, text=True)
@@ -113,4 +113,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(*map(Path, sys.argv[1:2])))

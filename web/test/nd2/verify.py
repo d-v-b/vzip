@@ -1,13 +1,13 @@
 """Checks the browser ND2 virtualizer's output on the synthetic ND2 files.
 
-Each web/test/fixtures/nd2_*.nd2 is served over local HTTP and virtualized by
+Each web/test/fixtures/nd2/*.nd2 is served over local HTTP and virtualized by
 web/conformance/virtualize.ts (the browser code, run under Node). Every chunk
 of the archive is read through the reference reader and zarr-python and must
-equal the pixels nd2_fixtures.py wrote (<name>.npz); chunks absent from the
+equal the pixels write_fixtures.py wrote (<name>.npz); chunks absent from the
 npz (missing frames) must read as the fill value. `nd2_reject_*` files must be
 rejected.
 
-Usage: uv run python web/test/verify_nd2.py
+Usage: uv run python web/test/nd2/verify.py
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from zarr.abc.codec import BytesBytesCodec
 from zarr.registry import register_codec
 
 HERE = Path(__file__).parent
-ROOT = HERE.parents[1]
+ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT / "conformance"))
 from http_server import Server  # noqa: E402
 
@@ -60,7 +60,7 @@ register_codec("zlib", ZlibCodec)
 
 
 def main() -> int:
-    fixtures = HERE / "fixtures"
+    fixtures = HERE.parent / "fixtures" / "nd2"
     server = Server(fixtures)
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:

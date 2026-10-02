@@ -14,11 +14,12 @@
 
 import { Archive, type RangeFetcher, VzipError } from "./archive.ts";
 import { HttpResolutionError, openHttpFile, readHttpRange } from "./http.ts";
-import { ImageError, virtualizeImage } from "./image.ts";
-import { LVError } from "./lv.ts";
-import { Nd2Error } from "./nd2.ts";
-import { blockReader, TiffError } from "./tiff.ts";
-import { virtualizeTiff } from "./virtualize.ts";
+import { blockReader, ImageError } from "./virtualize/common.ts";
+import { virtualizeImage } from "./virtualize/index.ts";
+import { LVError } from "./virtualize/nd2/lv.ts";
+import { Nd2Error } from "./virtualize/nd2/virtualize.ts";
+import { TiffError } from "./virtualize/tiff/ifd.ts";
+import { virtualizeTiff } from "./virtualize/tiff/virtualize.ts";
 import { writeVzip } from "./writer.ts";
 
 export const ARCHIVE_KEY = "__vz__/archive.vzip";

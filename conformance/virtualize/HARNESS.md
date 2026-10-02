@@ -1,6 +1,7 @@
 # Virtualization harness
 
-For [VIRTUALIZE.md](../../VIRTUALIZE.md) (profiles version 0, draft). This
+For [VIRTUALIZE.md](../../VIRTUALIZE.md) and its profiles in
+[profiles/](../../profiles/) (profiles version 0, draft). This
 document says how an implementation is run and checked. It adds no rules to
 the specification.
 
@@ -70,16 +71,17 @@ compared as binary64, so `1` equals `1.0`), or equal bytes.
 
 ## Test inputs
 
-The synthetic files in `web/test/fixtures/` (`*.tif`, `*.nd2`) are good
-first inputs. Their names say what they exercise, and `unsupported_*` and
-`nd2_reject_*` files must be rejected. To serve them the way the harness
+The synthetic files in `web/test/fixtures/`, one directory per format
+(`tiff/`, `ndpi/`, `nd2/`), are good first inputs. Their names say what they
+exercise, and `unsupported_*`, `edge_reject_*` and `nd2_reject_*` files must
+be rejected. To serve them the way the harness
 does, run:
 
 ```
 python conformance/virtualize/proxy.py web/test/fixtures /tmp/vzip-proxy-cache 8765
 ```
 
-Then `http://127.0.0.1:8765/f/<file name>` is a fixture. The same server also
+Then `http://127.0.0.1:8765/f/<format>/<file name>` is a fixture. The same server also
 serves remote files at `http://127.0.0.1:8765/u/<id>/<name>`, where `<id>` is
 the base64url encoding (no padding) of an `https://` URL. Public test inputs
 include:

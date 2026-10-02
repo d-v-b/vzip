@@ -1,4 +1,4 @@
-"""The NDPI variant of the TIFF profile of VIRTUALIZE.md (§3.7).
+"""The NDPI profile (profiles/ndpi.md, §4), a variant of the TIFF profile.
 
 Hamamatsu NDPI is a little-endian classic TIFF with 64-bit offsets (an 8-byte
 first-IFD offset, 8-byte next-IFD offsets, and a high word per entry after
@@ -22,7 +22,7 @@ SIZES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12:
 FORMATS = {1: "B", 3: "H", 4: "I", 8: "h", 9: "i", 13: "I", 16: "Q", 18: "Q", 11: "f", 12: "d"}
 OFFSET_TYPES = {3, 4, 8, 9}  # X/YOffsetFromSlideCenter may be signed
 INTEGER_TYPES = {1, 3, 4, 13, 16, 18}
-# The tags of §3.7, with their allowed field types and whether they are scalars.
+# The tags of §4, with their allowed field types and whether they are scalars.
 TAGS = {
     256: (INTEGER_TYPES, True), 257: (INTEGER_TYPES, True), 258: (INTEGER_TYPES, False),
     259: (INTEGER_TYPES, True), 262: (INTEGER_TYPES, True), 277: (INTEGER_TYPES, True),
@@ -35,7 +35,7 @@ CHUNK = 1024  # target chunk size in pixels
 
 
 def detect(read: Reader, size: int) -> int | None:
-    """The first IFD's offset if the file is NDPI (§3.7), else None."""
+    """The first IFD's offset if the file is NDPI (§4), else None."""
     head = read(0, min(12, size))
     if len(head) < 12 or head[:4] != b"II*\x00":
         return None
@@ -51,7 +51,7 @@ def detect(read: Reader, size: int) -> int | None:
 
 
 def read_ifds(read: Reader, size: int, first: int) -> list[dict[int, list]]:
-    """The main chain's IFDs, as {tag: values} (§3.7)."""
+    """The main chain's IFDs, as {tag: values} (§4)."""
     seen: set[int] = set()
     ifds = []
     offset = first
@@ -115,7 +115,7 @@ def _one(tags: dict, tag: int, what: str, default=None):
 
 def jpeg_header(header: bytes):
     """(SOF0 start, SOF0 end, MCU width, MCU height, restart interval) of a
-    strip's header, which runs from SOI to the end of SOS (§3.7)."""
+    strip's header, which runs from SOI to the end of SOS (§4)."""
     if header[:2] != b"\xff\xd8":
         raise Rejected("an NDPI strip does not start with a JPEG SOI marker")
     pos, sof, dri = 2, None, None
@@ -179,7 +179,7 @@ def virtualize_ndpi(url: str, read: Reader, size: int, first: int) -> Output:
     if not levels:
         raise Rejected("no NDPI levels")
 
-    # Scale (§3.7).
+    # Scale (§4).
     base = levels[0]
     unit_code = _one(base["tags"], 296, "ResolutionUnit", 2)
     per_unit = {3: 10000.0, 2: 25400.0}.get(unit_code)
@@ -211,7 +211,7 @@ def virtualize_ndpi(url: str, read: Reader, size: int, first: int) -> Output:
             chunk_shape = _intervals(out, li, read, tags, starts, s0, n, w, h)
         out.json(f"{li}/zarr.json", array_json([3, h, w], "uint8", chunk_shape, codecs, axes))
         scales.append([1, (py or 1) * (base["h"] / h), (px or 1) * (base["w"] / w)])
-    # Position (§3.7): the image's centre, from the slide's centre in nm.
+    # Position (§4): the image's centre, from the slide's centre in nm.
     translation = None
     offset_x, offset_y = base["tags"].get(65422), base["tags"].get(65423)
     if px is not None and py is not None and offset_x and offset_y:
@@ -225,7 +225,7 @@ def virtualize_ndpi(url: str, read: Reader, size: int, first: int) -> Output:
 
 
 def _intervals(out: Output, li: int, read: Reader, tags: dict, starts: list, s0: int, n: int, w: int, h: int):
-    """Writes a McuStarts level's chunk references (§3.7); returns its chunk shape."""
+    """Writes a McuStarts level's chunk references (§4); returns its chunk shape."""
     high = tags.get(65432)
     if high is not None:
         if len(high) != len(starts):

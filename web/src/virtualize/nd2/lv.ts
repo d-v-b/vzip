@@ -1,4 +1,4 @@
-// Nikon's "lite variant" (LV) metadata encoding (VIRTUALIZE.md §4.2).
+// Nikon's "lite variant" (LV) metadata encoding (profiles/nd2.md §5.2).
 //
 // Objects are Maps, which keep each name at the position of its first
 // appearance (plain objects would move integer-like names first). Scalars
@@ -40,7 +40,7 @@ const utf16 = new TextDecoder("utf-16le"); // replaces unpaired surrogates with 
 
 const MAX_DEPTH = 100;
 
-/** The records up to `end`, which are at `depth` (§4.2). */
+/** The records up to `end`, which are at `depth` (§5.2). */
 function records(r: Reader, end: number, count: number | undefined, depth: number): [string, LV][] {
   if (depth > MAX_DEPTH) throw new LVError(`LV levels nested more than ${MAX_DEPTH} deep`);
   const out: [string, LV][] = [];
@@ -63,7 +63,7 @@ function records(r: Reader, end: number, count: number | undefined, depth: numbe
     let value: LV;
     switch (type) {
       // 64-bit integers beyond 2^53 lose precision here; they are rejected
-      // wherever an integer is needed (§4.2), so the exact value never matters.
+      // wherever an integer is needed (§5.2), so the exact value never matters.
       case 1: value = { type, value: r.bytes[take(1)] !== 0 }; break;
       case 2: value = { type, value: r.view.getInt32(take(4), true) }; break;
       case 3: value = { type, value: r.view.getUint32(take(4), true) }; break;

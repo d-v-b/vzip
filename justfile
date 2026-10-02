@@ -27,16 +27,37 @@ conformance out="conformance/results/latest": impls::build
     uv run python conformance/run.py --out {{out}} \
         --impl rust=impls/rust/vzip --impl typescript=impls/typescript/vzip --impl python=impls/python/vzip
 
-# Regenerate the synthetic TIFF and ND2 files in web/test/fixtures
-fixtures:
-    uv run python web/test/tiff_fixtures.py
-    uv run python web/test/tiff_edge_fixtures.py
-    uv run python web/test/nd2_fixtures.py
+# Regenerate the synthetic TIFF and ND2 files in web/test/fixtures/<format>
+fixtures: fixtures-tiff fixtures-nd2
 
-# Check the browser virtualizer's pixels against tifffile and the synthetic ND2 pixels
-verify:
-    uv run python web/test/verify_tiff.py
-    uv run python web/test/verify_nd2.py
+# Regenerate the synthetic TIFFs (including JPEG-tiled, SVS-like ones)
+fixtures-tiff:
+    uv run python web/test/tiff/write_fixtures.py
+    uv run python web/test/tiff/write_edge_fixtures.py
+    uv run python web/test/tiff/write_jpeg_fixtures.py
+
+# Regenerate the NDPI files, cut from OpenSlide's CMU-1.ndpi (network, once)
+fixtures-ndpi:
+    uv run python web/test/ndpi/write_fixtures.py
+
+# Regenerate the synthetic ND2 files and their expected pixels
+fixtures-nd2:
+    uv run python web/test/nd2/write_fixtures.py
+
+# Check the browser virtualizer's pixels for every format
+verify: verify-tiff verify-ndpi verify-nd2
+
+# Check the browser virtualizer's TIFF pixels against tifffile
+verify-tiff:
+    uv run python web/test/tiff/verify.py
+
+# Check the browser virtualizer's NDPI pixels against tifffile
+verify-ndpi:
+    uv run python web/test/ndpi/verify.py
+
+# Check the browser virtualizer's ND2 pixels against the synthetic files' pixels
+verify-nd2:
+    uv run python web/test/nd2/verify.py
 
 # VIRTUALIZE.md: compare implementations on the corpus (network; e.g. `just compare --quick`)
 compare *args:

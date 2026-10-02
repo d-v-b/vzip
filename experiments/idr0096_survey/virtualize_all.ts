@@ -7,8 +7,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { openHttpFile } from "../../web/src/http.ts";
-import { blockReader } from "../../web/src/tiff.ts";
-import { virtualizeTiff } from "../../web/src/virtualize.ts";
+import { blockReader } from "../../web/src/virtualize/common.ts";
+import { virtualizeTiff } from "../../web/src/virtualize/tiff/virtualize.ts";
 import { writeVzip } from "../../web/src/writer.ts";
 
 const [base, list, outDir, concurrency = "6"] = process.argv.slice(2);

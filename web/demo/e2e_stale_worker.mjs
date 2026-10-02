@@ -29,7 +29,7 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://x");
   let file;
   if (url.pathname === "/data/fixture.tif") {
-    file = path.join(here, "../test/fixtures/rgb_planar_jpeg2000_bigtiff_be.ome.tif");
+    file = path.join(here, "../test/fixtures/tiff/rgb_planar_jpeg2000_bigtiff_be.ome.tif");
   } else if (url.pathname.startsWith("/vzip-demo/image-to-zarr/")) {
     file = path.join(dist, url.pathname.slice("/vzip-demo/image-to-zarr/".length) || "index.html");
   } else if (url.pathname === "/vzip-demo/vzip-sw.js" && retired) {

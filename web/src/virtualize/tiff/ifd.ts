@@ -2,10 +2,9 @@
 // range reads: its image file directories (IFDs) and their SubIFDs. Pixel
 // data is never read.
 
-export class TiffError extends Error {}
+import type { ByteReader } from "../common.ts";
 
-/** Reads `length` bytes at `offset`; must return exactly that many. */
-export type ByteReader = (offset: number, length: number) => Promise<Uint8Array>;
+export class TiffError extends Error {}
 
 export const Tag = {
   ImageWidth: 256,
@@ -31,7 +30,7 @@ export const Tag = {
 
 const WANTED = new Set<number>(Object.values(Tag));
 
-// Tags with one used value (VIRTUALIZE.md §3.1); the others are arrays.
+// Tags with one used value (profiles/tiff.md §3.1); the others are arrays.
 const SCALARS = new Set<number>([256, 257, 259, 262, 277, 282, 283, 284, 296, 317, 322, 323]);
 // XResolution and YResolution: RATIONAL, kept as [numerator, denominator].
 const RATIONAL_TAGS = new Set<number>([282, 283]);
@@ -57,42 +56,6 @@ export interface Tiff {
   bigTiff: boolean;
   /** The main IFD chain, each with its SubIFDs. */
   ifds: Ifd[];
-}
-
-/** Caches reads in aligned blocks, so nearby small reads share a request. */
-export function blockReader(
-  read: ByteReader,
-  fileSize: number,
-  blockSize = 1 << 16,
-): ByteReader {
-  const blocks = new Map<number, Promise<Uint8Array>>();
-  const block = (i: number) => {
-    let b = blocks.get(i);
-    if (b === undefined) {
-      const start = i * blockSize;
-      b = read(start, Math.min(blockSize, fileSize - start));
-      blocks.set(i, b);
-    }
-    return b;
-  };
-  return async (offset, length) => {
-    if (offset < 0 || offset + length > fileSize) {
-      throw new TiffError(`read of [${offset}, ${offset + length}) outside the ${fileSize}-byte file`);
-    }
-    const out = new Uint8Array(length);
-    const first = Math.floor(offset / blockSize);
-    const last = Math.floor((offset + Math.max(length, 1) - 1) / blockSize);
-    const parts = await Promise.all(
-      Array.from({ length: last - first + 1 }, (_, k) => block(first + k)),
-    );
-    for (const [k, data] of parts.entries()) {
-      const start = (first + k) * blockSize;
-      const a = Math.max(offset, start);
-      const b = Math.min(offset + length, start + data.length);
-      if (a < b) out.set(data.subarray(a - start, b - start), a - offset);
-    }
-    return out;
-  };
 }
 
 function u64(view: DataView, at: number, le: boolean): number {
