@@ -197,27 +197,32 @@ function analyze(rec: Rec): EntryInfo {
   if (refs.length > 1) throw entryErr("more than one reference extra block");
   const z64 = blocks.filter((b) => b.id === ID_ZIP64);
   if (z64.length > 1) throw entryErr("more than one ZIP64 extra block");
-  if (rec.csize === 0xffffffff || rec.usize === 0xffffffff) throw entryErr("size field is 0xFFFFFFFF");
-  let lho = BigInt(rec.lho);
-  if (rec.lho === 0xffffffff) {
-    if (z64.length === 0 || z64[0].data.length < 8) throw entryErr("offset 0xFFFFFFFF without a ZIP64 offset");
-    lho = z64[0].data.readBigUInt64LE(0);
+  // §3.2: a large entry (both size fields all ones) has its sizes first in the
+  // ZIP64 block, then the offset if its field is all ones.
+  const csAll = rec.csize === 0xffffffff, usAll = rec.usize === 0xffffffff;
+  if (csAll !== usAll) throw entryErr("exactly one size field is 0xFFFFFFFF");
+  const large = csAll;
+  const offAll = rec.lho === 0xffffffff;
+  const need = (large ? 16 : 0) + (offAll ? 8 : 0);
+  if (need > 0 && (z64.length === 0 || z64[0].data.length < need))
+    throw entryErr(`ZIP64 extra block missing or shorter than ${need} bytes`);
+  let usize = BigInt(rec.usize), csize = BigInt(rec.csize), lho = BigInt(rec.lho);
+  if (large) {
+    usize = z64[0].data.readBigUInt64LE(0);
+    csize = z64[0].data.readBigUInt64LE(8);
   }
+  if (offAll) lho = z64[0].data.readBigUInt64LE(large ? 16 : 0);
   if (rec.method !== 0 && rec.method !== 8) throw entryErr(`unsupported compression method ${rec.method}`);
   if (rec.flags & 1) throw entryErr("entry is encrypted");
-  const bodyOffset = lho + 30n + BigInt(Buffer.byteLength(rec.name, "latin1"));
+  // §3.1 rule 4: a large entry's local header has a 20-byte ZIP64 extra field.
+  const bodyOffset = lho + 30n + BigInt(Buffer.byteLength(rec.name, "latin1")) + (large ? 20n : 0n);
+  if (large && rec.method !== 0) throw entryErr(`large entry uses method ${rec.method}`);
   if (refs.length === 1) {
     if (rec.method === 8) throw entryErr("reference entry uses method 8");
-    return {
-      kind: "reference",
-      bodyOffset,
-      csize: BigInt(rec.csize),
-      usize: BigInt(rec.usize),
-      payloadId: refs[0].id,
-      payload: refs[0].data,
-    };
+    if (large) throw entryErr("reference entry is large");
+    return { kind: "reference", bodyOffset, csize, usize, payloadId: refs[0].id, payload: refs[0].data };
   }
-  return { kind: "bytes", bodyOffset, csize: BigInt(rec.csize), usize: BigInt(rec.usize), method: rec.method };
+  return { kind: "bytes", bodyOffset, csize, usize, method: rec.method };
 }
 
 type PageState = { lo: string; hi: string | null; offset: bigint; length: bigint; recs?: Map<string, Rec> | string };
@@ -289,26 +294,18 @@ export class Archive {
     if (ver !== "0") throw archiveErr(`unsupported vzip format version ${JSON.stringify(ver)}`);
     this.paged = comment.length === 38;
 
-    const eocd = f.read(eocdOff, 22n);
-    let cdSize = BigInt(eocd.readUInt32LE(12));
-    let cdOffset = BigInt(eocd.readUInt32LE(16));
-    const useZip64 =
-      eocd.readUInt16LE(8) === 0xffff ||
-      eocd.readUInt16LE(10) === 0xffff ||
-      cdSize === 0xffffffffn ||
-      cdOffset === 0xffffffffn;
-    if (useZip64) {
-      if (eocdOff < 20n) throw archiveErr("zip64 locator missing");
-      const loc = f.read(eocdOff - 20n, 20n);
-      if (loc.readUInt32LE(0) !== SIG_LOC64) throw archiveErr("zip64 locator missing");
-      const recOff = loc.readBigUInt64LE(8);
-      if (!f.within(recOff, 56n)) throw archiveErr("zip64 end of central directory record outside the file");
-      const r = f.read(recOff, 56n);
-      if (r.readUInt32LE(0) !== SIG_EOCD64) throw archiveErr("bad zip64 end of central directory signature");
-      if (r.readBigUInt64LE(4) !== 44n) throw archiveErr("zip64 end of central directory record size is not 44");
-      cdSize = r.readBigUInt64LE(40);
-      cdOffset = r.readBigUInt64LE(48);
-    }
+    // §3.2: the directory's size and offset always come from the zip64 record; the end
+    // record's own counts, size and offset are ignored.
+    if (eocdOff < 20n) throw archiveErr("zip64 locator missing");
+    const loc = f.read(eocdOff - 20n, 20n);
+    if (loc.readUInt32LE(0) !== SIG_LOC64) throw archiveErr("zip64 locator missing");
+    const recOff = loc.readBigUInt64LE(8);
+    if (!f.within(recOff, 56n)) throw archiveErr("zip64 end of central directory record outside the file");
+    const r = f.read(recOff, 56n);
+    if (r.readUInt32LE(0) !== SIG_EOCD64) throw archiveErr("bad zip64 end of central directory signature");
+    if (r.readBigUInt64LE(4) !== 44n) throw archiveErr("zip64 end of central directory record size is not 44");
+    const cdSize = r.readBigUInt64LE(40);
+    const cdOffset = r.readBigUInt64LE(48);
     if (!f.within(cdOffset, cdSize)) throw archiveErr("central directory lies outside the file");
     this.cdOffset = cdOffset;
     this.cdSize = cdSize;

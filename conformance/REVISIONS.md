@@ -642,3 +642,170 @@ reader to run inside a web browser. Its demo reads the IDR OME-TIFF from
 A future revision could define a "browser profile" that permits these
 relaxations explicitly. It could also say what a writer can do to keep pins
 checkable in browsers, such as recommending servers that expose the headers.
+
+## Revision 9: the ZIP64 end records are always present (incompatible)
+
+Format version 0, specification revision 9. **Status: provisional.**
+
+**This revision is incompatible**, in the sense of §1.3. An archive that was
+valid under revision 8 and has no zip64 end records is no longer valid, and
+opening it is now an archive error. That is every revision-8 archive with
+fewer than 65,535 entries and a central directory that ends below 4 GiB. To
+convert one, replace its end of central directory record with a zip64 end
+record, a locator and an all-ones end record; nothing before the end of the
+central directory changes.
+
+**Why.** Outside review
+([issue 4](https://github.com/d-v-b/vzip/issues/4)) proposed making ZIP64
+unconditional, and asked whether "exactly where a value is too large, and
+nowhere else" (r8 §3.2) was a deliberate trade-off. It was not: it was the
+default carried over from revision 1. The part of the proposal that concerns
+the end records ("option A") is adopted, for these reasons:
+
+- **The conditional rule had a path that small archives never took.** An
+  archive that crossed 65,535 entries, or a central directory offset or size
+  of 4 GiB, changed shape at its tail. The suite exercised the entry-count
+  threshold with one 70,000-entry archive and never the other two.
+- **It had already produced a defect.** Round 3's rule ("use the zip64 record
+  whenever a locator precedes the end record") misread a valid archive whose
+  last file name contained a locator signature, and all three round-3
+  implementations rejected it. Revision 4 fixed that with a second
+  conditional rule. With the locator always present, the bytes before the
+  end record are never file-name bytes, and both rules go away.
+- **It costs 76 bytes per archive** and nothing per entry.
+
+| § | r8 | r9 |
+|---|---|---|
+| 3.2, writers | zip64 end record and locator if and only if a count, size or offset is too large; only the overflowing end-record fields are all ones | zip64 end record and locator in every archive, directly after the central directory; the end record's two counts, size and offset are all ones in every archive |
+| 3.2, readers | use the zip64 record if and only if an end-record count, size or offset is all ones; otherwise do not examine the bytes before the end record | always take the directory's size and offset from the zip64 record; a missing locator is an archive error; the end record's counts, size and offset are ignored, whatever they hold |
+| 3.4 | step 1 cannot match a fake record because the real record's disk number is 0 | the same argument, restated for a tail that now ends in a locator |
+| 8.1 | "the zip64 records are used when, and only when, §3.2 says so" | the locator and the record it names are checked in every archive |
+| 8.6 | readers need not detect ZIP64 used where not needed | the same for a record's ZIP64 block, for end-record fields that are not all ones, and for a zip64 record that is not adjacent to the directory and the locator |
+| 9.2 | zip64 end records "if needed" | always |
+
+**What did not change:**
+
+- **Central directory records.** A record still carries a ZIP64 block only
+  when a value does not fit its field (its local header offset, or, since
+  large entries were added below, its sizes). Putting the block on
+  every record ("option B") would add 12 bytes to each record, about 16% of
+  the central directory of a per-chunk archive, and remove no reader rule.
+- **The magic** stays `vzip/0`.
+
+**Large entries (added to this revision after review of
+[PR #5](https://github.com/d-v-b/vzip/pull/5)).** Revision 8 limited every
+entry to less than 4 GiB, so that sizes never needed ZIP64 and no local header
+had an extra field. A Zarr shard can be 4 GiB or more, and a vzip archive
+holding shards as bytes entries could not store it. The limit is lifted with
+the standard ZIP64 layout, applied only to the entries that need it:
+
+| § | r8 | r9 |
+|---|---|---|
+| 3.1 rule 4 | every local header has an empty extra field | the same, except that a large entry's has exactly the 20-byte ZIP64 field (sizes only); its body offset is 20 bytes further on |
+| 3.1 rule 7 | sizes are less than 0xFFFFFFFF | an entry of 0xFFFFFFFF bytes or more (compressed or not) is **large**: both size fields are all ones in both headers, and the sizes are in the ZIP64 field. A large entry MUST be STORED (method 8 is an entry error), and the format entries are never large |
+| 3.2 | a record's ZIP64 block holds only the offset; a size field of 0xFFFFFFFF is an entry error | the block holds the sizes of a large entry, then an offset that needs it, in APPNOTE order; exactly one all-ones size field, a block too short for what the record needs, or two blocks are entry errors |
+| 4.3 | — | a large reference entry is an entry error (payloads are at most 65,519 bytes, so it is never needed) |
+| 9.1 | writers reject bytes entries of 0xFFFFFFFF bytes or more | removed |
+
+Why this layout and not the alternatives considered when the end records
+were changed:
+
+- **The body offset still comes from the central directory record alone.**
+  Whether an entry is large is decided by its two size fields, and the local
+  extra field's length is then fixed (20 bytes), so a reader never reads a
+  local header to find a body.
+- **It costs nothing for entries under 4 GiB.** A ZIP64 field in every local
+  header ("option C" in the issue) would cost 20 bytes per entry, which in a
+  per-chunk archive is mostly reference entries that can never be large.
+- **Large entries are STORED.** A DEFLATE body is inflated in full even for
+  a small window (§8.4), which for an entry of 4 GiB or more defeats range
+  reads; [issue 15](https://github.com/d-v-b/vzip/issues/15) points out this
+  is the cost SOZip exists to remove. Shards are compressed inside, and OME-Zarr
+  RFC 9 asks for ZIP-level compression to be off, so nothing is lost.
+- **It is what ZIP64 tools expect.** APPNOTE requires the local ZIP64 field
+  when the local size fields are all ones; tools that read local headers (and
+  `unzip -t`, which checks them) find the sizes where they look for them.
+
+This part of the revision is **compatible**: every revision-8 archive is
+still valid. A revision-8 reader gives an entry error for a large entry and
+reads the rest of the archive normally.
+
+The reference writer gains `add_file`, which streams a file into a STORED
+entry (one pass for the CRC-32, one to copy), so a shard of any size is never
+held in memory.
+
+**Checked by hand on the large-entry crafted archive** (8 GiB, sparse):
+Python's `zipfile` reads every size, offset and body; `bsdtar -tv` lists
+every size. macOS's UnZip 6.00 reads the large entries but reports "extra
+field (type: 0x0001) corrupt" for the entry whose central directory record
+follows the large ones and holds only an offset in its ZIP64 block, and
+fails to find its local header; the bytes are as APPNOTE describes, and the
+same layout would come from any ZIP64 writer (the entry needs the offset
+block because it lies past 4 GiB). UnZip appears to carry state over from
+the previous entry when it decodes a ZIP64 block.
+
+**Compatibility:**
+
+| archive | reader | result |
+|---|---|---|
+| revision 8, without zip64 end records | revision 9 | archive error |
+| revision 8, with zip64 end records but end-record fields that are not all ones | revision 9 | read normally (those fields are ignored); the archive is not valid, §8.6 |
+| revision 9 | the three revision-8 implementations | read normally: the all-ones fields send them to the zip64 record |
+| revision 9 | a reader following the revision-8 text strictly | archive error: r8 §8.1 uses the zip64 records "when, and only when" §3.2 needs them, which it does not for a small archive |
+| revision 9 | a ZIP tool that supports ZIP64 | read normally |
+
+The third row was checked: the three round-7 implementations, before any
+change, read nine archives written by the revision-9 reference writer and
+gave the reference's answer on all 4,973 queries. The fourth row is about
+the text, not the implementations: they do not enforce r8 §8.1's "only
+when", but the text allows a reader that does. For the fourth, the
+validator runs `unzip -t` on every written archive, and Python's `zipfile`,
+`zipinfo`, `bsdtar` and macOS `ditto` were checked by hand on the converted
+5,050-entry archive in `experiments/out/`.
+A tool without ZIP64 support cannot read a vzip archive any more.
+
+**Kit:**
+
+- **The validator** requires the zip64 record directly after the central
+  directory and the locator directly after it, a size field of 44, "version
+  needed" 45, single-disk fields, and an all-ones end record.
+- **Retired:** `false_zip64_locator_signature` and
+  `zip64_sentinel_without_locator`, which tested the two conditional rules.
+- **New crafted cases that must fail to open:** no zip64 records; a
+  revision-8 archive, unpaged and paged; a locator that does not immediately
+  precede the end record; a zip64 record with a wrong signature, with a size
+  field of 45, or outside the file; a central directory outside the file.
+- **Large entries:** the validator requires the 20-byte local ZIP64 field
+  and all-ones size fields in both headers of a large entry, and an empty
+  local extra field and equal local sizes on every other entry. New crafted
+  cases: `large_entries` (an entry of exactly 0xFFFFFFFF bytes, one of
+  2^32 + 3, and entries after them past 8 GiB, read by range from sparse
+  files), and entry errors for a ZIP64 block too short for the sizes, one
+  holding the sizes but not the offset, no block at all, a large
+  reference entry, and a large entry with method 8. `size_field_all_ones` now tests "exactly one size field
+  is all ones".
+- **New crafted cases that must read normally:** end-record fields of zero,
+  of garbage (unpaged and paged), and of the actual values; wrong entry
+  counts in the zip64 record; a last file name full of end-record
+  signatures.
+- **`experiments/out/idr0096_4000_d11_m5_LT_2.vzip`** was converted in place
+  (its tail rewritten as above), not regenerated from the remote TIFF.
+
+**Implementations.** The reference and the three round-7 implementations in
+`impls/` were patched directly: a small change to how each writer and each
+reader handles the end records, plus their own tests. This was not a round
+of fresh implementations from the text, so revision 9's wording of §3.2 has
+not been tested the way revisions 1–7 were.
+
+**Result:** the reference and all three implementations pass everything
+revision 9 changed:
+
+- 5169/5169 read queries, over 79 crafted archives (61 before; 6 of the 18
+  new ones test large entries);
+- 11/11 write cases, each valid under the new validator;
+- 19892/19892 cross-reads.
+
+The only failures left are the four revision-8 rules the round-7
+implementations already failed (`h/dupetag`, TS `h/upperbytes`, and two
+query-file rejections in TS and Python). The same run on the commit before
+this revision fails exactly the same checks.

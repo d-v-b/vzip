@@ -156,23 +156,35 @@ def analyze(rec):
     z64 = [b for b in blocks if b[0] == 0x0001]
     if len(z64) > 1:
         raise _entry("record has more than one ZIP64 extra block")
-    if rec.csize == 0xFFFFFFFF or rec.usize == 0xFFFFFFFF:
-        raise _entry("record has a size field of 0xFFFFFFFF")
-    off = rec.offset
-    if off == 0xFFFFFFFF:
-        if not z64 or len(z64[0][1]) < 8:
-            raise _entry("local header offset is 0xFFFFFFFF without a ZIP64 offset")
-        off = struct.unpack_from("<Q", z64[0][1], 0)[0]
+    # §3.2: an entry is large when both size fields are all ones; its sizes, then an
+    # offset of all ones, come from the one ZIP64 block, in that order
+    if (rec.csize == 0xFFFFFFFF) != (rec.usize == 0xFFFFFFFF):
+        raise _entry("exactly one size field is 0xFFFFFFFF")
+    large = rec.csize == 0xFFFFFFFF
+    csize, usize, off = rec.csize, rec.usize, rec.offset
+    need = (16 if large else 0) + (8 if off == 0xFFFFFFFF else 0)
+    if need:
+        if not z64 or len(z64[0][1]) < need:
+            raise _entry("ZIP64 extra block missing or shorter than %d bytes" % need)
+        blk = z64[0][1]
+        if large:
+            usize, csize = struct.unpack_from("<QQ", blk, 0)
+        if off == 0xFFFFFFFF:
+            off = struct.unpack_from("<Q", blk, 16 if large else 0)[0]
     if rec.flags & 1:
         raise _entry("entry is encrypted")
     if rec.method not in (0, 8):
         raise _entry("unsupported compression method %d" % rec.method)
+    if large and rec.method != 0:
+        raise _entry("large entry uses method %d" % rec.method)
     if refs:
         if rec.method != 0:
             raise _entry("reference entry uses method %d" % rec.method)
-        return Entry("reference", 0, off + 30 + len(rec.name), rec.csize, rec.usize,
+        if large:
+            raise _entry("reference entry is large")
+        return Entry("reference", 0, off + 30 + len(rec.name), csize, usize,
                      refs[0][0], refs[0][1])
-    return Entry("bytes", rec.method, off + 30 + len(rec.name), rec.csize, rec.usize)
+    return Entry("bytes", rec.method, off + 30 + len(rec.name) + (20 if large else 0), csize, usize)
 
 
 class Part:
@@ -308,7 +320,6 @@ class Archive:
         if eocd is None:
             raise _arch("not a vzip archive: no end of central directory record with a vzip comment")
         rec = self._pread(eocd, 22 + clen)
-        (_sig, _d, _cd, n_disk, n_total, cd_size, cd_off, _cl) = struct.unpack_from("<IHHHHIIH", rec)
         comment = rec[22:]
         if comment[:5] != b"vzip/":
             raise _arch("not a vzip archive: comment does not start with vzip/")
@@ -319,21 +330,22 @@ class Archive:
         if self.paged:
             self.index_offset, self.index_size = struct.unpack_from("<QQ", comment, 22)
 
-        if n_disk == 0xFFFF or n_total == 0xFFFF or cd_size == 0xFFFFFFFF or cd_off == 0xFFFFFFFF:
-            if eocd < 20:
-                raise _arch("zip64 end of central directory locator missing")
-            loc = self._pread(eocd - 20, 20)
-            lsig, _ldisk, z64off, _ndisks = struct.unpack("<IIQI", loc)
-            if lsig != Z64_LOC_SIG:
-                raise _arch("zip64 end of central directory locator missing")
-            if not self._within(z64off, 56):
-                raise _arch("zip64 end of central directory record outside the file")
-            z = self._pread(z64off, 56)
-            (zsig, zsize, _vm, _vn, _dk, _cdk, _n1, _n2, cd_size, cd_off) = struct.unpack("<IQHHIIQQQQ", z)
-            if zsig != Z64_EOCD_SIG:
-                raise _arch("bad zip64 end of central directory record signature")
-            if zsize != 44:
-                raise _arch("zip64 end of central directory record size is %d, not 44" % zsize)
+        # §3.2: the directory's size and offset always come from the zip64 record; the
+        # end record's own counts, size and offset are ignored
+        if eocd < 20:
+            raise _arch("zip64 end of central directory locator missing")
+        loc = self._pread(eocd - 20, 20)
+        lsig, _ldisk, z64off, _ndisks = struct.unpack("<IIQI", loc)
+        if lsig != Z64_LOC_SIG:
+            raise _arch("zip64 end of central directory locator missing")
+        if not self._within(z64off, 56):
+            raise _arch("zip64 end of central directory record outside the file")
+        z = self._pread(z64off, 56)
+        (zsig, zsize, _vm, _vn, _dk, _cdk, _n1, _n2, cd_size, cd_off) = struct.unpack("<IQHHIIQQQQ", z)
+        if zsig != Z64_EOCD_SIG:
+            raise _arch("bad zip64 end of central directory record signature")
+        if zsize != 44:
+            raise _arch("zip64 end of central directory record size is %d, not 44" % zsize)
         if not self._within(cd_off, cd_size):
             raise _arch("central directory lies outside the file")
         self.cd_off, self.cd_size = cd_off, cd_size
@@ -476,6 +488,9 @@ class Archive:
             key = (e.body_off, e.csize, e.usize)
             v = self._value_cache.get(key)
             if v is None:
+                # check before reading the compressed body, which may be 4 GiB or more
+                if e.usize > self.limit or e.csize > self.limit:
+                    raise VzError("request", "inflating the entry exceeds the resource limit")
                 v = inflate_clean(self._pread(e.body_off, e.csize), e.usize, self.limit, "body")
                 if len(self._value_cache) > 64:
                     self._value_cache.clear()

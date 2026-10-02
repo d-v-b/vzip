@@ -39,11 +39,12 @@ specification in an afternoon, in any language, with tools you already have.
 
 ## Status
 
-Format version 0 (`vzip/0`) is **provisional**, as of
-[spec revision 8](SPEC.md). The format is believed complete and
-implementers may rely on it, but it can still change in response to
-feedback. Any incompatible change will be announced in the
-[changelog](conformance/REVISIONS.md). Feedback is welcome.
+Format version 0 (`vzip/0`) has been **provisional** since spec revision 8;
+the [current spec](SPEC.md) is revision 9. The format is believed complete
+and implementers may rely on it, but it can still change in response to
+feedback. Any incompatible change is announced in the
+[changelog](conformance/REVISIONS.md). There has been one so far: since
+revision 9, every archive has ZIP64 end records. Feedback is welcome.
 
 ## The idea
 

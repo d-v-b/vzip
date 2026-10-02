@@ -17,6 +17,7 @@ import craft  # noqa: E402
 from craft import E, ref_extra, range_payload  # noqa: E402
 from vzip_impl import pb, reader, writer  # noqa: E402
 from vzip_impl.errors import VzError  # noqa: E402
+from vzip_impl.reader import MAX64  # noqa: E402
 
 VZIP = os.path.join(ROOT, "vzip")
 
@@ -211,11 +212,30 @@ class TestRoundTrip(Base):
         self.assertEqual(R[8]["class"], "resolution")  # path_dir/%2E%2E/d.bin -> encoded dot segment
         self.assertEqual(R[10]["value"], open(p, "rb").read()[1:3].hex())  # the archive itself
 
+    def assert_end_records(self, data, n):
+        """§3.2: zip64 record, locator, then an end record whose four fields are all ones."""
+        eocd = len(data) - (60 if data[-38:-32] == b"vzip/0" else 44)
+        self.assertEqual(struct.unpack_from("<IHHHHII", data, eocd),
+                         (0x06054B50, 0, 0, 0xFFFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF))
+        sig, disk, z64, disks = struct.unpack_from("<IIQI", data, eocd - 20)
+        self.assertEqual((sig, disk, z64, disks), (0x07064B50, 0, eocd - 76, 1))
+        sig, size, _made, need, _d, _cd, n1, n2, cd_size, cd_off = struct.unpack_from("<IQHHIIQQQQ", data, z64)
+        self.assertEqual((sig, size, need, n1, n2), (0x06064B50, 44, 45, n, n))
+        self.assertEqual(cd_off + cd_size, z64)
+
+    def test_small_archive_has_zip64_end_records(self):
+        for paged in (False, True):
+            data = writer.build([writer.WEntry("a", data=b"x")], [], page_size=64 if paged else None)
+            self.assert_end_records(data, 3 if paged else 2)
+            p = self.put("small.vzip", data)
+            self.assertEqual(reader.Archive(p).get("a"), b"x")
+            self.assertEqual(subprocess.run(["unzip", "-tq", p], capture_output=True).returncode, 0)
+
     def test_many_entries_zip64(self):
         n = 70000
         entries = [writer.WEntry("k%06d" % i, data=b"") for i in range(n)]
         data = writer.build(entries, [])
-        self.assertEqual(struct.unpack_from("<H", data, len(data) - 44 + 8)[0], 0xFFFF)
+        self.assert_end_records(data, n + 1)
         p = self.put("big.vzip", data)
         ar = reader.Archive(p)
         self.assertEqual(len(ar.list("")), n)
@@ -334,6 +354,112 @@ class TestWriterRejects(Base):
         self.reject(None, raw='{"entries": [], "entries": []}')
 
 
+U32 = 0xFFFFFFFF
+BIG = 5 << 30
+
+
+def _z64(*vals):
+    return struct.pack("<HH", 1, 8 * len(vals)) + b"".join(struct.pack("<Q", v) for v in vals)
+
+
+def _rec(csize=3, usize=3, offset=100, extra=b"", method=0, name=b"key"):
+    return reader.Rec(name, 0x800, method, 0, csize, usize, offset, extra)
+
+
+class TestZip64Decoding(unittest.TestCase):
+    """§3.2: decoding of central directory records, including large entries."""
+
+    def test_analyze(self):
+        ref = struct.pack("<HH", 0x7A76, 2) + b"\x18\x01"
+        cases = [
+            # (record, expected (kind, body_off, csize, usize))
+            (_rec(), ("bytes", 133, 3, 3)),
+            # a block on a record needing nothing is ignored
+            (_rec(extra=_z64(7)), ("bytes", 133, 3, 3)),
+            (_rec(offset=U32, extra=_z64(BIG)), ("bytes", BIG + 33, 3, 3)),
+            # extra bytes beyond what is needed are ignored
+            (_rec(offset=U32, extra=_z64(BIG, 99)), ("bytes", BIG + 33, 3, 3)),
+            # large: sizes are uncompressed then compressed; body offset adds 20
+            (_rec(U32, U32, extra=_z64(BIG + 1, BIG)), ("bytes", 153, BIG, BIG + 1)),
+            (_rec(U32, U32, extra=_z64(BIG, BIG, 7)), ("bytes", 153, BIG, BIG)),
+            (_rec(U32, U32, offset=U32, extra=_z64(BIG, BIG, BIG + 2)),
+             ("bytes", BIG + 2 + 53, BIG, BIG)),
+            (_rec(U32, U32, offset=U32, extra=_z64(MAX64, MAX64, BIG)),
+             ("bytes", BIG + 53, MAX64, MAX64)),
+            (_rec(2, 2, extra=ref), ("reference", 133, 2, 2)),
+            (_rec(2, 2, offset=U32, extra=_z64(BIG) + ref), ("reference", BIG + 33, 2, 2)),
+        ]
+        for rec, want in cases:
+            e = reader.analyze(rec)
+            self.assertEqual((e.kind, e.body_off, e.csize, e.usize), want)
+
+    def assertEntryErr(self, rec):
+        with self.assertRaises(VzError) as cm:
+            reader.analyze(rec)
+        self.assertEqual(cm.exception.cls, "entry", str(cm.exception))
+
+    def test_one_size_field_all_ones(self):
+        self.assertEntryErr(_rec(csize=U32, extra=_z64(BIG, BIG)))
+        self.assertEntryErr(_rec(usize=U32, extra=_z64(BIG, BIG)))
+
+    def test_large_without_block(self):
+        self.assertEntryErr(_rec(U32, U32))
+
+    def test_large_block_too_short(self):
+        self.assertEntryErr(_rec(U32, U32, extra=_z64(BIG)))
+
+    def test_large_block_without_offset(self):
+        self.assertEntryErr(_rec(U32, U32, offset=U32, extra=_z64(BIG, BIG)))
+
+    def test_offset_without_block(self):
+        self.assertEntryErr(_rec(offset=U32))
+
+    def test_offset_block_too_short(self):
+        self.assertEntryErr(_rec(offset=U32, extra=struct.pack("<HHI", 1, 4, 0)))
+
+    def test_two_zip64_blocks(self):
+        self.assertEntryErr(_rec(extra=_z64(0) + _z64(0)))
+
+    def test_large_deflate_entry(self):
+        self.assertEntryErr(_rec(U32, U32, method=8, extra=_z64(BIG + 1, 10)))
+
+    def test_large_reference_entry(self):
+        ref = struct.pack("<HH", 0x7A76, 0)
+        self.assertEntryErr(_rec(U32, U32, extra=_z64(BIG, BIG) + ref))
+
+
+class TestZip64Layout(unittest.TestCase):
+    """§3.1 rules 4 and 7, §3.2: header layout written for each combination of large
+    sizes and large offsets, checked byte for byte and read back by the reader."""
+
+    def test_headers(self):
+        name = b"k"
+        for csize, usize, off in [(3, 3, 10), (3, 3, BIG), (BIG, BIG, 10), (10, BIG, 10),
+                                  (U32, 1, BIG), (MAX64, MAX64, MAX64 - 1)]:
+            large = csize >= U32 or usize >= U32
+            lh = writer._local_header(name, 0, 0x1234, csize, usize)
+            (sig, ver, _f, _m, _t, _d, _crc, c32, u32, nl, xl) = struct.unpack_from("<IHHHHHIIIHH", lh)
+            self.assertEqual((sig, nl), (0x04034B50, 1))
+            if large:
+                self.assertEqual((ver, c32, u32, xl), (45, U32, U32, 20))
+                self.assertEqual(lh[31:], struct.pack("<HHQQ", 1, 16, usize, csize))
+            else:
+                self.assertEqual((ver, c32, u32, xl, len(lh)), (20, csize, usize, 0, 31))
+
+            cd = writer._cd_record(name, 0, 0x1234, csize, usize, off)
+            (rec,) = reader.parse_records(cd)
+            z64 = (struct.pack("<QQ", usize, csize) if large else b"") + \
+                (struct.pack("<Q", off) if off >= U32 else b"")
+            want_extra = struct.pack("<HH", 1, len(z64)) + z64 if z64 else b""
+            self.assertEqual(rec.extra, want_extra)
+            self.assertEqual(struct.unpack_from("<H", cd, 6)[0], 45 if z64 else 20)
+            self.assertEqual((rec.csize, rec.usize), (U32, U32) if large else (csize, usize))
+            self.assertEqual(rec.offset, U32 if off >= U32 else off)
+            e = reader.analyze(rec)
+            # body offset from the CD record alone matches the local header's length
+            self.assertEqual((e.body_off, e.csize, e.usize), (off + len(lh), csize, usize))
+
+
 class TestReadCLI(Base):
     def test_malformed_queries(self):
         r, p = self.write_desc({"entries": [{"key": "a", "bytes": "01"}]})
@@ -395,8 +521,8 @@ class TestReaderErrors(Base):
 
     def test_cd_outside_file(self):
         data = bytearray(self.good([E("a", b"x")]))
-        eocd = len(data) - 44
-        struct.pack_into("<I", data, eocd + 16, len(data))  # cd offset beyond
+        z64 = len(data) - 44 - 20 - 56
+        struct.pack_into("<Q", data, z64 + 48, len(data))  # cd offset beyond
         self.assertErr("archive", self.open, bytes(data))
 
     def test_cd_does_not_parse(self):
@@ -429,7 +555,29 @@ class TestReaderErrors(Base):
             self.assertErr("archive", self.open, self.good(sources_pb=s))
 
     def test_zip64_locator_missing(self):
-        self.assertErr("archive", self.open, self.good(eocd_counts=0xFFFF))
+        self.assertErr("archive", self.open, self.good(zip64=False))
+        # a revision-8 archive: no zip64 records, actual values in the end record
+        new = self.good([E("a", b"x")])
+        fields = struct.unpack_from("<QQQQ", new, len(new) - 44 - 20 - 32)
+        self.assertErr("archive", self.open, self.good([E("a", b"x")], zip64=False, eocd_fields=fields))
+
+    def test_zip64_record_invalid(self):
+        good = self.good([E("a", b"x")])
+        z64 = len(good) - 44 - 20 - 56
+        self.assertEqual(good[z64:z64 + 4], b"PK\x06\x06")
+        for off, fmt, value in ((z64, "<I", 0x06064B51),          # record signature
+                                (z64 + 4, "<Q", 45),              # size field is not 44
+                                (z64 + 56 + 8, "<Q", len(good))):  # locator points outside the file
+            data = bytearray(good)
+            struct.pack_into(fmt, data, off, value)
+            self.assertErr("archive", self.open, bytes(data))
+
+    def test_eocd_fields_ignored(self):
+        # readers take the directory's size and offset from the zip64 record (§3.2)
+        for fields in ((0, 0, 0, 0), (7, 7, 12345, 99999)):
+            ar = self.open(self.good([E("a", b"hello")], eocd_fields=fields))
+            self.assertEqual(ar.get("a"), b"hello")
+            self.assertEqual(ar.list(""), ["a"])
 
     def test_page_index_malformed(self):
         recs = [E("a", b"1"), E("b", b"2")]
@@ -480,13 +628,8 @@ class TestReaderErrors(Base):
         self.assertErr("entry", self.open(self.good([e])).classify, "a")
 
     def test_entry_zip64_rules(self):
-        self.assertErr("entry", self.open(self.good([E("a", b"x", csize=0xFFFFFFFF)])).get, "a")
-        self.assertErr("entry", self.open(self.good([E("a", b"x", offset=0xFFFFFFFF)])).get, "a")
-        short = struct.pack("<HHI", 1, 4, 0)
-        self.assertErr("entry", self.open(self.good([E("a", b"x", offset=0xFFFFFFFF, extra=short)])).get, "a")
-        two = struct.pack("<HHQ", 1, 8, 0) * 2
-        self.assertErr("entry", self.open(self.good([E("a", b"x", extra=two)])).get, "a")
-        # a single 0x0001 block on a normal offset is ignored; a correct one is used
+        # end to end: an offset of all ones read from a correct 0x0001 block, and a
+        # 0x0001 block on a record that needs nothing is ignored
         ok = struct.pack("<HHQ", 1, 8, 12345)
         self.assertEqual(self.open(self.good([E("a", b"x", extra=ok)])).get("a"), b"x")
         ok = struct.pack("<HHQ", 1, 8, 0)
