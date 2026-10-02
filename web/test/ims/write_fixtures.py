@@ -199,6 +199,11 @@ def accepted() -> None:
         imaris(f, [{"size": (1, 5, 6), "dims": (1, 8, 8), "chunks": (1, 8, 8)}], dtype="<i2")
         f["DataSet/ResolutionLevel 0/TimePoint 0/Channel 0"].attrs["ImageSizeX"] = text(" 6\t")
 
+    # A 2-D image in chunks of 4 z planes: the z axis stays, of size 1, so
+    # that each chunk's bytes still decode to its Zarr chunk.
+    with open_file("ims_2d_deep_chunks", "v108") as f:
+        imaris(f, [{"size": (1, 5, 6), "dims": (4, 8, 8), "chunks": (4, 8, 8)}], dtype="u1")
+
     # A huge attribute (beyond the fractal heap's largest managed object),
     # UTF-8 names, and a level of one filtered chunk (single chunk index).
     with open_file("ims_latest_huge_attribute", "latest") as f:

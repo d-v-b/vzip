@@ -22,6 +22,7 @@ test("virtualizes the synthetic IMS files", async () => {
     ["ims_latest_soft_links.ims", { sizes: { t: 1, c: 2, z: 1, y: 5, x: 6 }, channels: ["first", "second"] }],
     ["ims_small_k.ims", { sizes: { t: 1, c: 5, z: 3, y: 5, x: 6 }, chunks: 133 }],
     ["ims_2d_no_metadata.ims", { sizes: { t: 1, c: 1, z: 1, y: 5, x: 6 }, dataType: "int16", channels: ["Channel 0"] }],
+    ["ims_2d_deep_chunks.ims", { sizes: { t: 1, c: 1, z: 1, y: 5, x: 6 }, chunkShape: [4, 8, 8], chunks: 1 }],
   ];
   for (const [name, expected] of cases) {
     const v = await virtualize(name);

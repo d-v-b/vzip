@@ -67,6 +67,11 @@ def test_virtualizes_the_synthetic_files():
             [("y", None), ("x", None)], [1, 1], None,
             {"label": "Channel 0", "color": "FFFFFF", "active": True,
              "window": {"min": -32768, "max": 32767, "start": -32768, "end": 32767}}),
+        # One z plane in chunks of 4: the z axis stays, so chunks decode whole.
+        "ims_2d_deep_chunks.ims": (
+            {"sizes": {"t": 1, "c": 1, "z": 1, "y": 5, "x": 6}, "chunkShape": [4, 8, 8], "chunks": 1},
+            [("z", None), ("y", None), ("x", None)], [1, 1, 1], None,
+            {"label": "Channel 0", "color": "FFFFFF", "active": True, "window": {"min": 0, "max": 255, "start": 0, "end": 255}}),
     }
     for name, (summary, axes, scale, translation, channel) in cases.items():
         fmt, out = virtualize(str(FIXTURES / name), url=f"https://data.test/{name}")

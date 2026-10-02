@@ -190,7 +190,9 @@ def virtualize_ims(url: str, read: Reader, size: int) -> Output:
 
     # §8.9: output.
     z0 = level_info[0][0][0]
-    axes = (["t"] if times > 1 else []) + (["c"] if channels > 1 else []) + (["z"] if z0 > 1 else []) + ["y", "x"]
+    # A z axis also when chunks hold several z planes, so that they decode to Zarr chunks.
+    has_z = z0 > 1 or any(info[1][0] > 1 for info in level_info)
+    axes = (["t"] if times > 1 else []) + (["c"] if channels > 1 else []) + (["z"] if has_z else []) + ["y", "x"]
     if z0 == 1 and any(info[0][0] != 1 for info in level_info):
         raise Rejected("a level has more than one z plane, and level 0 has one")
     unit = "micrometer" if not unit_text else UNITS.get(unit_text)

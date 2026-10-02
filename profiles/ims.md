@@ -62,7 +62,7 @@ An object header at address `a` is a list of **blocks** that hold its
 messages.
 
 - **Version 2**, if the 4 bytes at `a` are `OHDR`: byte `a + 4` MUST be
-  2 and byte `a + 5` holds flags `F`. After byte `a + 6` come 16 bytes if
+  2 and byte `a + 5` holds flags `F`. Starting at byte `a + 6` come 16 bytes if
   `F & 0x20`, then 4 bytes if `F & 0x10`, then the length `s` of the first
   block in `2^(F & 3)` bytes. The first block is the `s` bytes after that
   length; it and the 4 bytes after it (a checksum) MUST lie within the file. A
@@ -238,7 +238,7 @@ first byte shifted right by 4 bits gives its kind:
   being the ID length) are its key. The huge objects' B-tree MUST be defined;
   it is a version 2 B-tree of type 1, read in full the first time one of the
   heap's huge objects is read, whose records are an address (which MUST be
-  defined), a length and a key, 8 bytes each,, with no two keys equal. The
+  defined), a length and a key, 8 bytes each, with no two keys equal. The
   object is the record with its key, which MUST exist: the record's length
   in bytes at its address.
 - Any other kind (tiny objects, other ID versions) rejects the input.
@@ -478,7 +478,10 @@ Other attributes, and the other groups (`Thumbnail`, `Scene`,
   integers), and its fraction `F` is the decimal `0.` followed by its
   digits after the `.` (0 without them). If `T > 1` and `TimePoint1`
   (`I1`, `F1`) and `TimePoint<T>` (`IT`, `FT`) are both valid, let
-  `Δ = (IT − I1) + (FT − F1)`, the integer difference computed exactly. If
+  `Δ = D + (FT − F1)`, where `D = IT − I1` is the integer difference
+  computed exactly and then converted to binary64, `FT` and `F1` are the
+  fractions converted to binary64 (§1.3), and the subtraction and addition
+  are binary64 operations in that order. If
   `Δ > 0` the **time step** is `Δ / (T − 1)` seconds, the mean interval
   between time points. Otherwise there is no time step.
 
@@ -488,8 +491,9 @@ One image at the archive root (§2.2), with one array per level `r` at path
 `"<r>"`.
 
 - **Axes:** `t` if `T > 1`; `c` if `C > 1`; `z` if level 0's `Z` is
-  more than 1; then `y`, `x`. When level 0's `Z` is 1, every level's
-  `Z` MUST be 1.
+  more than 1 or some level's `cz` is more than 1 (a chunk of several z
+  planes keeps them, so that its bytes decode to its Zarr chunk); then `y`,
+  `x`. When level 0's `Z` is 1, every level's `Z` MUST be 1.
 - **Array** of level `r` (§2.1): shape `T`, `C`, `Zr`, `Yr`, `Xr`
   and chunk shape 1, 1, `cz`, `cy`, `cx` (each only for the axes
   present); the data type of §8.7; codecs `bytes` (with the byte order as
@@ -503,7 +507,7 @@ One image at the archive root (§2.2), with one array per level `r` at path
   `second` if there is a time step, else the scale 1 and no unit. `c` has
   the scale 1.
 - **Translation:** when every spatial axis present has an extent, every level
-  has the translation (§2.2, §2.3) `ExtMin0` for `x`, `ExtMin1` for
+  has the translation (§2.2) `ExtMin0` for `x`, `ExtMin1` for
   `y`, `ExtMin2` for `z` and 0 for `t` and `c`: Imaris's extents are
   the outer corners of the image. Otherwise there is none.
 - **Name:** `Name` of `Image`, if present and not empty.

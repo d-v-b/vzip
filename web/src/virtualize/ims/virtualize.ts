@@ -227,7 +227,9 @@ export async function virtualizeIms(
 
   // §8.9: output.
   const z0 = levelInfo[0].sizes[0];
-  const axes = [...(times > 1 ? ["t"] : []), ...(channels > 1 ? ["c"] : []), ...(z0 > 1 ? ["z"] : []), "y", "x"];
+  // A z axis also when chunks hold several z planes, so that they decode to Zarr chunks.
+  const hasZ = z0 > 1 || levelInfo.some((l) => l.chunk[0] > 1);
+  const axes = [...(times > 1 ? ["t"] : []), ...(channels > 1 ? ["c"] : []), ...(hasZ ? ["z"] : []), "y", "x"];
   if (z0 === 1 && levelInfo.some((l) => l.sizes[0] !== 1)) reject("a level has more than one z plane, and level 0 has one");
   const unit = !unitText ? "micrometer" : Object.hasOwn(LENGTH_UNITS, unitText) ? LENGTH_UNITS[unitText] : undefined;
   const extent: Record<string, number> = {};

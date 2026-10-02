@@ -410,3 +410,21 @@ IMS.
 
 **Not yet done.** No independent implementation round has read the new
 profiles.
+
+**A first independent reading of IMS.** A standard-library implementation
+written from §1, §2, §8 and HARNESS.md alone agreed with both maintained
+implementations on all 27 IMS fixtures, 270 mutants and the 21 public files.
+Its notes found one real bug, in the profile and both implementations: with
+one z plane at level 0, the z axis was dropped even when chunks held several
+z planes, so a chunk's bytes did not decode to its Zarr chunk. The z axis
+now stays when any level's `cz` is more than 1 (new fixture
+`ims_2d_deep_chunks`). Three wordings were also fixed: where a v2 object
+header's optional fields start, how the time step's Δ is computed in
+binary64, and a wrong cross-reference to §2.3's centre rule.
+
+Points the notes raised that are not yet settled, for the next round: which
+fields count as lengths for the 2^53 − 1 check; whether a v2 B-tree node's
+record count is checked; whether a fractal heap direct block must lie wholly
+within the file; whether fixed-array checks apply to unallocated entries; the
+padding of v1 attribute messages; and whether a datatype or dataspace must
+lie within its declared size or only within the message.

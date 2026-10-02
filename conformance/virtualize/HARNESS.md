@@ -13,7 +13,7 @@ An implementation is a command:
 virtualize <url> <out.json>
 ```
 
-- `<url>` is an `http://` URL of a TIFF or ND2 file. Use it, exactly as given,
+- `<url>` is an `http://` URL of an image file (any profile). Use it, exactly as given,
   as the input URL `U` of the specification (§1.2).
 - On success, write the output (§1.1) to `<out.json>` as described below, and
   exit with status 0. Printing a one-line summary to stdout is optional.
