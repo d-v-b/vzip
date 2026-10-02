@@ -24,7 +24,13 @@ class Scalar(tuple):
         return self[1]
 
 
-def _records(data: bytes, pos: int, end: int, count: int | None):
+MAX_DEPTH = 100
+
+
+def _records(data: bytes, pos: int, end: int, count: int | None, depth: int = 0):
+    """The records in data[pos:end], which are at `depth` (§4.2)."""
+    if depth > MAX_DEPTH:
+        raise Rejected(f"LV levels nested more than {MAX_DEPTH} deep")
     out = []
     while pos < end and (count is None or len(out) < count):
         start = pos
@@ -68,7 +74,7 @@ def _records(data: bytes, pos: int, end: int, count: int | None):
             level_end = start + length
             if level_end > end or level_end < pos:
                 raise Rejected("LV level length outside the data")
-            members, after = _records(data, pos, level_end, c)
+            members, after = _records(data, pos, level_end, c, depth + 1)
             if len(members) != c or after != level_end:
                 raise Rejected("LV level records do not end at its length")
             pos = level_end

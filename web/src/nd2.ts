@@ -131,6 +131,7 @@ function nodeLoop(node: LVObject): Omit<Loop, "depth"> | "spectral" | undefined 
   if (![1, 2, 4, 6, 8].includes(type)) reject(`unsupported experiment loop type ${type}`);
   const pars = obj(node.get("uLoopPars"), "uLoopPars", null);
   const itemValid = list(node.get("pItemValid"), "pItemValid");
+  for (const x of itemValid ?? []) flag(x, "pItemValid entry");
   if (pars === null) return undefined;
   let loop: Omit<Loop, "depth"> | "spectral";
   let count: number;
@@ -143,6 +144,7 @@ function nodeLoop(node: LVObject): Omit<Loop, "depth"> | "spectral" | undefined 
       const periods = members(pars.get("pPeriod"), "pPeriod").map((p) => obj(p, "pPeriod member"));
       const ok = valid(periods, pars.get("pPeriodValid"), "pPeriodValid");
       count = ok.reduce<number>((n, p) => n + integer(p.get("uiCount"), "uiCount"), 0);
+      if (count > Number.MAX_SAFE_INTEGER) reject("the time loop's count is more than 2^53 - 1");
       const ms = ok.map((p) => number(p.get("dPeriod"), "dPeriod", 0));
       loop = { kind: "t", count, scale: ms.length ? ms[0] : 0 };
       break;
@@ -193,7 +195,15 @@ export function flattenExperiment(root: LV | undefined): Loop[] {
       visit(obj(child, "experiment node"), childDepth);
     }
   };
-  if (root !== undefined) visit(obj(root, "SLxExperiment"), 0);
+  // Every node is checked, whether or not the flattening visits it.
+  const check = (node: LVObject) => {
+    nodeLoop(node);
+    for (const child of members(node.get("ppNextLevelEx"), "ppNextLevelEx")) check(obj(child, "experiment node"));
+  };
+  if (root !== undefined) {
+    check(obj(root, "SLxExperiment"));
+    visit(obj(root, "SLxExperiment"), 0);
+  }
   const kinds = loops.map((l) => l.kind);
   if (new Set(kinds).size !== kinds.length) reject(`repeated loop kinds ${kinds.join(", ")}`);
   return loops;
@@ -357,6 +367,7 @@ export async function virtualizeNd2(
 
   // §4.4: frames.
   const total = loops.reduce((n, l) => n * l.count, 1);
+  if (total > Number.MAX_SAFE_INTEGER) reject("more than 2^53 - 1 frames");
   const frameOffsets = new Map<number, number>();
   for (const [name, offset] of chunks) {
     const m = name.match(FRAME);

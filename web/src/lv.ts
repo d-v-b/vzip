@@ -38,7 +38,11 @@ class Reader {
 
 const utf16 = new TextDecoder("utf-16le"); // replaces unpaired surrogates with U+FFFD
 
-function records(r: Reader, end: number, count?: number): [string, LV][] {
+const MAX_DEPTH = 100;
+
+/** The records up to `end`, which are at `depth` (§4.2). */
+function records(r: Reader, end: number, count: number | undefined, depth: number): [string, LV][] {
+  if (depth > MAX_DEPTH) throw new LVError(`LV levels nested more than ${MAX_DEPTH} deep`);
   const out: [string, LV][] = [];
   while (r.pos < end && (count === undefined || out.length < count)) {
     const start = r.pos;
@@ -87,7 +91,7 @@ function records(r: Reader, end: number, count?: number): [string, LV][] {
         const length = Number(r.view.getBigUint64(take(8), true));
         const levelEnd = start + length;
         if (levelEnd > end || levelEnd < r.pos) throw new LVError("LV level length outside the data");
-        const members = records(r, levelEnd, items);
+        const members = records(r, levelEnd, items, depth + 1);
         if (members.length !== items || r.pos !== levelEnd) {
           throw new LVError("LV level records do not end at its length");
         }
@@ -116,5 +120,5 @@ export async function decodeLV(data: Uint8Array): Promise<LVObject> {
     data = inner;
   }
   const r = new Reader(data);
-  return new Map(records(r, data.length));
+  return new Map(records(r, data.length, undefined, 0));
 }

@@ -1,29 +1,27 @@
-//! `virtualize <url> <out.json>`: VIRTUALIZE.md (profiles version 0, revision 2).
-
 mod common;
+mod http;
+mod json;
+mod lv;
 mod nd2;
 mod tiff;
 mod xml;
 
-use common::{E, Output, R, Source};
+use common::{Error, Output, Res};
 
-fn run(url: &str) -> R<Output> {
-    let src = Source::open(url)?;
-    let head = src.read(0, src.size.min(12))?;
-    let mut out = Output::new();
-    let tiff_magics: [[u8; 4]; 4] = [
-        [0x49, 0x49, 0x2A, 0x00],
-        [0x4D, 0x4D, 0x00, 0x2A],
-        [0x49, 0x49, 0x2B, 0x00],
-        [0x4D, 0x4D, 0x00, 0x2B],
-    ];
-    if head.len() >= 4 && tiff_magics.iter().any(|m| head[..4] == *m) {
-        tiff::virtualize(&src, &mut out)?;
-    } else if head.len() >= 4 && head[..4] == [0xDA, 0xCE, 0xBE, 0x0A] {
-        nd2::virtualize(&src, &mut out)?;
-    } else {
-        return Err(E::Reject("not a TIFF or ND2 (version 3+) file".into()));
+fn run(url: &str, out_path: &str) -> Res<Output> {
+    let mut src = http::Source::open(url)?;
+    let size = src.size;
+    if size < 4 {
+        rej!("file shorter than 4 bytes");
     }
+    let magic = src.read(0, 4)?;
+    let mut out = Output::new(size);
+    match &magic[..] {
+        b"II\x2a\x00" | b"MM\x00\x2a" | b"II\x2b\x00" | b"MM\x00\x2b" => tiff::virtualize(&mut src, &mut out)?,
+        b"\xda\xce\xbe\x0a" => nd2::virtualize(&mut src, &mut out)?,
+        _ => rej!("unrecognized file signature {:02x?}", magic),
+    }
+    let _ = out_path;
     Ok(out)
 }
 
@@ -33,30 +31,32 @@ fn main() {
         eprintln!("usage: virtualize <url> <out.json>");
         std::process::exit(2);
     }
-    let (url, path) = (args[1].clone(), args[2].clone());
-    // Deeply nested LV structures recurse; give the worker a large stack.
-    let worker = std::thread::Builder::new()
-        .stack_size(512 * 1024 * 1024)
-        .spawn(move || run(&url).map(|o| o.to_json(&url)))
+    let url = args[1].clone();
+    let out_path = args[2].clone();
+    // Deeply nested LV levels recurse; run on a thread with a large stack.
+    let h = std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(move || run(&url, &out_path).map(|o| o.to_json(&url)))
         .expect("spawn");
-    match worker.join() {
+    match h.join() {
         Ok(Ok(json)) => {
-            if let Err(e) = std::fs::write(&path, json) {
-                eprintln!("cannot write {path}: {e}");
-                std::process::exit(2);
+            if let Err(e) = std::fs::write(&args[2], json) {
+                eprintln!("error: cannot write {}: {e}", args[2]);
+                std::process::exit(1);
             }
+            println!("ok: {}", args[1]);
         }
-        Ok(Err(E::Reject(msg))) => {
-            eprintln!("rejected: {msg}");
+        Ok(Err(Error::Reject(m))) => {
+            eprintln!("rejected: {m}");
             std::process::exit(3);
         }
-        Ok(Err(E::Fail(msg))) => {
-            eprintln!("failed: {msg}");
-            std::process::exit(2);
+        Ok(Err(Error::Fail(m))) => {
+            eprintln!("error: {m}");
+            std::process::exit(1);
         }
         Err(_) => {
-            eprintln!("failed: panic");
-            std::process::exit(2);
+            eprintln!("error: internal panic");
+            std::process::exit(1);
         }
     }
 }

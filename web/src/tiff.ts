@@ -112,7 +112,14 @@ function values(
       case 4: case 13: out.push(view.getUint32(4 * i, le)); break;
       case 9: out.push(view.getInt32(4 * i, le)); break;
       case 16: case 18: out.push(u64(view, 8 * i, le)); break;
-      case 17: out.push(Number(view.getBigInt64(8 * i, le))); break;
+      case 17: {
+        const v = view.getBigInt64(8 * i, le);
+        if (v > BigInt(Number.MAX_SAFE_INTEGER) || v < -BigInt(Number.MAX_SAFE_INTEGER)) {
+          throw new TiffError("a tag value is more than 2^53 - 1");
+        }
+        out.push(Number(v));
+        break;
+      }
       case 11: out.push(view.getFloat32(4 * i, le)); break;
       case 12: out.push(view.getFloat64(8 * i, le)); break;
       case 5: out.push(view.getUint32(8 * i, le) / view.getUint32(8 * i + 4, le)); break;
@@ -125,6 +132,7 @@ function values(
 
 export async function readTiff(read: ByteReader, fileSize: number): Promise<Tiff> {
   const header = await read(0, Math.min(16, fileSize));
+  if (header.length < 8) throw new TiffError("file too short for a TIFF header");
   const order = String.fromCharCode(header[0], header[1]);
   if (order !== "II" && order !== "MM") throw new TiffError("not a TIFF file");
   const le = order === "II";

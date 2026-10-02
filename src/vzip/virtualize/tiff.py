@@ -47,6 +47,8 @@ class Ifd:
 def read_tiff(read: Reader, size: int):
     """(little_endian, main-chain IFDs with their SubIFDs) (§3.1)."""
     head = read(0, min(16, size))
+    if len(head) < 8:
+        raise Rejected("file too short for a TIFF header")
     if head[:2] not in (b"II", b"MM"):
         raise Rejected("not a TIFF file")
     e = "<" if head[:2] == b"II" else ">"
@@ -68,7 +70,10 @@ def read_tiff(read: Reader, size: int):
             return [v[2 * i] / v[2 * i + 1] if v[2 * i + 1] else 0.0 for i in range(n)]
         if typ == 2:
             return data
-        return list(struct.unpack(e + FORMATS[typ] * n, data[: SIZES[typ] * n]))
+        out = list(struct.unpack(e + FORMATS[typ] * n, data[: SIZES[typ] * n]))
+        if typ in (16, 17, 18) and any(abs(v) > MAX_SAFE for v in out):
+            raise Rejected("a tag value is more than 2^53 - 1")
+        return out
 
     def read_ifd(offset: int):
         if offset < (16 if big else 8):

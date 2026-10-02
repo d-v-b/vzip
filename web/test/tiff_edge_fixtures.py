@@ -222,6 +222,21 @@ def main() -> None:
     t.write("edge_reject_candidate_planar3.tif")
     planes("edge_reject_nbsp_size.tif", ome('SizeZ="\u00a02"'), 2)
     planes("edge_reject_plane_limit.tif", ome('SizeT="100001"'), 1)
+    # Revision 4.
+    # "<!-->" does not end the comment it starts; SizeX is not validated.
+    planes("edge_xml_comment_marker.tif", (
+        '<OME><!--><Image Name="hidden"/>--><Image Name="shown"><Pixels SizeX="abc" SizeZ="1"/></Image></OME>'
+    ).encode() + b"\0", 1)
+    # A self-closing UUID names the file "" (here, besides x.tif).
+    planes("edge_reject_uuid_self_closing.tif", ome(tz, '<TiffData><UUID/></TiffData>'
+                                                        '<TiffData FirstZ="1" IFD="1"><UUID FileName="x.tif"/></TiffData>'), 2)
+    # A LONG8 value above 2^53 - 1 rejects, even for a tile with no bytes.
+    t = Tiff()
+    offsets = [t.blob(bytes([i]) * 1024) for i in range(3)] + [2**60]
+    t.chain([t.ifd([(256, SHORT, [64]), (257, SHORT, [64]), (258, SHORT, [8]), (322, SHORT, [32]), (323, SHORT, [32]),
+                    (324, 16, struct.pack("<4Q", *offsets)), (325, LONG, [1024, 1024, 1024, 0])])])
+    t.write("edge_reject_big_offset.tif")
+    (OUT / "edge_reject_no_ifds.tif").write_bytes(b"II*\0\0\0\0\0" + b"\0" * 64)
     for p in sorted(OUT.glob("edge_*.tif")):
         print(p.name, p.stat().st_size)
 

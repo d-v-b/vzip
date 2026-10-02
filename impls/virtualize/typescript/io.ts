@@ -1,4 +1,6 @@
-// Input access, rejection, and output helpers.
+// Shared helpers: rejection, HTTP range reader with a block cache, output entries.
+
+export const MAX_SAFE = 2 ** 53 - 1;
 
 export class Reject extends Error {}
 
@@ -6,243 +8,184 @@ export function reject(msg: string): never {
   throw new Reject(msg);
 }
 
-export const MAX_SAFE = Number.MAX_SAFE_INTEGER; // 2^53 - 1
+/** Convert a u64 BigInt to a number, rejecting values above 2^53 - 1. */
+export function big2num(v: bigint, what: string): number {
+  if (v > BigInt(MAX_SAFE)) reject(`${what} above 2^53-1: ${v}`);
+  return Number(v);
+}
 
-const BLOCK = 1 << 16;
+/** A number computed by §1.3 must be finite. */
+export function fin(x: number, what: string): number {
+  if (!Number.isFinite(x)) reject(`${what} is not finite`);
+  return x;
+}
 
-/** Random access to an HTTP resource via Range requests, cached in 64 KiB blocks. */
+const BLOCK = 65536;
+
 export class Source {
   url: string;
-  size = 0;
-  blocks = new Map<number, Uint8Array>();
-  requests = 0;
+  size: number;
+  private blocks = new Map<number, Promise<Uint8Array>>();
 
-  constructor(url: string) {
+  constructor(url: string, size: number) {
     this.url = url;
+    this.size = size;
   }
 
-  async open(): Promise<void> {
-    const r = await fetch(this.url, { method: "HEAD" });
-    if (!r.ok) throw new Error(`HEAD ${this.url}: ${r.status}`);
-    const len = r.headers.get("content-length");
-    if (len === null || !/^[0-9]+$/.test(len)) throw new Error("HEAD: no Content-Length");
-    this.size = Number(len);
+  static async open(url: string): Promise<Source> {
+    const r = await fetch(url, { method: "HEAD" });
+    if (r.status !== 200) throw new Error(`HEAD ${url}: status ${r.status}`);
+    const cl = r.headers.get("content-length");
+    if (cl === null || !/^[0-9]+$/.test(cl)) throw new Error("HEAD: no Content-Length");
+    const size = Number(cl);
+    if (!Number.isSafeInteger(size)) throw new Error("HEAD: bad Content-Length");
+    return new Source(url, size);
   }
 
-  private async fetchRange(start: number, end: number): Promise<Uint8Array> {
-    // end exclusive
-    for (let attempt = 0; ; attempt++) {
+  private async fetchRange(a: number, b: number): Promise<Uint8Array> {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 4; attempt++) {
       try {
-        this.requests++;
-        const r = await fetch(this.url, { headers: { Range: `bytes=${start}-${end - 1}` } });
-        if (r.status !== 206) throw new Error(`GET ${this.url} ${start}-${end - 1}: status ${r.status}`);
-        const b = new Uint8Array(await r.arrayBuffer());
-        if (b.length !== end - start) throw new Error(`short read ${b.length} != ${end - start}`);
-        return b;
+        const r = await fetch(this.url, { headers: { Range: `bytes=${a}-${b - 1}` } });
+        if (r.status !== 206) throw new Error(`GET ${a}-${b - 1}: status ${r.status}`);
+        const buf = new Uint8Array(await r.arrayBuffer());
+        if (buf.length !== b - a) throw new Error(`GET ${a}-${b - 1}: got ${buf.length} bytes`);
+        return buf;
       } catch (e) {
-        if (attempt >= 3) throw e;
-        await new Promise((res) => setTimeout(res, 500 * (attempt + 1)));
+        lastErr = e;
+        await new Promise((res) => setTimeout(res, 200 * (attempt + 1)));
       }
     }
+    throw lastErr;
   }
 
-  /** Ensure the blocks covering the given ranges are cached, fetching runs of missing blocks in parallel. */
-  async prefetch(ranges: Array<[number, number]>): Promise<void> {
-    const need = new Set<number>();
-    for (const [off, len] of ranges) {
-      if (len <= 0) continue;
-      const end = Math.min(off + len, this.size);
-      for (let b = Math.floor(off / BLOCK); b * BLOCK < end; b++) if (!this.blocks.has(b)) need.add(b);
+  private block(i: number): Promise<Uint8Array> {
+    let p = this.blocks.get(i);
+    if (!p) {
+      const a = i * BLOCK;
+      const b = Math.min(this.size, a + BLOCK);
+      p = this.fetchRange(a, b);
+      this.blocks.set(i, p);
     }
-    const sorted = [...need].sort((a, b) => a - b);
-    // group into runs of at most 64 blocks
-    const runs: Array<[number, number]> = [];
-    for (const b of sorted) {
-      const last = runs[runs.length - 1];
-      if (last && last[1] === b && last[1] - last[0] < 64) last[1] = b + 1;
-      else runs.push([b, b + 1]);
-    }
-    let i = 0;
-    const worker = async () => {
-      while (i < runs.length) {
-        const [b0, b1] = runs[i++];
-        const start = b0 * BLOCK;
-        const end = Math.min(b1 * BLOCK, this.size);
-        const data = await this.fetchRange(start, end);
-        for (let b = b0; b < b1; b++) {
-          const s = (b - b0) * BLOCK;
-          this.blocks.set(b, data.subarray(s, Math.min(s + BLOCK, data.length)));
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(16, runs.length) }, worker));
+    return p;
   }
 
-  /** Read [off, off+len); a read outside the file rejects the input. */
+  /** Read `len` bytes at `off`; a read outside the file rejects the input. */
   async read(off: number, len: number): Promise<Uint8Array> {
-    if (!Number.isSafeInteger(off) || !Number.isSafeInteger(len) || off < 0 || len < 0)
-      reject(`read at ${off} length ${len}: bad offset or length`);
-    if (off + len > this.size) reject(`read at ${off} length ${len} outside the file (size ${this.size})`);
+    if (!Number.isSafeInteger(off) || !Number.isSafeInteger(len) || off < 0 || len < 0 || off > this.size - len) {
+      reject(`read outside the file: ${off}+${len} > ${this.size}`);
+    }
     if (len === 0) return new Uint8Array(0);
-    await this.prefetch([[off, len]]);
+    if (len > 16 * BLOCK) return this.fetchRange(off, off + len);
+    const first = Math.floor(off / BLOCK);
+    const last = Math.floor((off + len - 1) / BLOCK);
+    const parts = await Promise.all(Array.from({ length: last - first + 1 }, (_, k) => this.block(first + k)));
+    if (parts.length === 1) {
+      const s = off - first * BLOCK;
+      return parts[0].subarray(s, s + len);
+    }
     const out = new Uint8Array(len);
-    let pos = off;
-    while (pos < off + len) {
-      const b = Math.floor(pos / BLOCK);
-      const blk = this.blocks.get(b)!;
-      const s = pos - b * BLOCK;
-      const n = Math.min(blk.length - s, off + len - pos);
-      out.set(blk.subarray(s, s + n), pos - off);
-      pos += n;
+    let w = 0;
+    for (let k = 0; k < parts.length; k++) {
+      const base = (first + k) * BLOCK;
+      const s = Math.max(off, base) - base;
+      const e = Math.min(off + len, base + parts[k].length) - base;
+      out.set(parts[k].subarray(s, e), w);
+      w += e - s;
     }
     return out;
   }
 }
 
-// ---------------------------------------------------------------- output
+// ---- output ----
 
-export type Range = [number, number, number]; // [source, offset, length]
+export type Range = [number, number]; // (offset, length) in source 0
 
-export type Entry = { ranges: Range[] } | { json: unknown } | { base64: string };
-
-function varintLen(v: number): number {
-  let n = 1;
-  let x = BigInt(v);
-  while (x >= 128n) {
-    x >>= 7n;
-    n++;
+function varintLen(n: number): number {
+  let l = 1;
+  while (n >= 128) {
+    n = Math.floor(n / 128);
+    l++;
   }
-  return n;
+  return l;
 }
 
-/** Encoded size of a vzip Range message (source 0, offset, length; SPEC.md §5). */
-function rangeMsgLen(r: Range): number {
-  let n = 0;
-  if (r[0] !== 0) n += 1 + varintLen(r[0]);
-  if (r[1] !== 0) n += 1 + varintLen(r[1]);
-  if (r[2] !== 0) n += 1 + varintLen(r[2]);
-  return n;
+function rangeMsgLen(o: number, n: number): number {
+  return (o > 0 ? 1 + varintLen(o) : 0) + (n > 0 ? 1 + varintLen(n) : 0);
 }
 
-/** Reference payload size (SPEC.md §4.3): a Range for one range, else a Concat. */
+/** Payload size of a reference entry (§1.2). */
 export function payloadLen(ranges: Range[]): number {
-  if (ranges.length === 1) return rangeMsgLen(ranges[0]);
-  let n = 0;
-  for (const r of ranges) {
-    const m = rangeMsgLen(r);
-    n += 1 + varintLen(m) + m;
+  if (ranges.length === 1) return rangeMsgLen(ranges[0][0], ranges[0][1]);
+  let t = 0;
+  for (const [o, n] of ranges) {
+    const r = rangeMsgLen(o, n);
+    t += 1 + varintLen(r) + r;
   }
-  return n;
+  return t;
 }
 
 export class Output {
-  url: string;
+  entries: Record<string, unknown> = {};
   fileSize: number;
-  entries: Record<string, Entry> = {};
-
-  constructor(url: string, fileSize: number) {
-    this.url = url;
+  constructor(fileSize: number) {
     this.fileSize = fileSize;
   }
-
-  json(key: string, value: unknown): void {
+  json(key: string, value: unknown) {
     this.entries[key] = { json: value };
   }
-
-  bytes(key: string, data: Uint8Array): void {
-    this.entries[key] = { base64: Buffer.from(data).toString("base64") };
+  bytes(key: string, b: Uint8Array) {
+    this.entries[key] = { base64: Buffer.from(b).toString("base64") };
   }
-
-  ref(key: string, ranges: Range[]): void {
-    for (const [, off, len] of ranges) {
-      if (!Number.isSafeInteger(off) || !Number.isSafeInteger(len) || off < 0 || len < 0)
-        reject(`${key}: range offset/length out of range`);
-      if (off + len > this.fileSize) reject(`${key}: range ${off}+${len} outside the file`);
+  ref(key: string, ranges: Range[]) {
+    for (const [o, n] of ranges) {
+      if (!Number.isSafeInteger(o) || !Number.isSafeInteger(n) || o < 0 || n < 0 || o > this.fileSize - n) {
+        reject(`reference ${o}+${n} outside the file (size ${this.fileSize}) for ${key}`);
+      }
     }
-    if (payloadLen(ranges) > 65519) reject(`${key}: reference payload exceeds 65519 bytes`);
-    this.entries[key] = { ranges };
-  }
-
-  serialize(): string {
-    return JSON.stringify({ sources: [this.url], entries: this.entries });
+    if (payloadLen(ranges) > 65519) reject(`payload of ${key} above 65519 bytes`);
+    this.entries[key] = { ranges: ranges.map(([o, n]) => [0, o, n]) };
   }
 }
 
-// ---------------------------------------------------------------- common zarr helpers (§2)
+// ---- common zarr documents (§2) ----
 
-export type Axis = { name: string; type: string; unit?: string };
-
-export function axisType(name: string): string {
-  return name === "t" ? "time" : name === "c" ? "channel" : "space";
+export function groupDoc(attributes: unknown) {
+  return { zarr_format: 3, node_type: "group", attributes };
 }
 
-export function arrayJson(opts: {
-  shape: number[];
-  dataType: string;
-  chunkShape: number[];
-  codecs: unknown[];
-  dimensionNames: string[];
-}): unknown {
+export function arrayDoc(shape: number[], dataType: string, chunkShape: number[], codecs: unknown[], dims: string[]) {
   return {
     zarr_format: 3,
     node_type: "array",
-    shape: opts.shape,
-    data_type: opts.dataType,
-    chunk_grid: { name: "regular", configuration: { chunk_shape: opts.chunkShape } },
+    shape,
+    data_type: dataType,
+    chunk_grid: { name: "regular", configuration: { chunk_shape: chunkShape } },
     chunk_key_encoding: { name: "default", configuration: { separator: "/" } },
     fill_value: 0,
-    codecs: opts.codecs,
-    dimension_names: opts.dimensionNames,
+    codecs,
+    dimension_names: dims,
     attributes: {},
   };
 }
 
-/** The codec list of §2.1. */
-export function buildCodecs(opts: {
-  axes: string[];
-  interleaved: boolean;
-  arrayToBytes: "bytes" | "jpeg2k";
-  itemSize: number;
-  littleEndian: boolean;
-  compressor: "zlib" | "zstd" | null;
-}): unknown[] {
-  const codecs: unknown[] = [];
-  if (opts.interleaved) {
-    const ci = opts.axes.indexOf("c");
-    const order: number[] = [];
-    for (let i = 0; i < opts.axes.length; i++) if (i !== ci) order.push(i);
-    order.push(ci);
-    codecs.push({ name: "transpose", configuration: { order } });
-  }
-  if (opts.arrayToBytes === "jpeg2k") codecs.push({ name: "imagecodecs_jpeg2k" });
-  else if (opts.itemSize === 1) codecs.push({ name: "bytes" });
-  else codecs.push({ name: "bytes", configuration: { endian: opts.littleEndian ? "little" : "big" } });
-  if (opts.compressor === "zlib") codecs.push({ name: "zlib", configuration: { level: 1 } });
-  else if (opts.compressor === "zstd") codecs.push({ name: "zstd", configuration: { level: 0, checksum: false } });
-  return codecs;
+export function transposeCodec(dims: string[]) {
+  const order: number[] = [];
+  dims.forEach((d, i) => {
+    if (d !== "c") order.push(i);
+  });
+  order.push(dims.indexOf("c"));
+  return { name: "transpose", configuration: { order } };
 }
 
-/** §1.3: a computed number that is infinite or NaN rejects the input. */
-export function finite(x: number, what: string): number {
-  if (!Number.isFinite(x)) reject(`${what} is not finite`);
-  return x;
+export function bytesCodec(itemSize: number, little: boolean) {
+  return itemSize === 1 ? { name: "bytes" } : { name: "bytes", configuration: { endian: little ? "little" : "big" } };
 }
 
-export const UNITS: Record<string, string> = {
-  "µm": "micrometer",
-  "μm": "micrometer",
-  um: "micrometer",
-  nm: "nanometer",
-  mm: "millimeter",
-  cm: "centimeter",
-  m: "meter",
-  "Å": "angstrom",
-  "Å": "angstrom",
-  pm: "picometer",
-  in: "inch",
-  ft: "foot",
-  s: "second",
-  ms: "millisecond",
-  min: "minute",
-  h: "hour",
-};
+export const AXIS_TYPE: Record<string, string> = { t: "time", c: "channel", z: "space", y: "space", x: "space" };
+
+export function axisObj(name: string, unit: string | undefined) {
+  const a: Record<string, string> = { name, type: AXIS_TYPE[name] };
+  if (unit !== undefined) a.unit = unit;
+  return a;
+}
