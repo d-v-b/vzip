@@ -16,14 +16,17 @@ from __future__ import annotations
 from vzip.virtualize import ndpi, nifti
 from vzip.virtualize.common import Output, Rejected, file_reader, http_reader
 from vzip.virtualize.dicom import is_dicom, virtualize_dicom
+from vzip.virtualize.ims import virtualize_ims
 from vzip.virtualize.nd2 import is_nd2, virtualize_nd2
 from vzip.virtualize.tiff import virtualize_tiff
 
+# The HDF5 signature, which starts Imaris IMS files (§1.2).
+HDF5 = b"\x89HDF\r\n\x1a\n"
 # The first bytes of a TIFF or BigTIFF file, in either byte order (§1.2).
 TIFF_MAGIC = (b"II*\0", b"MM\0*", b"II+\0", b"MM\0+")
-NOT_SUPPORTED = "not a TIFF, NDPI, ND2, DICOM or NIfTI file"
+NOT_SUPPORTED = "not a TIFF, NDPI, ND2, DICOM, NIfTI or IMS file"
 
-__all__ = ["Output", "Rejected", "virtualize", "virtualize_dicom", "virtualize_nd2", "virtualize_tiff"]
+__all__ = ["Output", "Rejected", "virtualize", "virtualize_dicom", "virtualize_ims", "virtualize_nd2", "virtualize_tiff"]
 
 
 def virtualize(location: str, url: str | None = None) -> tuple[str, Output]:
@@ -43,6 +46,8 @@ def virtualize(location: str, url: str | None = None) -> tuple[str, Output]:
         return "tiff", virtualize_tiff(url, read, size)
     if is_nd2(head):
         return "nd2", virtualize_nd2(url, read, size)
+    if head[:8] == HDF5:
+        return "ims", virtualize_ims(url, read, size)
     if nifti.detect(head) is not None:
         return "nifti", nifti.virtualize_nifti(url, read, size)
     raise Rejected(NOT_SUPPORTED)

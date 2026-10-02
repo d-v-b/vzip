@@ -7,6 +7,7 @@ import { blockReader, ImageError } from "../src/virtualize/common.ts";
 import { DicomError } from "../src/virtualize/dicom/virtualize.ts";
 import { virtualizeImage } from "../src/virtualize/index.ts";
 import { NiftiError } from "../src/virtualize/nifti/virtualize.ts";
+import { ImsError } from "../src/virtualize/ims/virtualize.ts";
 import { TiffError } from "../src/virtualize/tiff/ifd.ts";
 import { writeVzip } from "../src/writer.ts";
 
@@ -18,7 +19,7 @@ try {
   fs.writeFileSync(outPath, await writeVzip(virtual));
   console.log(JSON.stringify(virtual.summary));
 } catch (e) {
-  if (!(e instanceof TiffError || e instanceof DicomError || e instanceof NiftiError || e instanceof ImageError)) {
+  if (!(e instanceof TiffError || e instanceof DicomError || e instanceof NiftiError || e instanceof ImsError || e instanceof ImageError)) {
     console.error(e);
     process.exit(2); // a crash, not a refusal
   }

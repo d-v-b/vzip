@@ -17,6 +17,7 @@ import { HttpResolutionError, openHttpFile, readHttpRange } from "./http.ts";
 import { blockReader, ImageError } from "./virtualize/common.ts";
 import { virtualizeImage } from "./virtualize/index.ts";
 import { DicomError } from "./virtualize/dicom/virtualize.ts";
+import { ImsError } from "./virtualize/ims/virtualize.ts";
 import { LVError } from "./virtualize/nd2/lv.ts";
 import { Nd2Error } from "./virtualize/nd2/virtualize.ts";
 import { NiftiError } from "./virtualize/nifti/virtualize.ts";
@@ -180,6 +181,7 @@ export function makeHandler(options: HandlerOptions) {
       if (e instanceof Nd2Error || e instanceof LVError) return response(422, `ND2: ${message}`);
       if (e instanceof DicomError) return response(422, `DICOM: ${message}`);
       if (e instanceof NiftiError) return response(422, `NIfTI: ${message}`);
+      if (e instanceof ImsError) return response(422, `IMS: ${message}`);
       if (e instanceof ImageError) return response(422, message);
       if (e instanceof HttpResolutionError) return response(502, message);
       return response(500, message);
