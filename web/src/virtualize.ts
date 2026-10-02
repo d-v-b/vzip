@@ -238,7 +238,7 @@ export async function virtualizeTiff(
       : { name: "bytes" };
     codecs = [bytes];
     if (f.compression === 8 || f.compression === 32946) {
-      codecs.push({ name: "zlib", configuration: { level: 6 } });
+      codecs.push({ name: "zlib", configuration: { level: 1 } });
       codecName = "zlib";
     } else if (f.compression === 50000) {
       codecs.push({ name: "zstd", configuration: { level: 0, checksum: false } });

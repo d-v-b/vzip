@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TIFF to Zarr in the browser</title>
-<meta name="description" content="Paste the URL of a remote (OME-)TIFF: a service worker virtualizes it into a vzip archive in the browser and serves it as plain Zarr, opened here in Neuroglancer.">
+<title>TIFF and ND2 to Zarr in the browser</title>
+<meta name="description" content="Paste the URL of a remote (OME-)TIFF or Nikon ND2 file: a service worker virtualizes it into a vzip archive in the browser and serves it as plain Zarr, opened here in Neuroglancer.">
 <style>
   :root {
     --bg: #fafaf8; --fg: #1d1d1b; --muted: #6b6b66; --line: #deddd8;
@@ -42,9 +42,10 @@
 </head>
 <body>
 <main>
-  <h1>vzip in the browser</h1>
-  <p class="lede">Paste the URL of a tiled TIFF or OME-TIFF (or of a .vzip archive). A service worker
-    reads the TIFF's directories with a few range requests, writes a vzip archive in memory, and
+  <h1>TIFF and ND2 to Zarr in the browser</h1>
+  <p class="lede">Paste the URL of a tiled TIFF or OME-TIFF, a Nikon ND2 file, or a .vzip archive. A
+    service worker reads the file's structure with a few range requests, writes a vzip archive in
+    memory (by <a href="https://github.com/d-v-b/vzip/blob/main/VIRTUALIZE.md">VIRTUALIZE.md</a>), and
     serves it as plain Zarr at a local URL that any Zarr viewer on this site can open. Pixel data is
     read from the original file only when a viewer asks for it.</p>
   <form id="form">
@@ -52,7 +53,7 @@
     <button type="submit">Virtualize</button>
   </form>
   <div class="examples">Examples: <a href="#" id="example">IDR idr0096, mouse bone marrow (OME-TIFF, 487 MB, JPEG 2000)</a>
-    · <a href="#" id="example-nd2">S-BIAD3015, E. coli time-lapse (Nikon ND2, 4.6 GB, virtualized ahead of time)</a></div>
+    · <a href="#" id="example-nd2">S-BIAD3015, E. coli time-lapse (Nikon ND2, 4.6 GB)</a></div>
   <div id="status" role="status"></div>
   <section id="result" hidden>
     <div><strong id="name"></strong></div>

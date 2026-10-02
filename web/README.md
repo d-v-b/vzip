@@ -1,16 +1,18 @@
 # vzip in the browser
 
-A service worker that turns a remote TIFF (or a `.vzip` archive) into a plain
-HTTP Zarr store, without a server and without copying pixel data:
+A service worker that turns a remote TIFF, Nikon ND2 file or `.vzip` archive
+into a plain HTTP Zarr store, without a server and without copying pixel data:
 
-1. A page asks for `<scope>vz/tiff/<id>/zarr.json`, where `<id>` is the
-   base64url encoding of a TIFF's URL.
-2. The service worker reads the TIFF's directories with a few range requests
-   (7 for a 487 MB, 9-level OME-TIFF) and writes a vzip archive in memory: an
-   OME-NGFF 0.5 multiscale image whose chunks are references to the TIFF's
-   tiles.
+1. A page asks for `<scope>vz/image/<id>/zarr.json`, where `<id>` is the
+   base64url encoding of the file's URL.
+2. The service worker reads the file's structure with a few range requests
+   (7 for a 487 MB, 9-level OME-TIFF; 12 for a 4.6 GB, 525-frame ND2) and
+   writes a vzip archive in memory by [VIRTUALIZE.md](../VIRTUALIZE.md): an
+   OME-NGFF 0.5 dataset whose chunks are references to the file's TIFF tiles or
+   ND2 frames. The format is detected from the file's first bytes
+   (`vz/tiff/<id>/` accepts TIFF only).
 3. It answers every request under that URL from the archive. Metadata comes
-   from the archive; a chunk request becomes one range request to the TIFF.
+   from the archive; a chunk request becomes one range request to the file.
 
 Any Zarr reader on the same origin can then use the URL; it needs no vzip
 support. The archive itself can be downloaded from
@@ -20,10 +22,10 @@ from `<scope>vz/archive/<id>/`.
 ## Use
 
 ```js
-import { registerVzipWorker, tiffZarrUrl, archiveDownloadUrl } from "./src/client.ts";
+import { registerVzipWorker, imageZarrUrl, archiveDownloadUrl } from "./src/client.ts";
 
 const prefix = await registerVzipWorker("/vzip-sw.js"); // waits until the page is controlled
-const zarr = tiffZarrUrl(prefix, "https://example.org/slide.ome.tiff");
+const zarr = imageZarrUrl(prefix, "https://example.org/slide.ome.tiff"); // or an .nd2
 // e.g. in Neuroglancer: `${zarr}|zarr3:`
 ```
 
@@ -44,6 +46,12 @@ in a directory and lists them at https://d-v-b.github.io/vzip-demo/).
 
 ## What is supported
 
+The rules are [VIRTUALIZE.md](../VIRTUALIZE.md)'s TIFF and ND2 profiles. The
+Python reference implementation (`python -m vzip.virtualize`) produces
+equivalent archives; `conformance/virtualize/compare.py` checks that.
+
+TIFF:
+
 - Tiled TIFF and BigTIFF, either byte order.
 - Pyramids as SubIFDs (OME-TIFF), or, without OME-XML, as later tiled images of
   decreasing size (as in SVS).
@@ -56,6 +64,18 @@ in a directory and lists them at https://d-v-b.github.io/vzip-demo/).
 
 Not supported, and refused with HTTP 422: images in strips, LZW, JPEG,
 predictors, and multi-file OME-TIFF.
+
+ND2 (format version 3 and later):
+
+- Time (including multi-phase), stage-position and Z loops; positions become
+  a bioformats2raw layout with one image per position.
+- Channels and RGB components, with names, colours and contrast windows in
+  `omero`; pixel size, Z step and time step as scales.
+- Uncompressed frames (padded rows become one range per row, dropping the
+  padding) and losslessly compressed (zlib) frames.
+
+Not supported, and refused with HTTP 422: legacy (JPEG 2000) ND2 files,
+lossy compression, tiled frames, and other loop types.
 
 ## Limits
 
@@ -78,11 +98,20 @@ predictors, and multi-file OME-TIFF.
 node --test web/test/                                        # unit tests
 uv run python web/conformance/run_write.py /tmp/vzip-write   # the kit's write cases
 uv run python web/test/verify_tiff.py                        # TIFF fixtures vs tifffile
-node web/demo/e2e.mjs <tiff url> <out dir>                   # demo + Neuroglancer in Chromium
+uv run python web/test/verify_nd2.py                         # synthetic ND2 fixtures vs their pixels
+uv run python conformance/virtualize/compare.py /tmp/vcmp    # browser vs Python virtualizer
+node web/demo/e2e.mjs <tiff or nd2 url> <out dir>            # demo + Neuroglancer in Chromium
 ```
 
 - `run_write.py` checks every unpaged write case with `conformance/validate.py`
   and the reference reader, plus a zip64 archive and every invalid description.
 - `verify_tiff.py` virtualizes each fixture with the browser code. It then
-  reads every level through the reference implementation (`src/vzip`) and zarr-python and compares it with
-  tifffile.
+  reads every level through the reference implementation (`src/vzip`) and
+  zarr-python and compares it with tifffile.
+- `verify_nd2.py` does the same for the synthetic ND2 files written by
+  `nd2_fixtures.py` (compressed frames, padded rows, multi-phase time loops,
+  disabled positions, missing frames, float data, and inputs to reject),
+  comparing every chunk with the pixels the generator wrote. The `nd2` package
+  reads the generator's files too.
+- `compare.py` runs both virtualizers on the synthetic files, every OME-TIFF of
+  IDR idr0096 and 17 public ND2 files, and compares their outputs.
