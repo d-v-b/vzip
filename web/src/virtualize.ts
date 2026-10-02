@@ -4,9 +4,30 @@
 
 import type { Range, Source } from "./protobuf.ts";
 import { type ByteReader, type Ifd, num, nums, readTiff, Tag, TiffError } from "./tiff.ts";
+import { payloadSize } from "./nd2.ts";
 import type { ArchiveDesc, EntryDesc } from "./writer.ts";
 
 const JPEG2000 = new Set([33003, 33004, 33005, 34712]);
+const JPEG = 7;
+const MAX_PAYLOAD = 65519;
+// The Adobe APP14 marker without its last byte, the colour transform (§3.6).
+const ADOBE = [0xff, 0xee, 0x00, 0x0e, 0x41, 0x64, 0x6f, 0x62, 0x65, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00];
+
+/** The literal start of each JPEG tile's stream (§3.6): SOI, the Adobe colour
+ * marker for 3 samples, and the IFD's tables. */
+function jpegPrefix(ifd: Ifd, spp: number, photometric: number | null): Uint8Array {
+  const out = [0xff, 0xd8];
+  if (spp === 3) out.push(...ADOBE, photometric === 2 ? 0 : 1);
+  const tables = ifd.tags.get(Tag.JPEGTables) as Uint8Array | undefined;
+  if (tables !== undefined) {
+    const n = tables.length;
+    if (n < 4 || tables[0] !== 0xff || tables[1] !== 0xd8 || tables[n - 2] !== 0xff || tables[n - 1] !== 0xd9) {
+      reject(`the IFD at ${ifd.offset} has malformed JPEGTables`);
+    }
+    out.push(...tables.subarray(2, n - 2));
+  }
+  return Uint8Array.from(out);
+}
 const reject = (message: string): never => {
   throw new TiffError(message);
 };
@@ -176,6 +197,8 @@ function format(ifd: Ifd) {
     planar,
     compression: num(ifd, Tag.Compression, 1),
     predictor: num(ifd, Tag.Predictor, 1),
+    // For JPEG, PhotometricInterpretation is part of the format (§3.1).
+    photometric: num(ifd, Tag.Compression, 1) === JPEG ? (ifd.tags.get(Tag.PhotometricInterpretation) as number[] | undefined)?.[0] ?? null : null,
   };
 }
 
@@ -358,6 +381,13 @@ export async function virtualizeTiff(
   if (JPEG2000.has(f.compression)) {
     codecs = [{ name: "imagecodecs_jpeg2k" }];
     codecName = "imagecodecs_jpeg2k";
+  } else if (f.compression === JPEG) {
+    if (f.bits !== 8 || f.sampleFormat !== 1 ||
+        !(f.spp === 1 || (f.spp === 3 && f.planar === 1 && (f.photometric === 2 || f.photometric === 6)))) {
+      reject(`unsupported JPEG: ${f.bits}-bit, ${f.spp} samples, planar ${f.planar}, photometric ${f.photometric}`);
+    }
+    codecs = [{ name: "imagecodecs_jpeg" }];
+    codecName = "imagecodecs_jpeg";
   } else {
     const bytes = itemsize > 1
       ? { name: "bytes", configuration: { endian: tiff.littleEndian ? "little" : "big" } }
@@ -423,6 +453,7 @@ export async function virtualizeTiff(
           const ifd = l.ifds[plane(t, c, z)];
           const offsets = nums(ifd, Tag.TileOffsets);
           const counts = nums(ifd, Tag.TileByteCounts);
+          const prefix = f.compression === JPEG ? jpegPrefix(ifd, f.spp, f.photometric) : undefined;
           const samples = f.spp > 1 && !contig ? f.spp : 1;
           if (offsets.length !== samples * perSample || counts.length !== samples * perSample) {
             reject(`IFD at ${ifd.offset} has ${offsets.length} tiles, expected ${samples * perSample}`);
@@ -437,8 +468,17 @@ export async function virtualizeTiff(
               if (sizeC > 1) coords.push(f.spp > 1 ? (contig ? 0 : s) : c);
               if (sizeZ > 1) coords.push(z);
               coords.push(Math.floor(j / across), j % across);
-              const range: Range = { source: 0, offset: BigInt(offsets[k]), length: BigInt(counts[k]) };
-              entries.push({ key: `${li}/c/${coords.join("/")}`, ranges: [range] });
+              let ranges: ([number, number] | Uint8Array)[] = [[offsets[k], counts[k]]];
+              if (prefix !== undefined) {
+                if (counts[k] <= 2) reject(`JPEG tile ${k} of the IFD at ${ifd.offset} is too short`);
+                ranges = [prefix, [offsets[k] + 2, counts[k] - 2]];
+              }
+              if (payloadSize(ranges) > MAX_PAYLOAD) reject(`tile ${k}'s reference payload exceeds ${MAX_PAYLOAD} bytes`);
+              entries.push({
+                key: `${li}/c/${coords.join("/")}`,
+                ranges: ranges.map((r): Range =>
+                  r instanceof Uint8Array ? { data: r } : { source: 0, offset: BigInt(r[0]), length: BigInt(r[1]) }),
+              });
               references++;
             }
           }

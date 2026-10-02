@@ -7,10 +7,10 @@ import re
 import struct
 
 from vzip.virtualize.common import (
-    UNITS, Output, Reader, Rejected, array_json, group_json, image_ome, transpose_codec,
+    MAX_PAYLOAD, UNITS, Output, Reader, Rejected, array_json, group_json, image_ome, payload_size, transpose_codec,
 )
 
-TAGS = {256, 257, 258, 259, 270, 277, 284, 317, 322, 323, 324, 325, 330, 339}
+TAGS = {256, 257, 258, 259, 262, 270, 277, 284, 317, 322, 323, 324, 325, 330, 339, 347}
 SIZES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4, 16: 8, 17: 8, 18: 8}
 FORMATS = {1: "B", 6: "b", 7: "B", 3: "H", 8: "h", 4: "I", 13: "I", 9: "i", 16: "Q", 18: "Q", 17: "q",
            11: "f", 12: "d"}
@@ -19,7 +19,10 @@ MAX_IFDS = 100000
 MAX_PLANES = 100000
 MAX_SAFE = 2**53 - 1
 INTEGER_TYPES = {1, 3, 4, 13, 16, 18}
-SCALARS = {256, 257, 259, 277, 284, 317, 322, 323}
+SCALARS = {256, 257, 259, 262, 277, 284, 317, 322, 323}
+JPEG = 7
+# The Adobe APP14 marker, with its colour transform byte last (§3.6).
+ADOBE = bytes.fromhex("FFEE000E41646F626500640000000000")[:-1]
 
 
 class Ifd:
@@ -91,7 +94,8 @@ def read_tiff(read: Reader, size: int):
             tag, typ = struct.unpack(e + "HH", body[at : at + 4])
             if tag not in TAGS or tag in tags:
                 continue  # unused, or a duplicate (the first is used)
-            if typ not in (SIZES if tag == 270 else INTEGER_TYPES):
+            allowed = SIZES if tag == 270 else (1, 7) if tag == 347 else INTEGER_TYPES
+            if typ not in allowed:
                 raise Rejected(f"tag {tag} has field type {typ}")
             n = struct.unpack(e + ("Q" if big else "I"), body[at + 4 : at + 4 + (8 if big else 4)])[0]
             if tag in SCALARS and n == 0:
@@ -102,6 +106,8 @@ def read_tiff(read: Reader, size: int):
             else:
                 where = struct.unpack(e + ("Q" if big else "I"), body[vat : vat + field_size])[0]
                 tags[tag] = values(read(where, n * SIZES[typ]), typ, n)
+            if tag == 347:
+                tags[tag] = bytes(tags[tag])  # JPEGTables: its bytes
             types[tag] = typ
         nxt = struct.unpack(e + ("Q" if big else "I"), body[count * entry_size : count * entry_size + field_size])[0]
         return Ifd(offset, tags, types), nxt
@@ -234,6 +240,20 @@ def _physical(attrs: dict, d: str):
 
 # ---- profile
 
+def jpeg_prefix(ifd: Ifd, spp: int, photometric) -> bytes:
+    """The literal start of each JPEG tile's stream (§3.6): SOI, the Adobe
+    colour marker for 3 samples, and the IFD's tables."""
+    out = b"\xff\xd8"
+    if spp == 3:
+        out += ADOBE + bytes([0 if photometric == 2 else 1])
+    tables = ifd.tags.get(347)
+    if tables is not None:
+        if len(tables) < 4 or tables[:2] != b"\xff\xd8" or tables[-2:] != b"\xff\xd9":
+            raise Rejected(f"the IFD at {ifd.offset} has malformed JPEGTables")
+        out += tables[2:-2]
+    return out
+
+
 def fmt(ifd: Ifd):
     bits = ifd.nums(258)
     if not bits or any(b != bits[0] for b in bits) or bits[0] < 1:
@@ -247,7 +267,9 @@ def fmt(ifd: Ifd):
     planar = ifd.num(284, 1) if spp > 1 else 1
     if planar not in (1, 2):
         raise Rejected(f"PlanarConfiguration {planar}")
-    return (bits[0], spp, formats[0], planar, ifd.num(259, 1), ifd.num(317, 1))
+    compression = ifd.num(259, 1)
+    photometric = ifd.tags.get(262, [None])[0] if compression == JPEG else None
+    return (bits[0], spp, formats[0], planar, compression, ifd.num(317, 1), photometric)
 
 
 def tiled(ifd: Ifd) -> bool:
@@ -297,7 +319,7 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
         if text is not None and is_ome(text):
             xml = text
     ome = parse_ome(xml) if xml is not None else None
-    bits, spp, sample_format, planar, compression, predictor = fmt(ifd0)
+    bits, spp, sample_format, planar, compression, predictor, photometric = fmt(ifd0)
     if compression not in JPEG2000 and predictor != 1:
         raise Rejected(f"unsupported predictor {predictor}")
 
@@ -388,7 +410,13 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
     else:
         codecs = [{"name": "bytes", "configuration": {"endian": "little" if little else "big"}}
                   if bits > 8 else {"name": "bytes"}]
-        if compression in (8, 32946):
+        if compression == JPEG:
+            if bits != 8 or sample_format != 1 or not (
+                    spp == 1 or (spp == 3 and planar == 1 and photometric in (2, 6))):
+                raise Rejected(f"unsupported JPEG: {bits}-bit, {spp} samples, planar {planar}, "
+                               f"photometric {photometric}")
+            codecs = [{"name": "imagecodecs_jpeg"}]
+        elif compression in (8, 32946):
             codecs.append({"name": "zlib", "configuration": {"level": 1}})
         elif compression == 50000:
             codecs.append({"name": "zstd", "configuration": {"level": 0, "checksum": False}})
@@ -420,6 +448,7 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
                 for z in range(size_z):
                     ifd = lv["ifds"][plane(t, c, z)]
                     offsets, counts = ifd.nums(324), ifd.nums(325)
+                    prefix = jpeg_prefix(ifd, spp, photometric) if compression == JPEG else None
                     if len(offsets) != samples * per or len(counts) != samples * per:
                         raise Rejected(f"IFD at {ifd.offset} has {len(offsets)} tiles, expected {samples * per}")
                     for s in range(samples):
@@ -437,7 +466,15 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
                             if size_z > 1:
                                 coords.append(z)
                             coords += [j // across, j % across]
-                            out.refs[f"{li}/c/" + "/".join(map(str, coords))] = [(offsets[k], counts[k])]
+                            if prefix is None:
+                                ranges = [(offsets[k], counts[k])]
+                            elif counts[k] > 2:
+                                ranges = [prefix, (offsets[k] + 2, counts[k] - 2)]
+                            else:
+                                raise Rejected(f"JPEG tile {k} of the IFD at {ifd.offset} is too short")
+                            if payload_size(ranges) > MAX_PAYLOAD:
+                                raise Rejected(f"tile {k}'s reference payload exceeds {MAX_PAYLOAD} bytes")
+                            out.refs[f"{li}/c/" + "/".join(map(str, coords))] = ranges
         pxs, pys, pzs = (_physical(px, d) or 1 for d in "XYZ")
         sc = {"t": 1, "c": 1, "z": pzs, "y": pys * (base["h"] / lv["h"]), "x": pxs * (base["w"] / lv["w"])}
         scales.append([sc[a] for a in axes])

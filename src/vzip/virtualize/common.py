@@ -22,7 +22,8 @@ class Output:
 
     url: str
     bytes_entries: dict[str, bytes] = field(default_factory=dict)
-    refs: dict[str, list[tuple[int, int]]] = field(default_factory=dict)  # (offset, length)
+    # Each range is (offset, length) of the source, or literal bytes.
+    refs: dict[str, list[tuple[int, int] | bytes]] = field(default_factory=dict)
     summary: dict = field(default_factory=dict)
 
     def json(self, key: str, value) -> None:
@@ -33,11 +34,33 @@ class Output:
             w = VZipWriter(fh, page_size=1 << 16)
             src = w.source(Source(url=self.url))
             for key in sorted(self.refs):
-                w.add_ranges(key, [Range(source=src, offset=o, length=n) for o, n in self.refs[key]])
+                w.add_ranges(key, [Range(data=r) if isinstance(r, bytes) else Range(source=src, offset=r[0], length=r[1])
+                                   for r in self.refs[key]])
             for key in sorted(self.bytes_entries):
                 w.add_bytes(key, self.bytes_entries[key], compress=not key.endswith("zarr.json"),
                             late=key.endswith("zarr.json"))
             w.close()
+
+
+MAX_PAYLOAD = 65519
+
+
+def _varint_size(v: int) -> int:
+    return max(1, (v.bit_length() + 6) // 7)
+
+
+def _range_size(r: tuple[int, int] | bytes) -> int:
+    if isinstance(r, bytes):
+        return 1 + _varint_size(len(r)) + len(r)
+    offset, length = r
+    return (1 + _varint_size(offset) if offset else 0) + (1 + _varint_size(length) if length else 0)
+
+
+def payload_size(ranges: list[tuple[int, int] | bytes]) -> int:
+    """The encoded size of a reference to `ranges` (§1.2)."""
+    if len(ranges) == 1:
+        return _range_size(ranges[0])
+    return sum(1 + _varint_size(n) + n for n in map(_range_size, ranges))
 
 
 UNITS = {

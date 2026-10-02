@@ -1,6 +1,6 @@
 # Virtualizing image files as OME-Zarr in vzip
 
-Profiles version: 0 (**draft**) · Revision: 7
+Profiles version: 0 (**draft**) · Revision: 6
 
 ## 1. Introduction
 
@@ -26,11 +26,7 @@ A virtualizer's **output** is an archive description:
 Two outputs are **equivalent** when they have the same source table, the same
 set of keys, and for every key:
 
-- **reference entries:** the same list of ranges, in order. A range is a
-  source range `(0, offset, length)` or a **literal** range of given bytes
-  (SPEC.md §5.2), and two ranges are the same only if both are source ranges
-  with equal offsets and lengths, or both are literal ranges with identical
-  bytes;
+- **reference entries:** the same list of ranges, in order;
 - **JSON documents** (keys ending in `zarr.json`): equal JSON values. Objects
   compare by key, arrays by order, and numbers as IEEE 754 binary64 values;
   whitespace and key order do not matter;
@@ -74,9 +70,8 @@ in the output.
 **References stay in the file.** Every range of the output MUST lie within
 the file (`offset + length ≤` the file's size), and every reference entry's
 payload MUST be at most 65519 bytes; otherwise the input is rejected. The
-payload (SPEC.md §4.3, §5) of a single range is its `Range` message: for a
-source range `(0, o, n)`, `0x18 varint(o)` if `o > 0`, then `0x20 varint(n)`
-if `n > 0` (fields 3 and 4); for a literal range of bytes `d`, `0x2A varint(len(d)) d`.
+payload (SPEC.md §4.3, §5) of a single range `(0, o, n)` is a `Range`
+message: `0x10 varint(o)` if `o > 0`, then `0x18 varint(n)` if `n > 0`.
 The payload of several ranges is a `Concat` message: for each range, `0x0A
 varint(len(r)) r`, where `r` is that range's `Range` message. `varint` is the
 protobuf base-128 encoding (1 byte below 2^7, 2 below 2^14, and so on).
@@ -136,10 +131,7 @@ always present; the profile says when the others are.
      `"big"` for larger ones;
    - `{"name": "imagecodecs_jpeg2k"}` for JPEG 2000 (one codestream per
      chunk, decoding to the chunk's `[y, x]`, or, when interleaved, to
-     `[y, x, c]`, after which `transpose` applies);
-   - `{"name": "imagecodecs_jpeg"}` for JPEG (one complete JPEG stream, ISO/IEC
-     10918-1 with the JFIF/Adobe colour conventions, per chunk, decoding to
-     the chunk's `[y, x]` or `[y, x, c]` like JPEG 2000).
+     `[y, x, c]`, after which `transpose` applies).
 3. A compressor, when the bytes are compressed:
    - `{"name": "zlib", "configuration": {"level": 1}}` (zlib streams);
    - `{"name": "zstd", "configuration": {"level": 0, "checksum": false}}`.
@@ -225,7 +217,6 @@ Tags used (absent tags take the defaults shown):
 | 256, 257 | ImageWidth, ImageLength | scalar | required |
 | 258 | BitsPerSample | array | required |
 | 259 | Compression | scalar | 1 |
-| 262 | PhotometricInterpretation | scalar | none (required for JPEG with 3 samples, §3.5) |
 | 270 | ImageDescription | text | none |
 | 277 | SamplesPerPixel | scalar | 1 |
 | 284 | PlanarConfiguration | scalar | 1 |
@@ -234,15 +225,13 @@ Tags used (absent tags take the defaults shown):
 | 324, 325 | TileOffsets, TileByteCounts | array | required for tiled images |
 | 330 | SubIFDs | array | none |
 | 339 | SampleFormat | array | 1 |
-| 347 | JPEGTables | bytes | none |
 
 **Checks on every IFD read.** For every tag of the table present in an IFD
 read (whether or not that IFD is used):
 
 - **Field type:** ImageDescription may have any field type that TIFF 6.0 or
-  BigTIFF defines (1–12, 16–18), or 13 (IFD). JPEGTables MUST have type
-  BYTE (1) or UNDEFINED (7); its value is its bytes. Every other tag MUST
-  have an unsigned integer type: BYTE (1), SHORT (3), LONG (4), IFD (13), LONG8
+  BigTIFF defines (1–12, 16–18), or 13 (IFD). Every other tag MUST have an
+  unsigned integer type: BYTE (1), SHORT (3), LONG (4), IFD (13), LONG8
   (16) or IFD8 (18), in either TIFF variant. Any other type rejects.
 - **Value:** its value MUST lie within the file, and each of its values
   of an integer type MUST be at most 2^53 − 1 in magnitude.
@@ -260,8 +249,7 @@ requires:
   least one value).
 
 When SamplesPerPixel is 1, PlanarConfiguration is taken as 1. Otherwise it
-MUST be 1 or 2. When Compression is 7, the format also includes
-PhotometricInterpretation (absent counts as a value of its own). Counts of BitsPerSample and SampleFormat are not otherwise
+MUST be 1 or 2. Counts of BitsPerSample and SampleFormat are not otherwise
 checked. If any of these fails, the input is rejected. Formats are computed
 for IFD 0 (always, even when it is not a plane), for every IFD that becomes
 a plane or a level (§3.3, §3.4), and for every candidate of the level scan
@@ -433,13 +421,8 @@ BitsPerSample, which MUST be 8, 16, 32 or 64 (32 or 64 for `float`).
 | 8, 32946 (Deflate) | 1 | bytes, zlib |
 | 50000 (zstd) | 1 | bytes, zstd |
 | 33003, 33004, 33005, 34712 (JPEG 2000) | any | imagecodecs_jpeg2k |
-| 7 (JPEG) | 1 | imagecodecs_jpeg |
 
-Anything else is rejected. JPEG (Compression 7) additionally requires
-BitsPerSample 8, SampleFormat 1, and either SamplesPerPixel 1, or
-SamplesPerPixel 3 with PlanarConfiguration 1 and PhotometricInterpretation
-2 (RGB) or 6 (YCbCr); otherwise the input is rejected. (Old-style JPEG,
-Compression 6, is rejected.) `bytes` has `endian` from the TIFF's byte order
+Anything else is rejected. `bytes` has `endian` from the TIFF's byte order
 (when the data type is larger than 1 byte). When `spp > 1` and
 PlanarConfiguration is 1 (interleaved), `transpose` comes first, for every
 compression including JPEG 2000.
@@ -469,25 +452,9 @@ One image at the archive root (§2.2), with one array per level at path
   tile grid, and `s` is the sample when `spp > 1` and planar (else 0). Both
   TileOffsets and TileByteCounts MUST have `T` times the number of sample
   planes values. Tile `k` with TileByteCounts `n > 0` is the entry
-  `<level>/c/<coords>` with one range `(0, TileOffsets[k], n)` (for JPEG,
-  see below); coords are
+  `<level>/c/<coords>` with one range `(0, TileOffsets[k], n)`; coords are
   `t`, `c` (the plane's channel, or the sample `s`, or 0 when interleaved),
   `z` (each only when present), then the tile row and column.
-- **JPEG tiles.** A JPEG-in-TIFF tile is a JPEG stream that may omit its
-  tables (which are in the IFD's JPEGTables) and the colour transform (which
-  is given by PhotometricInterpretation). Each tile's reference makes it a
-  complete stream: the ranges `[P, (0, TileOffsets[k] + 2, n − 2)]`, where
-  `n` MUST be more than 2 (the tile's first 2 bytes, its SOI marker, are
-  dropped), and `P` is the literal range of
-  - `FF D8` (SOI);
-  - for 3 samples, the Adobe marker `FF EE 00 0E 41 64 6F 62 65 00 64 00 00
-    00 00 T`, with transform `T` = 0 for PhotometricInterpretation 2 (the
-    samples are RGB as stored) and 1 for 6 (YCbCr);
-  - if the IFD has JPEGTables: its bytes without the first 2 and the last 2.
-    JPEGTables MUST then be at least 4 bytes long, start with `FF D8` and
-    end with `FF D9`.
-
-  `P` depends only on the IFD, so every tile of an IFD has the same `P`.
 - **OME-XML:** if present, the entry `OME/METADATA.ome.xml` holds `D`, the
   ImageDescription's bytes up to the first NUL, unchanged.
 

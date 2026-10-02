@@ -228,15 +228,17 @@ function varintSize(v: number): number {
   return n;
 }
 
-function rangeSize(offset: number, length: number): number {
+function rangeSize(r: [number, number] | Uint8Array): number {
+  if (r instanceof Uint8Array) return 1 + varintSize(r.length) + r.length;
+  const [offset, length] = r;
   return (offset ? 1 + varintSize(offset) : 0) + (length ? 1 + varintSize(length) : 0);
 }
 
-/** The encoded size of a reference to `ranges` ([offset, length] pairs). */
-export function payloadSize(ranges: [number, number][]): number {
-  if (ranges.length === 1) return rangeSize(...ranges[0]);
-  return ranges.reduce((n, [o, l]) => {
-    const r = rangeSize(o, l);
+/** The encoded size of a reference to `ranges`: [offset, length] pairs or literal bytes (§1.2). */
+export function payloadSize(ranges: ([number, number] | Uint8Array)[]): number {
+  if (ranges.length === 1) return rangeSize(ranges[0]);
+  return ranges.reduce((n, range) => {
+    const r = rangeSize(range);
     return n + 1 + varintSize(r) + r;
   }, 0);
 }

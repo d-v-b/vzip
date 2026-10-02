@@ -53,7 +53,8 @@ A JSON object:
 
 - `sources`: the source table's URLs, in order (one, `<url>`).
 - `entries`: one member per key. The value is one of:
-  - `{"ranges": [[source, offset, length], ...]}` for a reference entry;
+  - `{"ranges": [[source, offset, length], ...]}` for a reference entry,
+    where a literal range is `{"data": "<base64>"}` instead of a triple;
   - `{"json": value}` for a key ending in `zarr.json` (the document as a JSON
     value, not as a string);
   - `{"base64": "..."}` for any other bytes entry.
