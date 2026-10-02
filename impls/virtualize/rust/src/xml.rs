@@ -1,48 +1,63 @@
-//! Just enough XML to extract the OME-XML items of §3.2.
-
-use crate::{Error, reject};
+//! The tag scanner of VIRTUALIZE.md §3.2 (not a validating XML parser).
 
 #[derive(Debug)]
-pub enum Event {
-    Start { local: String, attrs: Vec<(String, String)>, empty: bool },
-    End,
+pub enum Ev {
+    Start { name: String, attrs: Vec<(String, String)>, self_closing: bool },
+    End { name: String },
+    Text(String),
 }
 
-fn local_name(qname: &str) -> &str {
-    match qname.rfind(':') {
-        Some(i) => &qname[i + 1..],
-        None => qname,
+fn is_ws(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\r' | b'\n')
+}
+
+/// The name without its namespace prefix.
+fn local(name: &str) -> String {
+    match name.find(':') {
+        Some(i) => name[i + 1..].to_string(),
+        None => name.to_string(),
     }
 }
 
-/// Decode the five predefined entities and numeric character references.
-/// Any other `&...;` sequence is kept as written.
-pub fn decode_entities(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    let mut rest = raw;
+/// Decodes the five predefined entities and numeric character references.
+pub fn decode_entities(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    let mut rest = v;
     while let Some(i) = rest.find('&') {
         out.push_str(&rest[..i]);
         rest = &rest[i..];
-        let Some(j) = rest.find(';') else { break };
-        let ent = &rest[1..j];
-        let rep = match ent {
-            "lt" => Some('<'),
-            "gt" => Some('>'),
-            "amp" => Some('&'),
-            "quot" => Some('"'),
-            "apos" => Some('\''),
-            _ => {
-                if let Some(h) = ent.strip_prefix("#x").or_else(|| ent.strip_prefix("#X")) {
-                    u32::from_str_radix(h, 16).ok().and_then(char::from_u32)
-                } else if let Some(d) = ent.strip_prefix('#') {
-                    d.parse::<u32>().ok().and_then(char::from_u32)
-                } else {
-                    None
+        let semi = rest.find(';');
+        let decoded = semi.and_then(|j| {
+            let ent = &rest[1..j];
+            let ch = match ent {
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "amp" => Some('&'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                _ => {
+                    let num = if let Some(h) = ent.strip_prefix("#x") {
+                        if !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit()) {
+                            u32::from_str_radix(h, 16).ok()
+                        } else {
+                            None
+                        }
+                    } else if let Some(d) = ent.strip_prefix('#') {
+                        if !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()) {
+                            d.parse::<u32>().ok()
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    num.and_then(char::from_u32)
                 }
-            }
-        };
-        match rep {
-            Some(c) => {
+            };
+            ch.map(|c| (c, j))
+        });
+        match decoded {
+            Some((c, j)) => {
                 out.push(c);
                 rest = &rest[j + 1..];
             }
@@ -56,169 +71,152 @@ pub fn decode_entities(raw: &str) -> String {
     out
 }
 
-pub fn parse(doc: &str) -> Result<Vec<Event>, Error> {
-    let b = doc.as_bytes();
+fn find_from(b: &[u8], from: usize, pat: &[u8]) -> Option<usize> {
+    if from > b.len() {
+        return None;
+    }
+    b[from..].windows(pat.len()).position(|w| w == pat).map(|p| p + from)
+}
+
+/// Scans `x` into a sequence of start tags, end tags and text.
+pub fn scan(x: &str) -> Vec<Ev> {
+    let b = x.as_bytes();
+    let n = b.len();
+    let mut evs = Vec::new();
     let mut i = 0;
-    let mut ev = Vec::new();
-    let find = |from: usize, pat: &str| doc[from..].find(pat).map(|k| from + k);
-    while i < b.len() {
+    while i < n {
         if b[i] != b'<' {
-            i += 1;
+            let j = find_from(b, i, b"<").unwrap_or(n);
+            evs.push(Ev::Text(x[i..j].to_string()));
+            i = j;
             continue;
         }
-        let r = &doc[i..];
-        if r.starts_with("<!--") {
-            i = find(i + 4, "-->").ok_or(Error::Reject("unterminated XML comment".into()))? + 3;
-        } else if r.starts_with("<![CDATA[") {
-            i = find(i + 9, "]]>").ok_or(Error::Reject("unterminated CDATA".into()))? + 3;
-        } else if r.starts_with("<?") {
-            i = find(i + 2, "?>").ok_or(Error::Reject("unterminated XML PI".into()))? + 2;
-        } else if r.starts_with("<!") {
-            // DOCTYPE etc.: skip to the matching '>' (allowing an internal subset)
-            let mut depth = 0i32;
+        let rest = &b[i..];
+        let skip_to = |pat: &[u8], start: usize| find_from(b, start, pat).map(|p| p + pat.len()).unwrap_or(n);
+        if rest.starts_with(b"<!--") {
+            i = skip_to(b"-->", i + 4);
+        } else if rest.starts_with(b"<![CDATA[") {
+            i = skip_to(b"]]>", i + 9);
+        } else if rest.starts_with(b"<?") {
+            i = skip_to(b"?>", i + 2);
+        } else if rest.starts_with(b"<!") {
+            i = skip_to(b">", i + 2);
+        } else if rest.starts_with(b"</") {
             let mut j = i + 2;
-            while j < b.len() {
-                match b[j] {
-                    b'[' => depth += 1,
-                    b']' => depth -= 1,
-                    b'>' if depth <= 0 => break,
-                    _ => {}
-                }
+            while j < n && !is_ws(b[j]) && b[j] != b'>' {
                 j += 1;
             }
-            i = j + 1;
-        } else if r.starts_with("</") {
-            i = find(i, ">").ok_or(Error::Reject("unterminated end tag".into()))? + 1;
-            ev.push(Event::End);
+            let name = local(&x[i + 2..j]);
+            i = skip_to(b">", j);
+            evs.push(Ev::End { name });
         } else {
-            // start tag: scan honoring quoted attribute values
+            // Start tag.
             let mut j = i + 1;
-            let mut quote = 0u8;
-            while j < b.len() {
-                let c = b[j];
-                if quote != 0 {
-                    if c == quote {
-                        quote = 0;
-                    }
-                } else if c == b'"' || c == b'\'' {
-                    quote = c;
-                } else if c == b'>' {
+            while j < n && !is_ws(b[j]) && b[j] != b'/' && b[j] != b'>' {
+                j += 1;
+            }
+            let name = local(&x[i + 1..j]);
+            let mut attrs = Vec::new();
+            let mut self_closing = false;
+            loop {
+                while j < n && is_ws(b[j]) {
+                    j += 1;
+                }
+                if j >= n {
                     break;
+                }
+                if b[j] == b'>' {
+                    j += 1;
+                    break;
+                }
+                if b[j] == b'/' {
+                    if j + 1 < n && b[j + 1] == b'>' {
+                        self_closing = true;
+                        j += 2;
+                        break;
+                    }
+                    j += 1;
+                    continue;
+                }
+                let a0 = j;
+                while j < n && !is_ws(b[j]) && b[j] != b'=' && b[j] != b'>' && b[j] != b'/' {
+                    j += 1;
+                }
+                let aname = x[a0..j].to_string();
+                while j < n && is_ws(b[j]) {
+                    j += 1;
+                }
+                if j < n && b[j] == b'=' {
+                    j += 1;
+                    while j < n && is_ws(b[j]) {
+                        j += 1;
+                    }
+                    if j < n && (b[j] == b'"' || b[j] == b'\'') {
+                        let q = b[j];
+                        let v0 = j + 1;
+                        let v1 = find_from(b, v0, &[q]).unwrap_or(n);
+                        attrs.push((aname, decode_entities(&x[v0..v1])));
+                        j = (v1 + 1).min(n);
+                    } else {
+                        let v0 = j;
+                        while j < n && !is_ws(b[j]) && b[j] != b'>' {
+                            j += 1;
+                        }
+                        attrs.push((aname, decode_entities(&x[v0..j])));
+                    }
+                } else if !aname.is_empty() {
+                    attrs.push((aname, String::new()));
+                }
+            }
+            evs.push(Ev::Start { name, attrs, self_closing });
+            i = j;
+        }
+    }
+    evs
+}
+
+/// True when `x` contains a start tag whose local name is `OME`, followed by
+/// whitespace, `/` or `>` (§3.2). Tags inside comments etc. do not count.
+pub fn has_ome_start_tag(x: &str) -> bool {
+    // Scan like `scan`, but also require the character after the name.
+    let b = x.as_bytes();
+    let n = b.len();
+    let mut i = 0;
+    while let Some(p) = find_from(b, i, b"<") {
+        let rest = &b[p..];
+        let skip_to = |pat: &[u8], start: usize| find_from(b, start, pat).map(|q| q + pat.len()).unwrap_or(n);
+        if rest.starts_with(b"<!--") {
+            i = skip_to(b"-->", p + 4);
+        } else if rest.starts_with(b"<![CDATA[") {
+            i = skip_to(b"]]>", p + 9);
+        } else if rest.starts_with(b"<?") {
+            i = skip_to(b"?>", p + 2);
+        } else if rest.starts_with(b"<!") {
+            i = skip_to(b">", p + 2);
+        } else if rest.starts_with(b"</") {
+            i = p + 2;
+        } else {
+            let mut j = p + 1;
+            while j < n && !is_ws(b[j]) && b[j] != b'/' && b[j] != b'>' {
+                j += 1;
+            }
+            if j < n && local(&x[p + 1..j]) == "OME" {
+                return true;
+            }
+            // Skip the rest of the tag, honoring quoted attribute values.
+            let mut q: Option<u8> = None;
+            while j < n {
+                match q {
+                    Some(c) if b[j] == c => q = None,
+                    Some(_) => {}
+                    None if b[j] == b'"' || b[j] == b'\'' => q = Some(b[j]),
+                    None if b[j] == b'>' => break,
+                    None => {}
                 }
                 j += 1;
             }
-            if j >= b.len() {
-                return reject("unterminated start tag in OME-XML");
-            }
-            let mut inner = &doc[i + 1..j];
-            let empty = inner.ends_with('/');
-            if empty {
-                inner = &inner[..inner.len() - 1];
-            }
-            let name_end = inner
-                .find(|c: char| c.is_ascii_whitespace())
-                .unwrap_or(inner.len());
-            let qname = &inner[..name_end];
-            let mut attrs = Vec::new();
-            let mut a = &inner[name_end..];
-            loop {
-                a = a.trim_start();
-                if a.is_empty() {
-                    break;
-                }
-                let Some(eq) = a.find('=') else {
-                    return reject("malformed attribute in OME-XML");
-                };
-                let an = a[..eq].trim().to_string();
-                let rest = a[eq + 1..].trim_start();
-                let q = rest.chars().next().unwrap_or(' ');
-                if q != '"' && q != '\'' {
-                    return reject("unquoted attribute in OME-XML");
-                }
-                let Some(close) = rest[1..].find(q) else {
-                    return reject("unterminated attribute in OME-XML");
-                };
-                attrs.push((an, decode_entities(&rest[1..1 + close])));
-                a = &rest[close + 2..];
-            }
-            ev.push(Event::Start { local: local_name(qname).to_string(), attrs, empty });
-            i = j + 1;
+            i = j;
         }
     }
-    Ok(ev)
-}
-
-pub fn attr<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
-    // attribute names are matched unprefixed, as written
-    attrs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
-}
-
-#[derive(Debug, Default)]
-pub struct TiffData {
-    pub attrs: Vec<(String, String)>,
-    pub uuid_filename: Option<String>,
-}
-
-#[derive(Debug, Default)]
-pub struct Ome {
-    pub image_name: Option<String>,
-    pub pixels: Vec<(String, String)>,
-    pub tiffdata: Vec<TiffData>,
-}
-
-pub fn extract(doc: &str) -> Result<Ome, Error> {
-    let ev = parse(doc)?;
-    let mut ome = Ome::default();
-    let mut seen_image = false;
-    let mut seen_pixels = false;
-    // depth tracking
-    let mut depth = 0usize;
-    let mut pixels_depth: Option<usize> = None; // depth of the open first Pixels
-    let mut tiffdata_depth: Option<usize> = None;
-    for e in ev {
-        match e {
-            Event::Start { local, attrs, empty } => {
-                if local == "Image" && !seen_image {
-                    seen_image = true;
-                    ome.image_name = attr(&attrs, "Name").map(|s| s.to_string());
-                }
-                let mut opened_pixels = false;
-                let mut opened_td = false;
-                if local == "Pixels" && !seen_pixels {
-                    seen_pixels = true;
-                    ome.pixels = attrs.clone();
-                    opened_pixels = true;
-                } else if pixels_depth.is_some() && local == "TiffData" {
-                    ome.tiffdata.push(TiffData { attrs: attrs.clone(), uuid_filename: None });
-                    opened_td = true;
-                } else if tiffdata_depth.is_some() && local == "UUID" {
-                    if let Some(f) = attr(&attrs, "FileName") {
-                        let td = ome.tiffdata.last_mut().unwrap();
-                        if td.uuid_filename.is_none() {
-                            td.uuid_filename = Some(f.to_string());
-                        }
-                    }
-                }
-                if !empty {
-                    depth += 1;
-                    if opened_pixels {
-                        pixels_depth = Some(depth);
-                    }
-                    if opened_td {
-                        tiffdata_depth = Some(depth);
-                    }
-                }
-            }
-            Event::End => {
-                if tiffdata_depth == Some(depth) {
-                    tiffdata_depth = None;
-                }
-                if pixels_depth == Some(depth) {
-                    pixels_depth = None;
-                }
-                depth = depth.saturating_sub(1);
-            }
-        }
-    }
-    Ok(ome)
+    false
 }

@@ -15,6 +15,7 @@ Node). Others write HARNESS.md's JSON description; give them as
 
 Usage: uv run python conformance/virtualize/compare.py <out dir>
            [--impl name=command ...] [--no-builtin web] [--quick] [--only <substring>]
+           [--fixtures <dir>]  (only the TIFF and ND2 files in <dir>, e.g. from mutate.py)
 """
 
 from __future__ import annotations
@@ -140,10 +141,11 @@ def check(item: tuple[str, str], impls: dict, out_dir: Path) -> dict:
     return {"name": name, "url": url, "verdicts": verdicts}
 
 
-def corpus(proxy: Proxy, quick: bool) -> list[tuple[str, str]]:
-    fixtures = ROOT / "web" / "test" / "fixtures"
+def corpus(proxy: Proxy, fixtures: Path, quick: bool, local_only: bool) -> list[tuple[str, str]]:
     items = [(f"fixture-{p.stem}", proxy.local(p.name))
              for p in sorted([*fixtures.glob("*.tif"), *fixtures.glob("*.nd2")])]
+    if local_only:
+        return items
     listing = urllib.request.urlopen(IDR, timeout=60).read().decode()
     tiffs = sorted(set(re.findall(r'href="([^"?/][^"]*\.ome\.tiff)"', listing)))
     items += [(f"idr-{i:03d}", proxy.remote(IDR + n)) for i, n in enumerate(tiffs[:3] if quick else tiffs)]
@@ -165,8 +167,9 @@ def main(argv: list[str]) -> int:
         if a == "--no-builtin":
             impls.pop(opts[i + 1], None)
     only = opts[opts.index("--only") + 1] if "--only" in opts else None
-    proxy = Proxy(ROOT / "web" / "test" / "fixtures", Path("/tmp/vzip-proxy-cache"))
-    items = corpus(proxy, "--quick" in opts)
+    fixtures = Path(opts[opts.index("--fixtures") + 1]) if "--fixtures" in opts else ROOT / "web" / "test" / "fixtures"
+    proxy = Proxy(fixtures, Path("/tmp/vzip-proxy-cache"))
+    items = corpus(proxy, fixtures, "--quick" in opts, "--fixtures" in opts)
     if only:
         items = [c for c in items if only in c[0]]
     print(f"{len(items)} inputs, implementations: {', '.join(impls)} (reference: {next(iter(impls))})", flush=True)

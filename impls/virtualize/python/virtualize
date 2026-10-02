@@ -1,2 +1,2 @@
-#!/usr/bin/env bash
+#!/bin/bash
 exec python3 "$(dirname "$0")/virtualize.py" "$@"
