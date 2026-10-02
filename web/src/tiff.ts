@@ -196,13 +196,16 @@ export async function readTiff(read: ByteReader, fileSize: number): Promise<Tiff
       }
     }
     await Promise.all(pending);
+    // The next-IFD field is read with the IFD; its value is checked where it
+    // is used (the main chain), not for SubIFDs.
     const nextAt = count * entrySize;
-    const next = bigTiff ? u64(view, nextAt, le) : view.getUint32(nextAt, le);
+    const next = bigTiff ? Number(view.getBigUint64(nextAt, le)) : view.getUint32(nextAt, le);
     return { ifd: { offset, tags, types, subIfds: [] }, next };
   }
 
   const ifds: Ifd[] = [];
   for (let offset = first; offset !== 0; ) {
+    if (offset > Number.MAX_SAFE_INTEGER) throw new TiffError("IFD offset too large");
     const { ifd, next } = await readIfd(offset);
     ifds.push(ifd);
     offset = next;

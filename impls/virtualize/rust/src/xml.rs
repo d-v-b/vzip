@@ -1,242 +1,225 @@
-//! The OME-XML tag scan of §3.2.
+// §3.2 tag scan over OME-XML text.
 
 pub struct Tag {
     pub start: usize,
-    pub end: usize, // index after '>'
+    pub end: usize, // exclusive
     pub is_end: bool,
     pub self_closing: bool,
     pub name: String, // local name
-    attrs: Vec<(String, String)>, // raw (undecoded) values
+    pub attrs: Vec<(String, String)>, // raw (undecoded) values
 }
 
 impl Tag {
-    /// First attribute with this exact name, references decoded.
+    /// First attribute of that name, references decoded.
     pub fn attr(&self, name: &str) -> Option<String> {
         self.attrs.iter().find(|(k, _)| k == name).map(|(_, v)| decode_refs(v))
     }
-    pub fn is_start(&self, name: &str) -> bool {
-        !self.is_end && self.name == name
-    }
-    pub fn is_end_of(&self, name: &str) -> bool {
-        self.is_end && self.name == name
-    }
 }
 
-pub struct Scan {
-    pub tags: Vec<Tag>,
-    pub skipped: Vec<(usize, usize)>,
+pub enum Tok {
+    Tag(Tag),
+    Skip(usize, usize), // skipped section [start, end)
 }
 
-fn is_ws(c: u8) -> bool {
-    matches!(c, b' ' | b'\t' | b'\r' | b'\n')
+fn is_ws(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\r' | b'\n')
 }
 
-fn is_name_char(c: u8) -> bool {
-    c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'-')
+fn is_name(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'-'
 }
 
-fn find_from(x: &[u8], from: usize, pat: &[u8]) -> Option<usize> {
+fn find(x: &[u8], from: usize, pat: &[u8]) -> Option<usize> {
     if from > x.len() {
         return None;
     }
     x[from..].windows(pat.len()).position(|w| w == pat).map(|p| p + from)
 }
 
-pub fn scan(x: &[u8]) -> Scan {
-    let mut tags = Vec::new();
-    let mut skipped = Vec::new();
-    let n = x.len();
+pub fn scan(x: &str) -> Vec<Tok> {
+    let b = x.as_bytes();
+    let mut toks = Vec::new();
     let mut i = 0;
-    while i < n {
-        if x[i] != b'<' {
+    while i < b.len() {
+        if b[i] != b'<' {
             i += 1;
             continue;
         }
-        let rest = &x[i..];
-        let section: Option<(&[u8], usize)> = if rest.starts_with(b"<!--") {
-            Some((b"-->", 4))
+        let rest = &b[i..];
+        let skip: Option<(usize, &[u8])> = if rest.starts_with(b"<!--") {
+            Some((4, b"-->"))
         } else if rest.starts_with(b"<![CDATA[") {
-            Some((b"]]>", 9))
+            Some((9, b"]]>"))
         } else if rest.starts_with(b"<?") {
-            Some((b"?>", 2))
+            Some((2, b"?>"))
         } else if rest.starts_with(b"<!") {
-            Some((b">", 2))
+            Some((2, b">"))
         } else {
             None
         };
-        if let Some((close, open_len)) = section {
-            let end = match find_from(x, i + open_len, close) {
-                Some(p) => p + close.len(),
-                None => n,
+        if let Some((ml, endm)) = skip {
+            let e = match find(b, i + ml, endm) {
+                Some(p) => p + endm.len(),
+                None => b.len(),
             };
-            skipped.push((i, end));
-            i = end;
+            toks.push(Tok::Skip(i, e));
+            i = e;
             continue;
         }
-        match parse_tag(x, i) {
-            Some(t) => {
-                i = t.end;
-                tags.push(t);
-            }
-            None => i += 1,
+        if let Some(t) = match_tag(x, i) {
+            i = t.end;
+            toks.push(Tok::Tag(t));
+        } else {
+            i += 1;
         }
     }
-    Scan { tags, skipped }
+    toks
 }
 
-fn parse_name(x: &[u8], mut p: usize) -> Option<usize> {
-    let s = p;
-    while p < x.len() && is_name_char(x[p]) {
-        p += 1;
-    }
-    if p > s { Some(p) } else { None }
-}
-
-fn parse_attr(x: &[u8], mut p: usize) -> Option<(usize, String, String)> {
-    let s = p;
-    while p < x.len() && !is_ws(x[p]) && !matches!(x[p], b'=' | b'/' | b'>' | b'"' | b'\'' | b'<') {
-        p += 1;
-    }
-    if p == s {
-        return None;
-    }
-    let name = String::from_utf8_lossy(&x[s..p]).to_string();
-    while p < x.len() && is_ws(x[p]) {
-        p += 1;
-    }
-    if p >= x.len() || x[p] != b'=' {
-        return None;
-    }
-    p += 1;
-    while p < x.len() && is_ws(x[p]) {
-        p += 1;
-    }
-    if p >= x.len() || !(x[p] == b'"' || x[p] == b'\'') {
-        return None;
-    }
-    let q = x[p];
-    p += 1;
-    let vs = p;
-    while p < x.len() && x[p] != q {
-        p += 1;
-    }
-    if p >= x.len() {
-        return None;
-    }
-    let val = String::from_utf8_lossy(&x[vs..p]).to_string();
-    Some((p + 1, name, val))
-}
-
-fn parse_tag(x: &[u8], start: usize) -> Option<Tag> {
-    let n = x.len();
-    let mut p = start + 1;
+fn match_tag(x: &str, i: usize) -> Option<Tag> {
+    let b = x.as_bytes();
+    let at = |p: usize| -> Option<u8> { b.get(p).copied() };
+    let mut p = i + 1;
     let mut is_end = false;
-    if p < n && x[p] == b'/' {
+    if at(p) == Some(b'/') {
         is_end = true;
         p += 1;
     }
-    let s1 = p;
-    p = parse_name(x, p)?;
-    let mut local = (s1, p);
-    if p < n && x[p] == b':' {
-        let s2 = p + 1;
-        p = parse_name(x, s2)?;
-        local = (s2, p);
+    let n1 = p;
+    while at(p).is_some_and(is_name) {
+        p += 1;
+    }
+    if p == n1 {
+        return None;
+    }
+    let mut local = &x[n1..p];
+    if at(p) == Some(b':') {
+        p += 1;
+        let n2 = p;
+        while at(p).is_some_and(is_name) {
+            p += 1;
+        }
+        if p == n2 {
+            return None;
+        }
+        local = &x[n2..p];
     }
     let mut attrs = Vec::new();
     loop {
-        let save = p;
         let mut q = p;
-        while q < n && is_ws(x[q]) {
+        while at(q).is_some_and(is_ws) {
             q += 1;
         }
-        if q == save {
-            break;
-        }
-        match parse_attr(x, q) {
-            Some((np, k, v)) => {
+        if q > p {
+            if let Some((k, v, q2)) = match_attr(x, q) {
                 attrs.push((k, v));
-                p = np;
-            }
-            None => {
-                p = save;
-                break;
+                p = q2;
+                continue;
             }
         }
+        p = q;
+        break;
     }
-    while p < n && is_ws(x[p]) {
+    let mut sc = false;
+    if at(p) == Some(b'/') {
+        sc = true;
         p += 1;
     }
-    let mut self_closing = false;
-    if p < n && x[p] == b'/' {
-        self_closing = true;
-        p += 1;
+    if at(p) != Some(b'>') {
+        return None;
     }
-    if p < n && x[p] == b'>' {
-        Some(Tag {
-            start,
-            end: p + 1,
-            is_end,
-            self_closing,
-            name: String::from_utf8_lossy(&x[local.0..local.1]).to_string(),
-            attrs,
-        })
-    } else {
-        None
-    }
+    Some(Tag { start: i, end: p + 1, is_end, self_closing: sc, name: local.to_string(), attrs })
 }
 
-/// Decodes the five predefined entities and numeric character references.
+fn match_attr(x: &str, q: usize) -> Option<(String, String, usize)> {
+    let b = x.as_bytes();
+    let at = |p: usize| -> Option<u8> { b.get(p).copied() };
+    let mut p = q;
+    while let Some(c) = at(p) {
+        if is_ws(c) || matches!(c, b'=' | b'/' | b'>' | b'"' | b'\'' | b'<') {
+            break;
+        }
+        p += 1;
+    }
+    if p == q {
+        return None;
+    }
+    let name = x[q..p].to_string();
+    while at(p).is_some_and(is_ws) {
+        p += 1;
+    }
+    if at(p) != Some(b'=') {
+        return None;
+    }
+    p += 1;
+    while at(p).is_some_and(is_ws) {
+        p += 1;
+    }
+    let quote = at(p)?;
+    if quote != b'"' && quote != b'\'' {
+        return None;
+    }
+    let vs = p + 1;
+    let ve = vs + b[vs..].iter().position(|&c| c == quote)?;
+    Some((name, x[vs..ve].to_string(), ve + 1))
+}
+
+/// Decode the five predefined entities and numeric character references.
 pub fn decode_refs(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
-    let mut lit = 0; // start of pending literal run
+    let mut last = 0;
     while i < b.len() {
         if b[i] != b'&' {
             i += 1;
             continue;
         }
-        if let Some((rep, len)) = match_ref(&b[i..]) {
-            out.push_str(&s[lit..i]);
-            out.push(rep);
-            i += len;
-            lit = i;
+        let rest = &s[i..];
+        let mut rep: Option<(char, usize)> = None;
+        for (ent, c) in [("&lt;", '<'), ("&gt;", '>'), ("&amp;", '&'), ("&quot;", '"'), ("&apos;", '\'')] {
+            if rest.starts_with(ent) {
+                rep = Some((c, ent.len()));
+            }
+        }
+        if rep.is_none() {
+            let (digits_start, radix) = if rest.starts_with("&#x") {
+                (3, 16)
+            } else if rest.starts_with("&#") {
+                (2, 10)
+            } else {
+                (0, 0)
+            };
+            if radix != 0 {
+                let rb = rest.as_bytes();
+                let mut j = digits_start;
+                while j < rb.len() && (if radix == 16 { rb[j].is_ascii_hexdigit() } else { rb[j].is_ascii_digit() }) {
+                    j += 1;
+                }
+                if j > digits_start && j < rb.len() && rb[j] == b';' {
+                    // Value, saturating to avoid overflow.
+                    let mut v: u64 = 0;
+                    for &d in &rb[digits_start..j] {
+                        let dv = (d as char).to_digit(radix).unwrap() as u64;
+                        v = v.saturating_mul(radix as u64).saturating_add(dv);
+                    }
+                    if v != 0 && v <= 0x10FFFF {
+                        if let Some(c) = char::from_u32(v as u32) {
+                            rep = Some((c, j + 1));
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((c, l)) = rep {
+            out.push_str(&s[last..i]);
+            out.push(c);
+            i += l;
+            last = i;
         } else {
             i += 1;
         }
     }
-    out.push_str(&s[lit..]);
+    out.push_str(&s[last..]);
     out
-}
-
-fn match_ref(b: &[u8]) -> Option<(char, usize)> {
-    for (name, c) in [("&lt;", '<'), ("&gt;", '>'), ("&amp;", '&'), ("&quot;", '"'), ("&apos;", '\'')] {
-        if b.starts_with(name.as_bytes()) {
-            return Some((c, name.len()));
-        }
-    }
-    if !b.starts_with(b"&#") {
-        return None;
-    }
-    let (hex, mut p) = if b.len() > 2 && b[2] == b'x' { (true, 3) } else { (false, 2) };
-    let ds = p;
-    let mut v: u64 = 0;
-    while p < b.len() && (if hex { b[p].is_ascii_hexdigit() } else { b[p].is_ascii_digit() }) {
-        let d = (b[p] as char).to_digit(16).unwrap() as u64;
-        v = v.saturating_mul(if hex { 16 } else { 10 }).saturating_add(d);
-        p += 1;
-    }
-    if p == ds || p >= b.len() || b[p] != b';' {
-        return None;
-    }
-    if v == 0 || v > 0x10FFFF {
-        return None;
-    }
-    let c = char::from_u32(v as u32)?; // None for surrogates
-    Some((c, p + 1))
-}
-
-pub fn trim_ws(s: &str) -> &str {
-    s.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n'))
 }

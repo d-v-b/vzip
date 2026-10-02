@@ -11,4 +11,4 @@ path = "src/main.rs"
 flate2 = "1"
 
 [profile.release]
-debug = false
+opt-level = 2

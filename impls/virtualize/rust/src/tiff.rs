@@ -1,31 +1,13 @@
-//! TIFF profile (§3).
+// §3 TIFF profile.
+
 use crate::common::*;
-use crate::http::Source;
-use crate::json::J;
+use crate::http::Reader;
 use crate::rej;
-use crate::xml;
+use crate::xml::{self, Tok};
 use std::collections::{HashMap, HashSet};
 
-const T_WIDTH: u16 = 256;
-const T_LENGTH: u16 = 257;
-const T_BPS: u16 = 258;
-const T_COMPRESSION: u16 = 259;
-const T_DESC: u16 = 270;
-const T_SPP: u16 = 277;
-const T_PLANAR: u16 = 284;
-const T_PREDICTOR: u16 = 317;
-const T_TW: u16 = 322;
-const T_TL: u16 = 323;
-const T_TOFF: u16 = 324;
-const T_TBC: u16 = 325;
-const T_SUBIFDS: u16 = 330;
-const T_SF: u16 = 339;
-
-const SCALARS: [u16; 8] = [T_WIDTH, T_LENGTH, T_COMPRESSION, T_SPP, T_PLANAR, T_PREDICTOR, T_TW, T_TL];
-const ARRAYS: [u16; 5] = [T_BPS, T_TOFF, T_TBC, T_SUBIFDS, T_SF];
-
-const MAX_IFDS: usize = 100000;
-const MAX_PLANES: u64 = 100000;
+const TAGS: [u16; 14] = [256, 257, 258, 259, 270, 277, 284, 317, 322, 323, 324, 325, 330, 339];
+const SCALARS: [u16; 8] = [256, 257, 259, 277, 284, 317, 322, 323];
 
 fn type_size(t: u16) -> Option<u64> {
     Some(match t {
@@ -37,45 +19,42 @@ fn type_size(t: u16) -> Option<u64> {
     })
 }
 
-struct TagEnt {
+struct TagV {
     typ: u16,
     count: u64,
-    data_off: u64, // absolute file offset of the value bytes
+    pos: u64,       // absolute file offset of the value bytes
+    ints: Vec<u64>, // values, for tags other than ImageDescription
 }
 
 struct Ifd {
-    tags: HashMap<u16, TagEnt>,
-    scalars: HashMap<u16, u64>,
+    tags: HashMap<u16, TagV>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct Format {
-    bps: u64,
-    spp: u64,
-    sf: u64,
-    planar: u64,
-    compression: u64,
-    predictor: u64,
-}
-
-struct Size {
-    w: u64,
-    h: u64,
-    tile: Option<(u64, u64)>, // (tile width, tile length)
+impl Ifd {
+    fn has(&self, t: u16) -> bool {
+        self.tags.contains_key(&t)
+    }
+    fn scalar(&self, t: u16) -> Option<u64> {
+        self.tags.get(&t).map(|v| v.ints[0])
+    }
+    fn array(&self, t: u16) -> Option<&[u64]> {
+        self.tags.get(&t).map(|v| v.ints.as_slice())
+    }
 }
 
 struct Tiff<'a> {
-    src: &'a mut Source,
+    r: &'a mut Reader,
     le: bool,
     big: bool,
-    ifds: Vec<Ifd>,
+    seen: HashSet<u64>,
+    nread: u64,
 }
 
-fn rd(b: &[u8], le: bool) -> u64 {
-    let mut v = 0u64;
+fn uint(b: &[u8], le: bool) -> u64 {
+    let mut v: u64 = 0;
     if le {
-        for (i, &x) in b.iter().enumerate() {
-            v |= (x as u64) << (8 * i);
+        for &x in b.iter().rev() {
+            v = (v << 8) | x as u64;
         }
     } else {
         for &x in b {
@@ -85,248 +64,374 @@ fn rd(b: &[u8], le: bool) -> u64 {
     v
 }
 
-impl<'a> Tiff<'a> {
-    fn read_ifd(&mut self, off: u64) -> Res<(Ifd, u64)> {
-        let (cnt_size, ent_size, off_size) = if self.big { (8u64, 20u64, 8u64) } else { (2, 12, 4) };
-        let n = rd(&self.src.read(off, cnt_size)?, self.le);
-        let total = (n as u128) * (ent_size as u128);
-        if total > MAX_SAFE as u128 {
-            rej!("IFD at {off}: entry count too large");
+impl Tiff<'_> {
+    fn check_offset(&mut self, off: u64) -> R<()> {
+        let min = if self.big { 16 } else { 8 };
+        if off < min {
+            rej!("IFD offset {} below {}", off, min);
         }
-        let ents = self.src.read(off + cnt_size, total as u64)?;
-        let next_pos = off + cnt_size + total as u64;
-        let next = rd(&self.src.read(next_pos, off_size)?, self.le);
-        let mut ifd = Ifd { tags: HashMap::new(), scalars: HashMap::new() };
-        for i in 0..n as usize {
-            let e = &ents[i * ent_size as usize..(i + 1) * ent_size as usize];
-            let tag = rd(&e[0..2], self.le) as u16;
-            let is_scalar = SCALARS.contains(&tag);
-            if !(is_scalar || ARRAYS.contains(&tag) || tag == T_DESC) {
-                continue;
+        if off > MAX53 {
+            rej!("IFD offset {} above 2^53-1", off);
+        }
+        if !self.seen.insert(off) {
+            rej!("IFD offset {} read twice", off);
+        }
+        self.nread += 1;
+        if self.nread > 100000 {
+            rej!("more than 100000 IFDs");
+        }
+        Ok(())
+    }
+
+    /// Read an IFD; returns it and (for the main chain) its next-IFD offset.
+    fn read_ifd(&mut self, off: u64, want_next: bool) -> R<(Ifd, u64)> {
+        let le = self.le;
+        let (cnt_size, esize, vsize) = if self.big { (8u64, 20u64, 8u64) } else { (2, 12, 4) };
+        let count = uint(&self.r.read(off, cnt_size)?, le);
+        let total = (count as u128) * (esize as u128);
+        if total > self.r.size as u128 {
+            rej!("IFD at {} with {} entries runs past the file", off, count);
+        }
+        let ebase = off + cnt_size;
+        let ents = self.r.read(ebase, total as u64)?;
+        let mut tags: HashMap<u16, TagV> = HashMap::new();
+        for e in 0..count as usize {
+            let eb = &ents[e * esize as usize..(e + 1) * esize as usize];
+            let tag = uint(&eb[0..2], le) as u16;
+            if !TAGS.contains(&tag) || tags.contains_key(&tag) {
+                continue; // unknown tag, or a duplicate: ignored
             }
-            if ifd.tags.contains_key(&tag) {
-                continue; // duplicate: first is used, others ignored
-            }
-            let typ = rd(&e[2..4], self.le) as u16;
-            let ok = if tag == T_DESC {
+            let typ = uint(&eb[2..4], le) as u16;
+            let ok = if tag == 270 {
                 matches!(typ, 1..=13 | 16..=18)
             } else {
                 matches!(typ, 1 | 3 | 4 | 13 | 16 | 18)
             };
             if !ok {
-                rej!("IFD at {off}: tag {tag} has field type {typ}");
+                rej!("tag {} has field type {}", tag, typ);
             }
-            let sz = type_size(typ).unwrap();
-            let (count, valfield, valpos) = if self.big {
-                (rd(&e[4..12], self.le), &e[12..20], 12u64)
+            let tcount = if self.big { uint(&eb[4..12], le) } else { uint(&eb[4..8], le) };
+            let vfield_pos = ebase + e as u64 * esize + if self.big { 12 } else { 8 };
+            let tsize = type_size(typ).unwrap();
+            let bytes = tcount as u128 * tsize as u128;
+            let pos = if bytes <= vsize as u128 {
+                vfield_pos
             } else {
-                (rd(&e[4..8], self.le), &e[8..12], 8u64)
-            };
-            let bytes = (count as u128) * (sz as u128);
-            let data_off = if bytes <= off_size as u128 {
-                off + cnt_size + (i as u64) * ent_size + valpos
-            } else {
-                let o = rd(valfield, self.le);
-                if o > MAX_SAFE || bytes > MAX_SAFE as u128 {
-                    rej!("IFD at {off}: tag {tag} value offset/length above 2^53-1");
+                let vf = &eb[(esize - vsize) as usize..];
+                let p = uint(vf, le);
+                if p > MAX53 {
+                    rej!("tag {} value offset {} above 2^53-1", tag, p);
                 }
-                if (o as u128) + bytes > self.src.size as u128 {
-                    rej!("IFD at {off}: tag {tag} value outside the file");
-                }
-                o
+                p
             };
-            if is_scalar && count == 0 {
-                rej!("IFD at {off}: scalar tag {tag} has no values");
+            if pos as u128 + bytes > self.r.size as u128 {
+                rej!("tag {} value lies outside the file", tag);
             }
-            let ent = TagEnt { typ, count, data_off };
-            if is_scalar {
-                let b = self.src.read(data_off, sz)?;
-                ifd.scalars.insert(tag, rd(&b, self.le));
+            if SCALARS.contains(&tag) && tcount < 1 {
+                rej!("scalar tag {} has no values", tag);
             }
-            ifd.tags.insert(tag, ent);
+            let mut ints = Vec::new();
+            if tag != 270 {
+                let raw = self.r.read(pos, bytes as u64)?;
+                ints.reserve(tcount as usize);
+                for c in raw.chunks(tsize as usize) {
+                    let v = uint(c, le);
+                    if v > MAX53 {
+                        rej!("tag {} value {} above 2^53-1", tag, v);
+                    }
+                    ints.push(v);
+                }
+            } else if matches!(typ, 16..=18) {
+                let raw = self.r.read(pos, bytes as u64)?;
+                for c in raw.chunks(8) {
+                    let v = uint(c, le);
+                    let mag = if typ == 17 { (v as i64).unsigned_abs() } else { v };
+                    if mag > MAX53 {
+                        rej!("ImageDescription integer value above 2^53-1 in magnitude");
+                    }
+                }
+            }
+            tags.insert(tag, TagV { typ, count: tcount, pos, ints });
         }
-        Ok((ifd, next))
-    }
-
-    fn values(&mut self, ifd: usize, tag: u16) -> Res<Option<Vec<u64>>> {
-        let (typ, count, off) = match self.ifds[ifd].tags.get(&tag) {
-            Some(e) => (e.typ, e.count, e.data_off),
-            None => return Ok(None),
-        };
-        let sz = type_size(typ).unwrap();
-        let b = self.src.read(off, count * sz)?;
-        Ok(Some(b.chunks(sz as usize).map(|c| rd(c, self.le)).collect()))
-    }
-
-    fn scalar(&self, ifd: usize, tag: u16) -> Option<u64> {
-        self.ifds[ifd].scalars.get(&tag).copied()
-    }
-
-    fn has(&self, ifd: usize, tag: u16) -> bool {
-        self.ifds[ifd].tags.contains_key(&tag)
-    }
-
-    fn format(&mut self, ifd: usize) -> Res<Format> {
-        let bps = match self.values(ifd, T_BPS)? {
-            None => rej!("IFD {ifd}: BitsPerSample missing"),
-            Some(v) if v.is_empty() => rej!("IFD {ifd}: BitsPerSample has no values"),
-            Some(v) => {
-                if v.iter().any(|&x| x != v[0]) {
-                    rej!("IFD {ifd}: BitsPerSample values differ");
-                }
-                if v[0] < 1 {
-                    rej!("IFD {ifd}: BitsPerSample 0");
-                }
-                v[0]
-            }
-        };
-        let spp = self.scalar(ifd, T_SPP).unwrap_or(1);
-        if spp < 1 {
-            rej!("IFD {ifd}: SamplesPerPixel 0");
+        let mut next = 0;
+        if want_next {
+            next = uint(&self.r.read(ebase + total as u64, vsize)?, le);
         }
-        let sf = match self.values(ifd, T_SF)? {
-            None => 1,
-            Some(v) if v.is_empty() => rej!("IFD {ifd}: SampleFormat has no values"),
-            Some(v) => {
-                if v.iter().any(|&x| x != v[0]) {
-                    rej!("IFD {ifd}: SampleFormat values differ");
-                }
-                v[0]
-            }
-        };
-        let planar = if spp == 1 {
-            1
-        } else {
-            let p = self.scalar(ifd, T_PLANAR).unwrap_or(1);
-            if p != 1 && p != 2 {
-                rej!("IFD {ifd}: PlanarConfiguration {p}");
-            }
-            p
-        };
-        Ok(Format {
-            bps,
-            spp,
-            sf,
-            planar,
-            compression: self.scalar(ifd, T_COMPRESSION).unwrap_or(1),
-            predictor: self.scalar(ifd, T_PREDICTOR).unwrap_or(1),
-        })
-    }
-
-    fn is_tiled(&self, ifd: usize) -> bool {
-        self.has(ifd, T_TW) && self.has(ifd, T_TOFF)
-    }
-
-    fn size(&self, ifd: usize) -> Res<Size> {
-        let w = self.scalar(ifd, T_WIDTH);
-        let h = self.scalar(ifd, T_LENGTH);
-        let (w, h) = match (w, h) {
-            (Some(w), Some(h)) if w >= 1 && h >= 1 => (w, h),
-            _ => rej!("IFD {ifd}: missing or zero ImageWidth/ImageLength"),
-        };
-        let tile = if self.is_tiled(ifd) {
-            let tw = self.scalar(ifd, T_TW).unwrap();
-            let tl = match self.scalar(ifd, T_TL) {
-                Some(v) => v,
-                None => rej!("IFD {ifd}: TileLength missing"),
-            };
-            if !self.has(ifd, T_TBC) {
-                rej!("IFD {ifd}: TileByteCounts missing");
-            }
-            if tw < 1 || tl < 1 {
-                rej!("IFD {ifd}: zero tile size");
-            }
-            Some((tw, tl))
-        } else {
-            None
-        };
-        Ok(Size { w, h, tile })
+        Ok((Ifd { tags }, next))
     }
 }
 
-#[derive(Default)]
-struct TiffData {
-    ifd: Option<u64>,
-    first: [Option<u64>; 3], // Z, C, T
-    plane_count: Option<u64>,
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Format {
+    bps: u64,
+    spp: u64,
+    sf: u64,
+    pc: u64,
+    comp: u64,
+    pred: u64,
+}
+
+fn format(ifd: &Ifd) -> R<Format> {
+    let bps = match ifd.array(258) {
+        Some(v) if !v.is_empty() => v,
+        _ => rej!("BitsPerSample missing or empty"),
+    };
+    if bps.iter().any(|&b| b != bps[0]) || bps[0] < 1 {
+        rej!("BitsPerSample values differ or are 0");
+    }
+    let spp = ifd.scalar(277).unwrap_or(1);
+    if spp < 1 {
+        rej!("SamplesPerPixel is 0");
+    }
+    let sf = match ifd.array(339) {
+        None => 1,
+        Some(v) => {
+            if v.is_empty() {
+                rej!("SampleFormat has no values");
+            }
+            if v.iter().any(|&x| x != v[0]) {
+                rej!("SampleFormat values differ");
+            }
+            v[0]
+        }
+    };
+    let pc = if spp == 1 {
+        1
+    } else {
+        let p = ifd.scalar(284).unwrap_or(1);
+        if p != 1 && p != 2 {
+            rej!("PlanarConfiguration {}", p);
+        }
+        p
+    };
+    Ok(Format {
+        bps: bps[0],
+        spp,
+        sf,
+        pc,
+        comp: ifd.scalar(259).unwrap_or(1),
+        pred: ifd.scalar(317).unwrap_or(1),
+    })
+}
+
+struct Img<'a> {
+    w: u64,
+    h: u64,
+    tw: u64,
+    th: u64,
+    fmt: Format,
+    offsets: &'a [u64],
+    counts: &'a [u64],
+}
+
+/// Format and size of an IFD that is a plane, a level or a candidate; it must be tiled.
+fn image(ifd: &Ifd) -> R<Img<'_>> {
+    let fmt = format(ifd)?;
+    let (w, h) = match (ifd.scalar(256), ifd.scalar(257)) {
+        (Some(w), Some(h)) if w >= 1 && h >= 1 => (w, h),
+        _ => rej!("ImageWidth/ImageLength missing or 0"),
+    };
+    let tiled = ifd.has(322) && ifd.has(324);
+    if !tiled {
+        rej!("image is not tiled");
+    }
+    let (tw, th) = match (ifd.scalar(322), ifd.scalar(323)) {
+        (Some(a), Some(b)) if a >= 1 && b >= 1 => (a, b),
+        _ => rej!("TileWidth/TileLength missing or 0"),
+    };
+    let (offsets, counts) = match (ifd.array(324), ifd.array(325)) {
+        (Some(o), Some(c)) => (o, c),
+        _ => rej!("TileOffsets/TileByteCounts missing"),
+    };
+    Ok(Img { w, h, tw, th, fmt, offsets, counts })
 }
 
 struct Ome {
-    d: Vec<u8>,
     image_name: Option<String>,
-    size_z: Option<u64>,
-    size_c: Option<u64>,
-    size_t: Option<u64>,
-    dim_order: Option<[u8; 3]>,
-    phys: [Option<f64>; 3],         // X, Y, Z
-    phys_unit: [Option<String>; 3], // X, Y, Z
-    tiffdata: Vec<TiffData>,
-    files: HashSet<String>,
+    pixels: Option<xml::Tag>,
+    tiffdata: Vec<(xml::Tag, Option<String>)>, // tag, file identifier named by its UUID
 }
 
-fn parse_int_attr(v: &str, what: &str, min1: bool) -> Res<u64> {
-    let t = xml::trim_ws(v);
-    if t.is_empty() || !t.bytes().all(|c| c.is_ascii_digit()) {
-        rej!("OME-XML: {what}={v:?} is not an integer");
-    }
-    let t = t.trim_start_matches('0');
-    if t.len() > 16 {
-        rej!("OME-XML: {what}={v:?} above 2^53-1");
-    }
-    let n: u64 = if t.is_empty() { 0 } else { t.parse().unwrap() };
-    if n > MAX_SAFE {
-        rej!("OME-XML: {what}={v:?} above 2^53-1");
-    }
-    if min1 && n < 1 {
-        rej!("OME-XML: {what}={v:?} must be at least 1");
-    }
-    Ok(n)
-}
-
-fn parse_phys(v: &str) -> Option<f64> {
-    let b = v.as_bytes();
-    let mut p = 0;
-    if p < b.len() && (b[p] == b'+' || b[p] == b'-') {
-        p += 1;
-    }
-    let int_start = p;
-    while p < b.len() && b[p].is_ascii_digit() {
-        p += 1;
-    }
-    let int_digits = p - int_start;
-    let mut frac_digits = 0;
-    if p < b.len() && b[p] == b'.' {
-        p += 1;
-        let fs = p;
-        while p < b.len() && b[p].is_ascii_digit() {
-            p += 1;
-        }
-        frac_digits = p - fs;
-    }
-    if int_digits == 0 && frac_digits == 0 {
+fn parse_ome(x: &str) -> Option<Ome> {
+    let toks = xml::scan(x);
+    let tags: Vec<&xml::Tag> = toks
+        .iter()
+        .filter_map(|t| match t {
+            Tok::Tag(t) => Some(t),
+            _ => None,
+        })
+        .collect();
+    if !tags.iter().any(|t| !t.is_end && t.name == "OME") {
         return None;
     }
-    if p < b.len() && (b[p] == b'e' || b[p] == b'E') {
-        p += 1;
-        if p < b.len() && (b[p] == b'+' || b[p] == b'-') {
-            p += 1;
+    let image_name = tags.iter().find(|t| !t.is_end && t.name == "Image").and_then(|t| t.attr("Name"));
+    let pi = tags.iter().position(|t| !t.is_end && t.name == "Pixels");
+    let mut tiffdata = Vec::new();
+    let mut pixels = None;
+    if let Some(pi) = pi {
+        let p = tags[pi];
+        pixels = Some(clone_tag(p));
+        if !p.self_closing {
+            let mut j = pi + 1;
+            while j < tags.len() {
+                let t = tags[j];
+                if t.is_end && t.name == "Pixels" {
+                    break;
+                }
+                if !t.is_end && t.name == "TiffData" {
+                    let mut ident = None;
+                    if !t.self_closing {
+                        // first UUID start tag before the next TiffData end/start or Pixels end tag
+                        let mut k = j + 1;
+                        while k < tags.len() {
+                            let u = tags[k];
+                            if (u.name == "TiffData") || (u.is_end && u.name == "Pixels") {
+                                break;
+                            }
+                            if !u.is_end && u.name == "UUID" {
+                                ident = Some(match u.attr("FileName") {
+                                    Some(f) => f,
+                                    None => uuid_text(x, &toks, u),
+                                });
+                                break;
+                            }
+                            k += 1;
+                        }
+                    }
+                    tiffdata.push((clone_tag(t), ident));
+                }
+                j += 1;
+            }
         }
-        let es = p;
-        while p < b.len() && b[p].is_ascii_digit() {
-            p += 1;
+    }
+    Some(Ome { image_name, pixels, tiffdata })
+}
+
+fn clone_tag(t: &xml::Tag) -> xml::Tag {
+    xml::Tag {
+        start: t.start,
+        end: t.end,
+        is_end: t.is_end,
+        self_closing: t.self_closing,
+        name: t.name.clone(),
+        attrs: t.attrs.clone(),
+    }
+}
+
+fn uuid_text(x: &str, toks: &[Tok], u: &xml::Tag) -> String {
+    if u.self_closing {
+        return String::new();
+    }
+    // Find the next tag after u; collect text with skipped sections removed.
+    let mut raw = String::new();
+    let mut pos = u.end;
+    let mut found_end = x.len();
+    for t in toks {
+        match t {
+            Tok::Skip(s, e) if *s >= u.end => {
+                raw.push_str(&x[pos..*s]);
+                pos = *e;
+            }
+            Tok::Tag(t) if t.start >= u.end => {
+                found_end = t.start;
+                break;
+            }
+            _ => {}
         }
-        if p == es {
+    }
+    if pos < found_end {
+        raw.push_str(&x[pos..found_end]);
+    }
+    let d = xml::decode_refs(&raw);
+    d.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n')).to_string()
+}
+
+fn int_attr(t: &xml::Tag, name: &str, min: u64) -> R<Option<u64>> {
+    let v = match t.attr(name) {
+        None => return Ok(None),
+        Some(v) => v,
+    };
+    let s = v.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n'));
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        rej!("attribute {}={:?} is not an integer", name, v);
+    }
+    let n = s.trim_start_matches('0');
+    if n.len() > 16 {
+        rej!("attribute {}={:?} too large", name, v);
+    }
+    let n: u64 = if n.is_empty() { 0 } else { n.parse().unwrap() };
+    if n > MAX53 {
+        rej!("attribute {}={:?} too large", name, v);
+    }
+    if n < min {
+        rej!("attribute {}={:?} below {}", name, v, min);
+    }
+    Ok(Some(n))
+}
+
+fn phys_size(t: Option<&xml::Tag>, name: &str) -> Option<f64> {
+    let v = t?.attr(name)?;
+    let b = v.as_bytes();
+    let mut i = 0;
+    if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+        i += 1;
+    }
+    let ds = i;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    let int_digits = i - ds;
+    if int_digits > 0 {
+        if i < b.len() && b[i] == b'.' {
+            i += 1;
+            while i < b.len() && b[i].is_ascii_digit() {
+                i += 1;
+            }
+        }
+    } else {
+        if i < b.len() && b[i] == b'.' {
+            i += 1;
+        } else {
+            return None;
+        }
+        let fs = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == fs {
             return None;
         }
     }
-    if p != b.len() {
+    if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
+        i += 1;
+        if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+            i += 1;
+        }
+        let es = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == es {
+            return None;
+        }
+    }
+    if i != b.len() {
         return None;
     }
-    let f: f64 = v.parse().ok()?;
+    let f: f64 = parse_decimal(&v)?;
     if f.is_finite() && f > 0.0 { Some(f) } else { None }
 }
 
-fn unit_of(sym: &str) -> Option<&'static str> {
+/// Correctly rounded conversion of a string already matched by the PhysicalSize grammar.
+fn parse_decimal(v: &str) -> Option<f64> {
+    // Rust's parser accepts this grammar except possibly "1." forms with exponent;
+    // normalize "1.e5" -> "1e5" and "1." -> "1" to be safe.
+    let s = v.replace(".e", "e").replace(".E", "E");
+    let s = s.strip_suffix('.').unwrap_or(&s).to_string();
+    s.parse::<f64>().ok()
+}
+
+fn unit(sym: &str) -> Option<&'static str> {
     Some(match sym {
         "\u{b5}m" | "\u{3bc}m" | "um" => "micrometer",
         "nm" => "nanometer",
@@ -345,506 +450,446 @@ fn unit_of(sym: &str) -> Option<&'static str> {
     })
 }
 
-fn parse_ome(d: Vec<u8>) -> Res<Option<Ome>> {
-    let x = match std::str::from_utf8(&d) {
-        Ok(s) => s.to_string(),
-        Err(_) => return Ok(None),
-    };
-    let xb = x.as_bytes();
-    let sc = xml::scan(xb);
-    let tags = &sc.tags;
-    if !tags.iter().any(|t| t.is_start("OME")) {
-        return Ok(None);
-    }
-    let image_name = tags.iter().find(|t| t.is_start("Image")).and_then(|t| t.attr("Name"));
-    let mut ome = Ome {
-        d: Vec::new(),
-        image_name,
-        size_z: None,
-        size_c: None,
-        size_t: None,
-        dim_order: None,
-        phys: [None; 3],
-        phys_unit: [None, None, None],
-        tiffdata: Vec::new(),
-        files: HashSet::new(),
-    };
-    if let Some(pi) = tags.iter().position(|t| t.is_start("Pixels")) {
-        let px = &tags[pi];
-        if let Some(v) = px.attr("SizeZ") {
-            ome.size_z = Some(parse_int_attr(&v, "SizeZ", true)?);
+pub fn virtualize(r: &mut Reader) -> R<Output> {
+    let h = r.read(0, 8)?;
+    let le = h[0] == b'I';
+    let magic = uint(&h[2..4], le);
+    let big = magic == 43;
+    let first = if big {
+        if uint(&h[4..6], le) != 8 || uint(&h[6..8], le) != 0 {
+            rej!("BigTIFF header with offset size != 8 or reserved != 0");
         }
-        if let Some(v) = px.attr("SizeC") {
-            ome.size_c = Some(parse_int_attr(&v, "SizeC", true)?);
-        }
-        if let Some(v) = px.attr("SizeT") {
-            ome.size_t = Some(parse_int_attr(&v, "SizeT", true)?);
-        }
-        if let Some(v) = px.attr("DimensionOrder") {
-            let b = v.as_bytes();
-            let ok = b.len() == 5 && &b[..2] == b"XY" && {
-                let mut s = [b[2], b[3], b[4]];
-                s.sort();
-                &s == b"CTZ"
-            };
-            if !ok {
-                rej!("OME-XML: DimensionOrder {v:?}");
-            }
-            ome.dim_order = Some([b[2], b[3], b[4]]);
-        }
-        for (i, a) in ["X", "Y", "Z"].iter().enumerate() {
-            ome.phys[i] = px.attr(&format!("PhysicalSize{a}")).and_then(|v| parse_phys(&v));
-            ome.phys_unit[i] = px.attr(&format!("PhysicalSize{a}Unit"));
-        }
-        if !px.self_closing {
-            let end = tags[pi + 1..]
-                .iter()
-                .position(|t| t.is_end_of("Pixels"))
-                .map(|p| p + pi + 1)
-                .unwrap_or(tags.len());
-            let tds: Vec<usize> = (pi + 1..end).filter(|&i| tags[i].is_start("TiffData")).collect();
-            for &ti in &tds {
-                let t = &tags[ti];
-                let mut td = TiffData::default();
-                if let Some(v) = t.attr("IFD") {
-                    td.ifd = Some(parse_int_attr(&v, "IFD", false)?);
-                }
-                for (k, a) in ["FirstZ", "FirstC", "FirstT"].iter().enumerate() {
-                    if let Some(v) = t.attr(a) {
-                        td.first[k] = Some(parse_int_attr(&v, a, false)?);
-                    }
-                }
-                if let Some(v) = t.attr("PlaneCount") {
-                    td.plane_count = Some(parse_int_attr(&v, "PlaneCount", true)?);
-                }
-                if !t.self_closing {
-                    // first UUID start tag before the next TiffData end/start or Pixels end
-                    let mut j = ti + 1;
-                    while j < tags.len() {
-                        let u = &tags[j];
-                        if u.is_end_of("TiffData") || u.is_start("TiffData") || u.is_end_of("Pixels") {
-                            break;
-                        }
-                        if u.is_start("UUID") {
-                            let id = match u.attr("FileName") {
-                                Some(f) => f,
-                                None => {
-                                    if u.self_closing {
-                                        String::new()
-                                    } else {
-                                        let s = u.end;
-                                        let e = tags.get(j + 1).map(|t| t.start).unwrap_or(xb.len());
-                                        let mut raw = String::new();
-                                        let mut p = s;
-                                        for &(a, b) in &sc.skipped {
-                                            if b <= s || a >= e {
-                                                continue;
-                                            }
-                                            raw.push_str(&x[p..a.max(p)]);
-                                            p = b.min(e);
-                                        }
-                                        raw.push_str(&x[p.min(e)..e]);
-                                        xml::trim_ws(&xml::decode_refs(&raw)).to_string()
-                                    }
-                                }
-                            };
-                            ome.files.insert(id);
-                            break;
-                        }
-                        j += 1;
-                    }
-                }
-                ome.tiffdata.push(td);
-            }
-        }
-    }
-    ome.d = d;
-    Ok(Some(ome))
-}
-
-struct Level {
-    ifds: Vec<usize>, // per plane (canonical plane order)
-    w: u64,
-    h: u64,
-    tw: u64,
-    tl: u64,
-}
-
-pub fn virtualize(src: &mut Source, out: &mut Output) -> Res<()> {
-    let hdr = src.read(0, 8)?;
-    let le = hdr[0] == b'I';
-    let magic = rd(&hdr[2..4], le);
-    let (big, first) = if magic == 42 {
-        (false, rd(&hdr[4..8], le))
+        uint(&r.read(8, 8)?, le)
     } else {
-        let h = src.read(0, 16)?;
-        if rd(&h[4..6], le) != 8 || rd(&h[6..8], le) != 0 {
-            rej!("BigTIFF: offset size must be 8 and reserved word 0");
-        }
-        (true, rd(&h[8..16], le))
+        uint(&h[4..8], le)
     };
-    let min_off = if big { 16 } else { 8 };
-    let mut t = Tiff { src, le, big, ifds: Vec::new() };
-    let mut seen: HashSet<u64> = HashSet::new();
-    let mut check_off = |o: u64, n_read: usize| -> Res<()> {
-        if o < min_off {
-            rej!("IFD offset {o} below {min_off}");
-        }
-        if o > MAX_SAFE {
-            rej!("IFD offset {o} above 2^53-1");
-        }
-        if !seen.insert(o) {
-            rej!("IFD offset {o} read twice");
-        }
-        if n_read >= MAX_IFDS {
-            rej!("more than {MAX_IFDS} IFDs");
-        }
-        Ok(())
-    };
-    // main chain
-    let mut main: Vec<usize> = Vec::new();
+    let mut t = Tiff { r, le, big, seen: HashSet::new(), nread: 0 };
+
+    // §3.1 IFDs
+    if first == 0 {
+        rej!("no IFDs");
+    }
+    let mut main: Vec<Ifd> = Vec::new();
     let mut off = first;
     while off != 0 {
-        check_off(off, t.ifds.len())?;
-        let (ifd, next) = t.read_ifd(off)?;
-        t.ifds.push(ifd);
-        main.push(t.ifds.len() - 1);
+        t.check_offset(off)?;
+        let (ifd, next) = t.read_ifd(off, true)?;
+        main.push(ifd);
         off = next;
     }
-    if main.is_empty() {
-        rej!("TIFF has no IFDs");
-    }
-    // SubIFDs
-    let mut subs: Vec<Vec<usize>> = Vec::new();
-    for mi in 0..main.len() {
+    let mut subs: Vec<Vec<Ifd>> = Vec::new();
+    for i in 0..main.len() {
+        let offs: Vec<u64> = main[i].array(330).map(|v| v.to_vec()).unwrap_or_default();
         let mut v = Vec::new();
-        if let Some(offs) = t.values(main[mi], T_SUBIFDS)? {
-            for o in offs {
-                check_off(o, t.ifds.len())?;
-                let (ifd, _) = t.read_ifd(o)?;
-                t.ifds.push(ifd);
-                v.push(t.ifds.len() - 1);
-            }
+        for o in offs {
+            t.check_offset(o)?;
+            v.push(t.read_ifd(o, false)?.0);
         }
         subs.push(v);
     }
-    let ifd0 = main[0];
-    let fmt0 = t.format(ifd0)?;
+    let r = t.r;
+    let fsize = r.size;
+
+    let ifd0 = &main[0];
+    let fmt0 = format(ifd0)?;
     let spp = fmt0.spp;
 
-    // OME-XML
+    // §3.2 OME-XML
+    let mut d_bytes: Option<Vec<u8>> = None;
     let mut ome: Option<Ome> = None;
-    if let Some(e) = t.ifds[ifd0].tags.get(&T_DESC) {
-        if e.typ == 2 {
-            let (o, n) = (e.data_off, e.count);
-            let mut d = t.src.read(o, n)?;
-            if let Some(p) = d.iter().position(|&c| c == 0) {
-                d.truncate(p);
-            }
-            ome = parse_ome(d)?;
-        }
-    }
-
-    // Planes (§3.3)
-    let (size_z, size_c, size_t, cp);
-    let mut plane_ifd: Vec<usize>; // canonical index (t*cp + c)*size_z + z -> arena idx
-    if let Some(om) = &ome {
-        size_z = om.size_z.unwrap_or(1);
-        size_t = om.size_t.unwrap_or(1);
-        let mut sc = om.size_c.unwrap_or(spp);
-        if spp > 1 {
-            if sc == 1 {
-                sc = spp;
-            } else if sc != spp {
-                rej!("SizeC {sc} differs from SamplesPerPixel {spp}");
-            }
-        }
-        size_c = sc;
-        cp = if spp > 1 { 1 } else { size_c };
-        let count = (size_z as u128) * (cp as u128) * (size_t as u128);
-        if count > MAX_PLANES as u128 {
-            rej!("plane count {count} above {MAX_PLANES}");
-        }
-        let count = count as u64;
-        if om.files.len() > 1 {
-            rej!("multi-file dataset ({} files)", om.files.len());
-        }
-        let order = om.dim_order.unwrap_or(*b"ZCT");
-        let size_of = |l: u8| match l {
-            b'Z' => size_z,
-            b'C' => cp,
-            _ => size_t,
-        };
-        let implicit = [TiffData::default()];
-        let tds: &[TiffData] = if om.tiffdata.is_empty() { &implicit } else { &om.tiffdata };
-        let mut map: Vec<Option<u64>> = vec![None; count as usize];
-        for td in tds {
-            let fz = td.first[0].unwrap_or(0);
-            let fc = td.first[1].unwrap_or(0);
-            let ft = td.first[2].unwrap_or(0);
-            if fz >= size_z || fc >= cp || ft >= size_t {
-                rej!("TiffData First* out of range");
-            }
-            let ifd = td.ifd.unwrap_or(0);
-            let pc = td.plane_count.unwrap_or(if tds.len() == 1 && td.ifd.is_none() { count } else { 1 });
-            let pos_of = |l: u8| match l {
-                b'Z' => fz,
-                b'C' => fc,
-                _ => ft,
+    if let Some(tv) = ifd0.tags.get(&270) {
+        if tv.typ == 2 {
+            let raw = r.read(tv.pos, tv.count)?;
+            let d: Vec<u8> = match raw.iter().position(|&b| b == 0) {
+                Some(p) => raw[..p].to_vec(),
+                None => raw,
             };
-            let s0 = size_of(order[0]);
-            let s1 = size_of(order[1]);
-            let start = pos_of(order[0]) + s0 * (pos_of(order[1]) + s1 * pos_of(order[2]));
-            let n = pc.min(count - start);
-            for i in 0..n {
-                let lin = start + i;
-                let a = lin % s0;
-                let b = (lin / s0) % s1;
-                let c = lin / s0 / s1;
-                let (mut z, mut ch, mut tt) = (0, 0, 0);
-                for (l, v) in [(order[0], a), (order[1], b), (order[2], c)] {
-                    match l {
-                        b'Z' => z = v,
-                        b'C' => ch = v,
-                        _ => tt = v,
-                    }
+            if let Ok(x) = std::str::from_utf8(&d) {
+                if let Some(o) = parse_ome(x) {
+                    ome = Some(o);
+                    d_bytes = Some(d.clone());
                 }
-                let canon = (tt * cp + ch) * size_z + z;
-                map[canon as usize] = Some(ifd + i);
             }
         }
-        plane_ifd = Vec::with_capacity(count as usize);
-        for (i, m) in map.iter().enumerate() {
-            match m {
-                Some(k) if (*k as u128) < main.len() as u128 => plane_ifd.push(main[*k as usize]),
-                Some(k) => rej!("plane {i} mapped to IFD {k}, past the main chain"),
-                None => rej!("plane {i} is not mapped to an IFD"),
-            }
-        }
-    } else {
-        size_z = 1;
-        size_t = 1;
-        size_c = spp;
-        cp = 1;
-        plane_ifd = vec![ifd0];
     }
-    let _ = &mut plane_ifd;
 
-    // Levels (§3.4)
-    let mut level_ifds: Vec<Vec<usize>> = vec![plane_ifd.clone()];
-    let s = subs[0].len();
-    if s > 0 {
-        // main-chain index of each plane IFD
-        let main_idx: HashMap<usize, usize> = main.iter().enumerate().map(|(i, &a)| (a, i)).collect();
-        for k in 0..s {
-            let mut v = Vec::new();
-            for &p in &plane_ifd {
-                let sl = &subs[main_idx[&p]];
-                if sl.len() < s {
-                    rej!("plane IFD has {} SubIFDs, IFD 0 has {s}", sl.len());
+    // §3.3 planes
+    let (size_z, size_c, size_t, cp, planes): (u64, u64, u64, u64, Vec<u64>);
+    let (mut px, mut py, mut pz) = (None, None, None);
+    let (mut ux, mut uy, mut uz) = (None, None, None);
+    let mut name = None;
+    match &ome {
+        None => {
+            size_z = 1;
+            size_t = 1;
+            size_c = spp;
+            cp = 1;
+            planes = vec![0];
+        }
+        Some(o) => {
+            let p = o.pixels.as_ref();
+            let sz = match p {
+                Some(p) => int_attr(p, "SizeZ", 1)?,
+                None => None,
+            };
+            let sc = match p {
+                Some(p) => int_attr(p, "SizeC", 1)?,
+                None => None,
+            };
+            let st = match p {
+                Some(p) => int_attr(p, "SizeT", 1)?,
+                None => None,
+            };
+            let dim_order = match p.and_then(|p| p.attr("DimensionOrder")) {
+                None => "XYZCT".to_string(),
+                Some(d) => {
+                    let ok = d.len() == 5 && d.starts_with("XY") && {
+                        let mut l: Vec<char> = d[2..].chars().collect();
+                        l.sort();
+                        l == vec!['C', 'T', 'Z']
+                    };
+                    if !ok {
+                        rej!("bad DimensionOrder {:?}", d);
+                    }
+                    d
                 }
-                v.push(sl[k]);
+            };
+            px = phys_size(p, "PhysicalSizeX");
+            py = phys_size(p, "PhysicalSizeY");
+            pz = phys_size(p, "PhysicalSizeZ");
+            let u = |n: &str| -> Option<&'static str> {
+                match p.and_then(|p| p.attr(n)) {
+                    None => Some("micrometer"),
+                    Some(s) => unit(&s),
+                }
+            };
+            ux = px.and(u("PhysicalSizeXUnit"));
+            uy = py.and(u("PhysicalSizeYUnit"));
+            uz = pz.and(u("PhysicalSizeZUnit"));
+            name = o.image_name.clone().filter(|n| !n.is_empty());
+
+            size_z = sz.unwrap_or(1);
+            size_t = st.unwrap_or(1);
+            let mut c = sc.unwrap_or(spp);
+            if spp > 1 {
+                if c == 1 {
+                    c = spp;
+                } else if c != spp {
+                    rej!("SizeC {} differs from SamplesPerPixel {}", c, spp);
+                }
             }
-            level_ifds.push(v);
+            size_c = c;
+            cp = if spp > 1 { 1 } else { size_c };
+            let count = size_z as u128 * cp as u128 * size_t as u128;
+            if count > 100000 {
+                rej!("{} planes (more than 100000)", count);
+            }
+            let count = count as u64;
+            // Multi-file check.
+            let mut files: HashSet<&str> = HashSet::new();
+            for (_, id) in &o.tiffdata {
+                if let Some(id) = id {
+                    files.insert(id.as_str());
+                }
+            }
+            if files.len() > 1 {
+                rej!("TiffData elements name {} files", files.len());
+            }
+            // Stepping order.
+            let letters: Vec<char> = dim_order[2..].chars().collect();
+            let dsize = |c: char| match c {
+                'Z' => size_z,
+                'C' => cp,
+                _ => size_t,
+            };
+            let mut map: Vec<Option<u64>> = vec![None; count as usize];
+            let implicit = xml::Tag {
+                start: 0,
+                end: 0,
+                is_end: false,
+                self_closing: true,
+                name: "TiffData".into(),
+                attrs: vec![],
+            };
+            let tds: Vec<&xml::Tag> = if o.tiffdata.is_empty() {
+                vec![&implicit]
+            } else {
+                o.tiffdata.iter().map(|(t, _)| t).collect()
+            };
+            let ntd = tds.len();
+            for td in tds {
+                let fz = int_attr(td, "FirstZ", 0)?.unwrap_or(0);
+                let fc = int_attr(td, "FirstC", 0)?.unwrap_or(0);
+                let ft = int_attr(td, "FirstT", 0)?.unwrap_or(0);
+                let ifd_attr = int_attr(td, "IFD", 0)?;
+                let pc_attr = int_attr(td, "PlaneCount", 1)?;
+                if fz >= size_z || fc >= cp || ft >= size_t {
+                    rej!("TiffData First* out of range");
+                }
+                let ifd = ifd_attr.unwrap_or(0);
+                let pcount = match pc_attr {
+                    Some(v) => v,
+                    None => {
+                        if ntd == 1 && ifd_attr.is_none() {
+                            count
+                        } else {
+                            1
+                        }
+                    }
+                };
+                let first = |c: char| match c {
+                    'Z' => fz,
+                    'C' => fc,
+                    _ => ft,
+                };
+                let start = first(letters[0])
+                    + dsize(letters[0]) * (first(letters[1]) + dsize(letters[1]) * first(letters[2]));
+                let mut i = 0u64;
+                while i < pcount {
+                    let pos = start + i;
+                    if pos >= count {
+                        break;
+                    }
+                    // decompose pos (first letter fastest)
+                    let mut rem = pos;
+                    let (mut z, mut c, mut tt) = (0, 0, 0);
+                    for &l in &letters {
+                        let s = dsize(l);
+                        let v = rem % s;
+                        rem /= s;
+                        match l {
+                            'Z' => z = v,
+                            'C' => c = v,
+                            _ => tt = v,
+                        }
+                    }
+                    let pidx = ((tt * cp + c) * size_z + z) as usize;
+                    map[pidx] = Some(ifd + i);
+                    i += 1;
+                }
+            }
+            let mut pl = Vec::with_capacity(map.len());
+            for m in map {
+                match m {
+                    Some(i) if i < main.len() as u64 => pl.push(i),
+                    _ => rej!("a plane is not mapped to an existing IFD"),
+                }
+            }
+            planes = pl;
+        }
+    }
+
+    // §3.4 levels: each level is a list of IFDs, one per plane.
+    let mut levels: Vec<Vec<&Ifd>> = vec![planes.iter().map(|&i| &main[i as usize]).collect()];
+    let s = ifd0.array(330).map(|v| v.len()).unwrap_or(0);
+    if s > 0 {
+        for k in 1..=s {
+            let mut lv = Vec::new();
+            for &pi in &planes {
+                let sv = &subs[pi as usize];
+                if sv.len() < s {
+                    rej!("plane IFD {} has fewer than {} SubIFDs", pi, s);
+                }
+                lv.push(&sv[k - 1]);
+            }
+            levels.push(lv);
         }
     } else if ome.is_none() {
-        let sz0 = t.size(ifd0)?;
-        let (mut lw, mut lh) = (sz0.w, sz0.h);
-        for &mi in &main[1..] {
-            if t.is_tiled(mi) && t.has(mi, T_BPS) {
-                let f = t.format(mi)?;
-                let sz = t.size(mi)?;
-                if f == fmt0 && sz.w < lw && sz.h < lh {
-                    lw = sz.w;
-                    lh = sz.h;
-                    level_ifds.push(vec![mi]);
+        let l0 = image(&main[0])?;
+        let (mut lw, mut lh) = (l0.w, l0.h);
+        for ifd in &main[1..] {
+            if ifd.has(322) && ifd.has(324) && ifd.has(258) {
+                let im = image(ifd)?;
+                if im.fmt == fmt0 && im.w < lw && im.h < lh {
+                    lw = im.w;
+                    lh = im.h;
+                    levels.push(vec![ifd]);
                 }
             }
         }
     }
-    let mut levels: Vec<Level> = Vec::new();
-    for (li, ifds) in level_ifds.into_iter().enumerate() {
-        let mut geo: Option<(u64, u64, u64, u64, Format)> = None;
-        for &i in &ifds {
-            let f = t.format(i)?;
-            let sz = t.size(i)?;
-            let (tw, tl) = match sz.tile {
-                Some(x) => x,
-                None => rej!("level {li}: image is not tiled"),
-            };
-            if f != fmt0 {
-                rej!("level {li}: format {f:?} differs from IFD 0's {fmt0:?}");
+    let mut limgs: Vec<Vec<Img>> = Vec::new();
+    for lv in &levels {
+        let mut imgs = Vec::new();
+        for ifd in lv {
+            let im = image(ifd)?;
+            if im.fmt != fmt0 {
+                rej!("an image's format differs from IFD 0's");
             }
-            let g = (sz.w, sz.h, tw, tl, f);
-            match geo {
-                None => geo = Some(g),
-                Some(g0) if g0 != g => rej!("level {li}: planes differ in size or format"),
-                _ => {}
+            imgs.push(im);
+        }
+        let a = &imgs[0];
+        for b in &imgs[1..] {
+            if (b.w, b.h, b.tw, b.th) != (a.w, a.h, a.tw, a.th) {
+                rej!("planes of a level differ in size");
             }
         }
-        let g = geo.unwrap();
-        levels.push(Level { ifds, w: g.0, h: g.1, tw: g.2, tl: g.3 });
+        limgs.push(imgs);
     }
 
-    // Data type and codecs (§3.5)
-    let dtype = match (fmt0.sf, fmt0.bps) {
-        (1, 8 | 16 | 32 | 64) => format!("uint{}", fmt0.bps),
-        (2, 8 | 16 | 32 | 64) => format!("int{}", fmt0.bps),
-        (3, 32 | 64) => format!("float{}", fmt0.bps),
-        (sf, b) => rej!("unsupported SampleFormat {sf} with BitsPerSample {b}"),
+    // §3.5 data type and codecs
+    let kind = match fmt0.sf {
+        1 => "uint",
+        2 => "int",
+        3 => "float",
+        v => rej!("SampleFormat {}", v),
     };
-    let interleaved = spp > 1 && fmt0.planar == 1;
-    let planar = spp > 1 && fmt0.planar == 2;
-    let n_ch = size_c;
-    let has_t = size_t > 1;
-    let has_c = n_ch > 1;
-    let has_z = size_z > 1;
-    let mut dims: Vec<&str> = Vec::new();
-    if has_t {
+    let ok_bits = if kind == "float" { matches!(fmt0.bps, 32 | 64) } else { matches!(fmt0.bps, 8 | 16 | 32 | 64) };
+    if !ok_bits {
+        rej!("BitsPerSample {} for {}", fmt0.bps, kind);
+    }
+    let dtype = format!("{}{}", kind, fmt0.bps);
+    let interleaved = spp > 1 && fmt0.pc == 1;
+    let planar = spp > 1 && fmt0.pc == 2;
+    let item = fmt0.bps / 8;
+
+    // §3.6 axes
+    let chan = size_c;
+    let mut dims: Vec<&'static str> = Vec::new();
+    if size_t > 1 {
         dims.push("t");
     }
-    if has_c {
+    if chan > 1 {
         dims.push("c");
     }
-    if has_z {
+    if size_z > 1 {
         dims.push("z");
     }
     dims.push("y");
     dims.push("x");
+    let dim_strings: Vec<String> = dims.iter().map(|d| d.to_string()).collect();
+
     let mut codecs = Vec::new();
     if interleaved {
-        codecs.push(transpose_codec(&dims));
+        codecs.push(transpose_codec(&dim_strings));
     }
-    match (fmt0.compression, fmt0.predictor) {
-        (1, 1) => codecs.push(bytes_codec(fmt0.bps / 8, le)),
+    match (fmt0.comp, fmt0.pred) {
+        (1, 1) => codecs.push(bytes_codec(item, le)),
         (8 | 32946, 1) => {
-            codecs.push(bytes_codec(fmt0.bps / 8, le));
+            codecs.push(bytes_codec(item, le));
             codecs.push(zlib_codec());
         }
         (50000, 1) => {
-            codecs.push(bytes_codec(fmt0.bps / 8, le));
+            codecs.push(bytes_codec(item, le));
             codecs.push(zstd_codec());
         }
-        (33003 | 33004 | 33005 | 34712, _) => codecs.push(crate::json::obj(vec![("name", J::s("imagecodecs_jpeg2k"))])),
-        (c, p) => rej!("unsupported Compression {c} with Predictor {p}"),
+        (33003 | 33004 | 33005 | 34712, _) => {
+            codecs.push(Json::obj(vec![("name", Json::s("imagecodecs_jpeg2k"))]));
+        }
+        (c, p) => rej!("Compression {} with Predictor {}", c, p),
     }
 
-    // Output (§3.6)
-    let unit_for = |i: usize| -> Option<&'static str> {
-        let om = ome.as_ref()?;
-        om.phys[i]?;
-        let sym = om.phys_unit[i].clone().unwrap_or_else(|| "\u{b5}m".to_string());
-        unit_of(&sym)
-    };
-    let phys = |i: usize| -> f64 { ome.as_ref().and_then(|o| o.phys[i]).unwrap_or(1.0) };
-    let mut axes = Vec::new();
-    if has_t {
-        axes.push(Axis { name: "t", unit: None });
-    }
-    if has_c {
-        axes.push(Axis { name: "c", unit: None });
-    }
-    if has_z {
-        axes.push(Axis { name: "z", unit: unit_for(2) });
-    }
-    axes.push(Axis { name: "y", unit: unit_for(1) });
-    axes.push(Axis { name: "x", unit: unit_for(0) });
-    let (w0, h0) = (levels[0].w, levels[0].h);
-    let mut scales = Vec::new();
-    for lv in &levels {
-        let mut sc = Vec::new();
-        if has_t {
-            sc.push(1.0);
+    let mut out = Output { entries: Vec::new() };
+    let (w0, h0) = (limgs[0][0].w, limgs[0][0].h);
+    let mut axes: Vec<Axis> = Vec::new();
+    for &d in &dims {
+        let (u, mut scales) = match d {
+            "z" => (uz, vec![]),
+            "y" => (uy, vec![]),
+            "x" => (ux, vec![]),
+            _ => (None, vec![]),
+        };
+        for imgs in &limgs {
+            let im = &imgs[0];
+            let v = match d {
+                "y" => py.unwrap_or(1.0) * (h0 as f64 / im.h as f64),
+                "x" => px.unwrap_or(1.0) * (w0 as f64 / im.w as f64),
+                "z" => pz.unwrap_or(1.0),
+                _ => 1.0,
+            };
+            scales.push(v);
         }
-        if has_c {
-            sc.push(1.0);
-        }
-        if has_z {
-            sc.push(phys(2));
-        }
-        sc.push(check_finite(phys(1) * (h0 as f64 / lv.h as f64), "y scale")?);
-        sc.push(check_finite(phys(0) * (w0 as f64 / lv.w as f64), "x scale")?);
-        scales.push(sc);
+        axes.push(Axis { name: d, unit: u, scales });
     }
-    let name = ome.as_ref().and_then(|o| o.image_name.clone()).filter(|n| !n.is_empty());
-    out.json("zarr.json", image_group(name.as_deref(), &axes, &scales, None));
+    out.entries.push((
+        "zarr.json".into(),
+        Entry::Json(image_json(name.as_deref(), &axes, limgs.len(), None)?),
+    ));
 
-    for (li, lv) in levels.iter().enumerate() {
+    let nsp = if planar { spp } else { 1 };
+    for (li, imgs) in limgs.iter().enumerate() {
+        let im0 = &imgs[0];
         let mut shape = Vec::new();
         let mut chunk = Vec::new();
-        if has_t {
-            shape.push(size_t);
-            chunk.push(1);
+        for &d in &dims {
+            match d {
+                "t" => {
+                    shape.push(size_t);
+                    chunk.push(1);
+                }
+                "c" => {
+                    shape.push(chan);
+                    chunk.push(if interleaved { spp } else { 1 });
+                }
+                "z" => {
+                    shape.push(size_z);
+                    chunk.push(1);
+                }
+                "y" => {
+                    shape.push(im0.h);
+                    chunk.push(im0.th);
+                }
+                _ => {
+                    shape.push(im0.w);
+                    chunk.push(im0.tw);
+                }
+            }
         }
-        if has_c {
-            shape.push(n_ch);
-            chunk.push(if interleaved { spp } else { 1 });
-        }
-        if has_z {
-            shape.push(size_z);
-            chunk.push(1);
-        }
-        shape.push(lv.h);
-        shape.push(lv.w);
-        chunk.push(lv.tl);
-        chunk.push(lv.tw);
-        out.json(format!("{li}/zarr.json"), array_json(&shape, &dtype, &chunk, codecs.clone(), &dims));
-
-        let across = lv.w.div_ceil(lv.tw);
-        let down = lv.h.div_ceil(lv.tl);
-        let tcount = (across as u128) * (down as u128);
-        let nsp = if planar { spp } else { 1 };
-        for tt in 0..size_t {
-            for c in 0..cp {
-                for z in 0..size_z {
-                    let canon = ((tt * cp + c) * size_z + z) as usize;
-                    let ifd = lv.ifds[canon];
-                    let offs = t.values(ifd, T_TOFF)?.unwrap();
-                    let cnts = t.values(ifd, T_TBC)?.unwrap();
-                    let need = tcount * nsp as u128;
-                    if offs.len() as u128 != need || cnts.len() as u128 != need {
-                        rej!(
-                            "level {li}: TileOffsets/TileByteCounts have {}/{} values, expected {need}",
-                            offs.len(),
-                            cnts.len()
-                        );
+        let meta = ArrayMeta {
+            shape,
+            data_type: dtype.clone(),
+            chunk_shape: chunk,
+            codecs: codecs.clone(),
+            dims: dim_strings.clone(),
+        };
+        out.entries.push((format!("{}/zarr.json", li), Entry::Json(array_json(&meta))));
+        let rows = im0.h.div_ceil(im0.th);
+        let cols = im0.w.div_ceil(im0.tw);
+        let tcount = rows as u128 * cols as u128;
+        for (pi, im) in imgs.iter().enumerate() {
+            // plane index pi = (t*cp + c)*size_z + z
+            let z = pi as u64 % size_z;
+            let c = (pi as u64 / size_z) % cp;
+            let tt = pi as u64 / size_z / cp;
+            let need = tcount * nsp as u128;
+            if im.offsets.len() as u128 != need || im.counts.len() as u128 != need {
+                rej!("TileOffsets/TileByteCounts have the wrong count");
+            }
+            for sidx in 0..nsp {
+                for j in 0..tcount as u64 {
+                    let k = (sidx * tcount as u64 + j) as usize;
+                    let n = im.counts[k];
+                    if n == 0 {
+                        continue;
                     }
-                    let tcount = tcount as u64;
-                    for s in 0..nsp {
-                        for j in 0..tcount {
-                            let k = (s * tcount + j) as usize;
-                            let n = cnts[k];
-                            if n == 0 {
-                                continue;
-                            }
-                            let mut key = format!("{li}/c");
-                            if has_t {
-                                key.push_str(&format!("/{tt}"));
-                            }
-                            if has_c {
-                                let cc = if spp == 1 {
-                                    c
-                                } else if planar {
-                                    s
-                                } else {
+                    let mut key = format!("{}/c", li);
+                    for &d in &dims {
+                        let v = match d {
+                            "t" => tt,
+                            "c" => {
+                                if interleaved {
                                     0
-                                };
-                                key.push_str(&format!("/{cc}"));
+                                } else if planar {
+                                    sidx
+                                } else {
+                                    c
+                                }
                             }
-                            if has_z {
-                                key.push_str(&format!("/{z}"));
-                            }
-                            key.push_str(&format!("/{}/{}", j / across, j % across));
-                            out.ranges(key, vec![(offs[k], n)])?;
-                        }
+                            "z" => z,
+                            "y" => j / cols,
+                            _ => j % cols,
+                        };
+                        key.push('/');
+                        key.push_str(&v.to_string());
                     }
+                    out.entries.push((key, Entry::Ranges(vec![(im.offsets[k], n)])));
                 }
             }
         }
     }
-    if let Some(om) = ome {
-        out.bytes("OME/METADATA.ome.xml", om.d);
+    if let Some(d) = d_bytes {
+        out.entries.push(("OME/METADATA.ome.xml".into(), Entry::Bytes(d)));
     }
-    Ok(())
+    check_output(&out, fsize)?;
+    Ok(out)
 }
-

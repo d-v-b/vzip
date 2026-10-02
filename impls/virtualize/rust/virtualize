@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN="$DIR/target/release/virtualize"
-if [ ! -x "$BIN" ] || [ -n "$(find "$DIR/src" "$DIR/Cargo.toml" -newer "$BIN" 2>/dev/null | head -1)" ]; then
-  (cd "$DIR" && cargo build --release --offline --quiet) >&2
+dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+bin="$dir/target/release/virtualize"
+if [[ ! -x "$bin" || -n "$(find "$dir/src" "$dir/Cargo.toml" -newer "$bin" 2>/dev/null | head -n1)" ]]; then
+  (cd "$dir" && cargo build --release --offline --quiet) >&2
 fi
-exec "$BIN" "$@"
+exec "$bin" "$@"

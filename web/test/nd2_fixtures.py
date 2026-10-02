@@ -439,6 +439,14 @@ def revision4() -> None:
     write_case("nd2_reject_nesting_101", attrs=nested(100))
     # A node under a count-0 node is not visited but is still checked.
     write_case("nd2_reject_skipped_bad_etype", experiment(node(1, {"uiCount": 0}, [node(7, {"uiCount": 2})])))
+    # At most 1024 components.
+    f = Nd2()
+    f.chunk("ImageAttributesLV!", attributes(1, h, 1025, 8, sequence=1))
+    f.chunk("ImageDataSeq|0!", frame_bytes(np.zeros((h, 1, 1025), np.uint8), 1025, False))
+    write("nd2_reject_too_many_components", f, {})
+    # A z step that overflows rejects, even on a node the flattening skips.
+    write_case("nd2_reject_z_step_overflow", experiment(node(1, {"uiCount": 0}, [
+        node(4, {"uiCount": 2, "dZStep": 0.0, "dZLow": -1e308, "dZHigh": 1e308})])))
     # pItemValid holds flags on every node, not only position loops.
     write_case("nd2_reject_itemvalid_on_time",
                experiment({"eType": 1, "uLoopPars": {"uiCount": 1}, "pItemValid": ["x"]}))

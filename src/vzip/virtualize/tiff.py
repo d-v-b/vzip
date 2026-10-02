@@ -109,6 +109,8 @@ def read_tiff(read: Reader, size: int):
     ifds = []
     offset = first
     while offset:
+        if offset > MAX_SAFE:
+            raise Rejected("IFD offset too large")
         ifd, offset = read_ifd(offset)
         ifds.append(ifd)
     for ifd in ifds:

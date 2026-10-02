@@ -1,394 +1,440 @@
 // ND2 profile, VIRTUALIZE.md §4.
 
 import {
-  MAX_SAFE,
+  AXIS_TYPE,
+  MAX_SAFE_BIG,
   Output,
-  type Range,
   Source,
-  arrayDoc,
-  axisObj,
-  big2num,
+  arrayJson,
   bytesCodec,
-  fin,
-  groupDoc,
-  payloadLen,
+  finite,
   reject,
+  safe,
   transposeCodec,
-} from "./io.ts";
+} from "./lib.ts";
 import {
   type LV,
   asColor,
   asFlag,
-  asInt,
+  asInteger,
   asList,
   asNumber,
   asObject,
   asString,
-  at,
-  decodeChunk,
+  member,
   members,
+  parseChunk,
 } from "./lv.ts";
 
-const latin1 = (b: Uint8Array) => Buffer.from(b).toString("latin1");
-const SIG = "ND2 FILE SIGNATURE CHUNK NAME01!";
-const MAPSIG = "ND2 CHUNK MAP SIGNATURE 0000001!";
-const FILEMAP = "ND2 FILEMAP SIGNATURE NAME 0001!";
+const MAGIC = 0x0abeceda;
+const SIG_NAME = "ND2 FILE SIGNATURE CHUNK NAME01!";
+const MAP_SIG = "ND2 CHUNK MAP SIGNATURE 0000001!";
+const FILEMAP_NAME = "ND2 FILEMAP SIGNATURE NAME 0001!";
 
-type Header = { o: number; n: number; d: number; dataOff: number };
+function latin1(b: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+  return s;
+}
 
-async function header(src: Source, o: bigint | number): Promise<Header> {
-  const off = typeof o === "bigint" ? big2num(o, "chunk offset") : o;
-  const b = await src.read(off, 16);
-  const dv = new DataView(b.buffer, b.byteOffset, 16);
-  if (dv.getUint32(0, true) !== 0x0abeceda) reject(`no chunk magic at ${off}`);
+interface ChunkHeader {
+  offset: number;
+  n: number; // name length
+  d: number; // data length
+}
+
+async function readHeader(src: Source, offset: bigint | number, what: string): Promise<ChunkHeader> {
+  const o = typeof offset === "bigint" ? safe(offset, `${what} offset`) : offset;
+  const h = await src.read(o, 16);
+  const dv = new DataView(h.buffer, h.byteOffset, 16);
+  if (dv.getUint32(0, true) !== MAGIC) reject(`${what}: no chunk magic at ${o}`);
   const n = dv.getUint32(4, true);
-  const d = big2num(dv.getBigUint64(8, true), "chunk data length");
-  return { o: off, n, d, dataOff: off + 16 + n };
+  const d = safe(dv.getBigUint64(8, true), `${what} data length`);
+  return { offset: o, n, d };
 }
 
-type Loop = { kind: "t" | "p" | "z"; depth: number; count: number; val: number };
-
-const req = <T>(v: T | undefined, what: string): T => {
-  if (v === undefined) reject(`missing ${what}`);
-  return v;
-};
-
-function validity(list: LV[] | undefined): (i: number) => boolean {
-  return (i) => list === undefined || (i < list.length && asFlag(list[i], "validity"));
+async function readChunk(src: Source, offset: bigint | number, what: string): Promise<{ h: ChunkHeader; name: Uint8Array; data: Uint8Array }> {
+  const h = await readHeader(src, offset, what);
+  const name = await src.read(h.offset + 16, h.n);
+  const data = await src.read(h.offset + 16 + h.n, h.d);
+  return { h, name, data };
 }
 
-function readExperiment(root: LV): Loop[] {
-  const loops: Loop[] = [];
-  const stack: { node: LV; depth: number }[] = [{ node: root, depth: 0 }];
-  while (stack.length > 0) {
-    const { node, depth } = stack.pop()!;
-    const obj = asObject(node, "experiment node");
-    const eType = asInt(req(at(obj, "eType"), "eType"), "eType");
-    if (![1, 2, 4, 6, 8].includes(eType)) reject(`eType ${eType}`);
-    const lpV = at(obj, "uLoopPars");
-    const lp = lpV === undefined ? undefined : asObject(lpV, "uLoopPars");
-    const ivV = at(obj, "pItemValid");
-    const itemValid = ivV === undefined ? undefined : asList(ivV, "pItemValid");
-    itemValid?.forEach((x) => asFlag(x, "pItemValid member"));
-    const nlV = at(obj, "ppNextLevelEx");
-    const children = nlV === undefined ? [] : members(nlV, "ppNextLevelEx");
-    children.forEach((c) => asObject(c, "ppNextLevelEx member"));
+interface Loop {
+  kind: "time" | "position" | "z";
+  depth: number;
+  count: number;
+  value: number; // period (ms) or step
+}
 
-    let count = 0;
-    let val = 0;
-    let kind: Loop["kind"] | "s" = "t";
-    if (lp) {
-      const num = (k: string, dflt: number) => {
-        const v = at(lp, k);
-        return v === undefined ? dflt : asNumber(v, k);
-      };
-      const int = (k: string, dflt: number | undefined) => {
-        const v = at(lp, k);
-        return v === undefined ? dflt : asInt(v, k);
-      };
-      if (eType === 1) {
-        kind = "t";
-        count = int("uiCount", 0)!;
-        val = num("dPeriod", 0);
-      } else if (eType === 8) {
-        kind = "t";
-        const ppV = at(lp, "pPeriod");
-        const ps = ppV === undefined ? [] : members(ppV, "pPeriod");
-        ps.forEach((p) => asObject(p, "pPeriod member"));
-        const pvV = at(lp, "pPeriodValid");
-        const pv = pvV === undefined ? undefined : asList(pvV, "pPeriodValid");
-        pv?.forEach((x) => asFlag(x, "pPeriodValid member"));
-        const valid = validity(pv);
+interface Node {
+  eType: number;
+  hasPars: boolean;
+  count: number;
+  value: number;
+  children: Node[];
+}
+
+function validityList(v: LV | undefined, what: string): boolean[] | undefined {
+  if (v === undefined) return undefined;
+  return asList(v, what).map((x, i) => asFlag(x, `${what}[${i}]`));
+}
+
+function isValid(list: boolean[] | undefined, i: number): boolean {
+  return list === undefined || (i < list.length && list[i]);
+}
+
+function opt<T>(obj: LV, name: string, f: (v: LV, what: string) => T): T | undefined {
+  const v = member(obj, name);
+  return v === undefined ? undefined : f(v, name);
+}
+
+function checkNode(node: LV, path: string): Node {
+  asObject(node, path);
+  const et = member(node, "eType");
+  if (et === undefined) reject(`${path}: no eType`);
+  const eType = asInteger(et, `${path}/eType`);
+  if (![1, 2, 4, 6, 8].includes(eType)) reject(`${path}: eType ${eType}`);
+  const pars = member(node, "uLoopPars");
+  if (pars !== undefined) asObject(pars, `${path}/uLoopPars`);
+  const itemValid = validityList(member(node, "pItemValid"), `${path}/pItemValid`);
+  const nextV = member(node, "ppNextLevelEx");
+  const kids = nextV === undefined ? [] : members(nextV, `${path}/ppNextLevelEx`);
+  const children = kids.map((c, i) => checkNode(asObject(c, `${path}/ppNextLevelEx[${i}]`), `${path}/ppNextLevelEx[${i}]`));
+  let count = 0;
+  let value = 0;
+  if (pars !== undefined) {
+    const P = `${path}/uLoopPars`;
+    switch (eType) {
+      case 1:
+        count = opt(pars, "uiCount", (v) => asInteger(v, `${P}/uiCount`)) ?? 0;
+        value = opt(pars, "dPeriod", (v) => asNumber(v, `${P}/dPeriod`)) ?? 0;
+        break;
+      case 8: {
+        const pv = member(pars, "pPeriod");
+        const ps = pv === undefined ? [] : members(pv, `${P}/pPeriod`);
+        const valid = validityList(member(pars, "pPeriodValid"), `${P}/pPeriodValid`);
+        let sum = 0n;
         let first = true;
-        for (let i = 0; i < ps.length; i++) {
-          if (!valid(i)) continue;
-          count += asInt(req(at(ps[i], "uiCount"), "pPeriod/uiCount"), "pPeriod/uiCount");
-          if (count > MAX_SAFE) reject("time loop count above 2^53-1");
-          const dpV = at(ps[i], "dPeriod");
-          const dp = dpV === undefined ? 0 : asNumber(dpV, "pPeriod/dPeriod");
-          if (first) val = dp;
-          first = false;
+        ps.forEach((p, i) => {
+          asObject(p, `${P}/pPeriod[${i}]`);
+          if (!isValid(valid, i)) return;
+          const c = member(p, "uiCount");
+          if (c === undefined) reject(`${P}/pPeriod[${i}]: no uiCount`);
+          sum += BigInt(asInteger(c, `${P}/pPeriod[${i}]/uiCount`));
+          const per = opt(p, "dPeriod", (v) => asNumber(v, `${P}/pPeriod[${i}]/dPeriod`)) ?? 0;
+          if (first) {
+            value = per;
+            first = false;
+          }
+        });
+        if (sum > MAX_SAFE_BIG) reject(`${P}: period count sum too large`);
+        count = Number(sum);
+        break;
+      }
+      case 2: {
+        const pts = member(pars, "Points");
+        const ps = pts === undefined ? [] : members(pts, `${P}/Points`);
+        count = ps.filter((_, i) => isValid(itemValid, i)).length;
+        break;
+      }
+      case 4: {
+        count = opt(pars, "uiCount", (v) => asInteger(v, `${P}/uiCount`)) ?? 0;
+        const st = opt(pars, "dZStep", (v) => asNumber(v, `${P}/dZStep`)) ?? 0;
+        const lo = opt(pars, "dZLow", (v) => asNumber(v, `${P}/dZLow`)) ?? 0;
+        const hi = opt(pars, "dZHigh", (v) => asNumber(v, `${P}/dZHigh`)) ?? 0;
+        value = Math.abs(st);
+        if (value === 0 && count > 1) value = finite(Math.abs(hi - lo) / (count - 1), `${P} z step`);
+        break;
+      }
+      case 6: {
+        const c = member(pars, "uiCount");
+        if (c !== undefined) count = asInteger(c, `${P}/uiCount`);
+        else {
+          const pp = member(pars, "pPlanes");
+          if (pp === undefined) count = 0;
+          else {
+            const c2 = member(pp, "uiCount");
+            count = c2 === undefined ? 0 : asInteger(c2, `${P}/pPlanes/uiCount`);
+          }
         }
-      } else if (eType === 2) {
-        kind = "p";
-        const ptV = at(lp, "Points");
-        const pts = ptV === undefined ? [] : members(ptV, "Points");
-        const valid = validity(itemValid);
-        for (let i = 0; i < pts.length; i++) if (valid(i)) count++;
-      } else if (eType === 4) {
-        kind = "z";
-        count = int("uiCount", 0)!;
-        const step = num("dZStep", 0);
-        const lo = num("dZLow", 0);
-        const hi = num("dZHigh", 0);
-        val = Math.abs(step);
-        if (val === 0 && count > 1) val = fin(Math.abs(fin(hi - lo, "dZHigh - dZLow")) / (count - 1), "z step");
-      } else {
-        kind = "s";
-        const c1 = int("uiCount", undefined);
-        const ppl = at(lp, "pPlanes");
-        const c2 = ppl === undefined ? undefined : at(lp, "pPlanes/uiCount");
-        const c2n = c2 === undefined ? undefined : asInt(c2, "pPlanes/uiCount");
-        count = c1 ?? c2n ?? 0;
+        break;
       }
     }
-    if (!lp || count === 0) continue; // node and children skipped
-    let childDepth = depth + 1;
-    if (kind === "s") childDepth = depth;
-    else {
-      const last = loops[loops.length - 1];
-      const loop: Loop = { kind, depth, count, val };
-      if (!last || last.depth < depth) loops.push(loop);
-      else if (last.depth === depth && last.kind === kind && last.count < count) loops[loops.length - 1] = loop;
-    }
-    for (let i = children.length - 1; i >= 0; i--) stack.push({ node: children[i], depth: childDepth });
   }
+  return { eType, hasPars: pars !== undefined, count, value, children };
+}
+
+function flatten(root: Node): Loop[] {
+  const loops: Loop[] = [];
+  const visit = (node: Node, depth: number) => {
+    if (!node.hasPars || node.count === 0) return;
+    if (node.eType === 6) {
+      for (const c of node.children) visit(c, depth);
+      return;
+    }
+    const kind = node.eType === 2 ? "position" : node.eType === 4 ? "z" : "time";
+    const loop: Loop = { kind, depth, count: node.count, value: node.value };
+    const last = loops[loops.length - 1];
+    if (last === undefined || last.depth < depth) loops.push(loop);
+    else if (last.depth === depth && last.kind === kind && last.count < node.count) loops[loops.length - 1] = loop;
+    for (const c of node.children) visit(c, depth + 1);
+  };
+  visit(root, 0);
   const kinds = new Set<string>();
   for (const l of loops) {
-    if (kinds.has(l.kind)) reject(`two loops of kind ${l.kind}`);
+    if (kinds.has(l.kind)) reject(`two ${l.kind} loops`);
     kinds.add(l.kind);
   }
   return loops;
 }
 
+function hex6(c: number): string {
+  const r = c & 0xff;
+  const g = (c >>> 8) & 0xff;
+  const b = (c >>> 16) & 0xff;
+  return [r, g, b].map((x) => x.toString(16).toUpperCase().padStart(2, "0")).join("");
+}
+
 export async function virtualizeNd2(src: Source, out: Output): Promise<void> {
   // §4.1 signature
-  const sh = await header(src, 0);
-  if (sh.n !== 32 || sh.d !== 64) reject("signature chunk lengths");
-  const sname = latin1(await src.read(16, 32));
-  if (sname !== SIG) reject("signature chunk name");
-  const sdata = latin1(await src.read(48, 64));
-  const vm = /^Ver([0-9]+)\./.exec(sdata);
-  if (!vm) reject("no version in signature");
-  if (BigInt(vm[1]) < 3n) reject(`ND2 version ${vm[1]}`);
+  const sig = await readChunk(src, 0, "signature chunk");
+  if (sig.h.n !== 32 || sig.h.d !== 64 || latin1(sig.name) !== SIG_NAME) reject("bad signature chunk");
+  const sd = latin1(sig.data);
+  const vm = /^Ver([0-9]+)\./.exec(sd);
+  if (!vm) reject("signature data has no version");
+  if (BigInt(vm[1]) < 3n) reject(`ND2 version ${vm[1]} is below 3`);
 
   // chunk map
   if (src.size < 40) reject("file shorter than 40 bytes");
   const tail = await src.read(src.size - 40, 40);
-  if (latin1(tail.subarray(0, 32)) !== MAPSIG) reject("no chunk map signature");
-  const m = new DataView(tail.buffer, tail.byteOffset + 32, 8).getBigUint64(0, true);
-  const mh = await header(src, m);
-  const mnameB = await src.read(mh.o + 16, mh.n);
-  const nul = mnameB.indexOf(0);
-  if (latin1(nul < 0 ? mnameB : mnameB.subarray(0, nul)) !== FILEMAP) reject("chunk map chunk name");
-  const md = await src.read(mh.dataOff, mh.d);
-  const map = new Map<string, bigint>();
-  {
-    let p = 0;
-    for (;;) {
-      const bang = md.indexOf(0x21, p);
-      if (bang < 0) reject("chunk map without its last record");
-      const name = latin1(md.subarray(p, bang + 1));
-      if (name === MAPSIG) break;
-      if (bang + 1 + 16 > md.length) reject("chunk map record runs past the data");
-      map.set(name, new DataView(md.buffer, md.byteOffset + bang + 1, 8).getBigUint64(0, true));
-      p = bang + 17;
-    }
+  if (latin1(tail.subarray(0, 32)) !== MAP_SIG) reject("no chunk map signature");
+  const m = new DataView(tail.buffer, tail.byteOffset, 40).getBigUint64(32, true);
+  const mapChunk = await readChunk(src, m, "chunk map");
+  const nul = mapChunk.name.indexOf(0);
+  const mapName = latin1(nul < 0 ? mapChunk.name : mapChunk.name.subarray(0, nul));
+  if (mapName !== FILEMAP_NAME) reject("chunk map chunk has the wrong name");
+  const md = mapChunk.data;
+  const mdv = new DataView(md.buffer, md.byteOffset, md.byteLength);
+  const chunks = new Map<string, bigint>();
+  let p = 0;
+  for (;;) {
+    const ex = md.indexOf(0x21, p);
+    if (ex < 0) reject("chunk map has no terminating record");
+    const name = latin1(md.subarray(p, ex + 1));
+    if (name === MAP_SIG) break;
+    if (ex + 1 + 16 > md.length) reject("chunk map record runs past the end of the data");
+    chunks.set(name, mdv.getBigUint64(ex + 1, true));
+    p = ex + 1 + 16;
   }
-  const chunkLV = async (name: string): Promise<Map<string, LV> | undefined> => {
-    const o = map.get(name);
+
+  const metaChunk = async (name: string): Promise<LV | undefined> => {
+    const o = chunks.get(name);
     if (o === undefined) return undefined;
-    const h = await header(src, o);
-    return decodeChunk(await src.read(h.dataOff, h.d));
+    const c = await readChunk(src, o, name);
+    return parseChunk(c.data);
   };
 
   // §4.3 attributes
-  const attrChunk = await chunkLV("ImageAttributesLV!");
-  if (!attrChunk) reject("no ImageAttributesLV! chunk");
-  const ia = asObject(req(at(attrChunk, "SLxImageAttributes"), "SLxImageAttributes"), "SLxImageAttributes");
-  const reqInt = (k: string) => asInt(req(at(ia, k), k), k);
-  const optInt = (k: string, d: number) => {
-    const v = at(ia, k);
-    return v === undefined ? d : asInt(v, k);
+  const attrChunk = await metaChunk("ImageAttributesLV!");
+  if (attrChunk === undefined) reject("no ImageAttributesLV! chunk");
+  const attrsV = member(attrChunk, "SLxImageAttributes");
+  if (attrsV === undefined) reject("no SLxImageAttributes");
+  const A = asObject(attrsV, "SLxImageAttributes");
+  const reqInt = (name: string) => {
+    const v = member(A, name);
+    if (v === undefined) reject(`no ${name}`);
+    return asInteger(v, name);
   };
   const width = reqInt("uiWidth");
   const height = reqInt("uiHeight");
   const widthBytes = reqInt("uiWidthBytes");
   const comp = reqInt("uiComp");
   const bpc = reqInt("uiBpcInMemory");
-  const bpcSig = asNumber(req(at(ia, "uiBpcSignificant"), "uiBpcSignificant"), "uiBpcSignificant");
-  const eComp = optInt("eCompression", 2);
-  const tileW = optInt("uiTileWidth", 0);
-  const tileH = optInt("uiTileHeight", 0);
-  if (width < 1 || height < 1 || comp < 1) reject("uiWidth, uiHeight and uiComp must be at least 1");
-  const dataType = ({ 8: "uint8", 16: "uint16", 32: "float32" } as Record<number, string>)[bpc];
-  if (!dataType) reject(`uiBpcInMemory ${bpc}`);
-  if (eComp !== 0 && eComp !== 2) reject(`eCompression ${eComp}`);
-  const compressed = eComp === 0;
-  if ((tileW > 0 && tileW !== width) || (tileH > 0 && tileH !== height)) reject("tiled ND2");
+  const sigV = member(A, "uiBpcSignificant");
+  if (sigV === undefined) reject("no uiBpcSignificant");
+  const bpcSig = asNumber(sigV, "uiBpcSignificant");
+  const compression = opt(A, "eCompression", asInteger) ?? 2;
+  const tileW = opt(A, "uiTileWidth", asInteger) ?? 0;
+  const tileH = opt(A, "uiTileHeight", asInteger) ?? 0;
+  if (width < 1 || height < 1 || comp < 1) reject("zero width, height or components");
+  const dataType = { 8: "uint8", 16: "uint16", 32: "float32" }[bpc as 8 | 16 | 32];
+  if (dataType === undefined) reject(`uiBpcInMemory ${bpc}`);
+  if (compression !== 0 && compression !== 2) reject(`eCompression ${compression}`);
+  const compressed = compression === 0;
+  if ((tileW > 0 && tileW !== width) || (tileH > 0 && tileH !== height)) reject("tiled image");
 
   // experiment
-  const metaChunk = await chunkLV("ImageMetadataLV!");
-  const expV = metaChunk ? at(metaChunk, "SLxExperiment") : undefined;
-  const loops = expV === undefined ? [] : readExperiment(expV);
+  let loops: Loop[] = [];
+  const metaV = await metaChunk("ImageMetadataLV!");
+  if (metaV !== undefined) {
+    const exp = member(metaV, "SLxExperiment");
+    if (exp !== undefined) loops = flatten(checkNode(exp, "SLxExperiment"));
+  }
 
   // picture metadata
-  const picChunk = await chunkLV("ImageMetadataSeqLV|0!");
-  const pmV = picChunk ? at(picChunk, "SLxPictureMetadata") : undefined;
   let calibrated = false;
-  let cal = 0;
+  let calib = 0;
   let aspect = 1;
-  const planes = new Map<number, { desc: string; color: number; comps: number }>();
   let planeCount = 0;
-  if (pmV !== undefined) {
-    const pm = asObject(pmV, "SLxPictureMetadata");
-    const bc = at(pm, "bCalibrated");
-    const bCal = bc === undefined ? false : asFlag(bc, "bCalibrated");
-    const dc = at(pm, "dCalibration");
-    const dCal = dc === undefined ? undefined : asNumber(dc, "dCalibration");
-    const da = at(pm, "dAspect");
-    aspect = da === undefined ? 1 : asNumber(da, "dAspect");
-    if (!(aspect > 0)) aspect = 1;
-    if (bCal && dCal !== undefined && dCal > 0) {
-      calibrated = true;
-      cal = dCal;
-    }
-    const spV = at(pm, "sPicturePlanes");
-    if (spV !== undefined) {
-      const sp = asObject(spV, "sPicturePlanes");
-      const uc = at(sp, "uiCount");
-      planeCount = uc === undefined ? 0 : asInt(uc, "sPicturePlanes/uiCount");
-      const pnV = at(sp, "sPlaneNew");
-      if (pnV !== undefined) {
-        const pn = asObject(pnV, "sPlaneNew");
-        for (const [name, v] of pn) {
-          const mm = /^a(0|[1-9][0-9]*)$/.exec(name);
-          if (!mm || mm[1].length > 16 || Number(mm[1]) >= planeCount) continue;
-          const po = asObject(v, `plane ${name}`);
-          const sd = at(po, "sDescription");
-          const uc2 = at(po, "uiColor");
-          const cc = at(po, "uiCompCount");
-          planes.set(Number(mm[1]), {
-            desc: sd === undefined ? "" : asString(sd, "sDescription"),
-            color: uc2 === undefined ? 0xffffff : asColor(uc2, "uiColor"),
-            comps: cc === undefined ? 1 : asInt(cc, "uiCompCount"),
-          });
+  const planes = new Map<number, { desc: string; color: number; comps: number }>();
+  const picV = await metaChunk("ImageMetadataSeqLV|0!");
+  if (picV !== undefined) {
+    const pm = member(picV, "SLxPictureMetadata");
+    if (pm !== undefined) {
+      const bCal = opt(pm, "bCalibrated", asFlag) ?? false;
+      const dCal = opt(pm, "dCalibration", asNumber);
+      let dAsp = opt(pm, "dAspect", asNumber) ?? 1;
+      if (!(dAsp > 0)) dAsp = 1;
+      aspect = dAsp;
+      if (bCal && dCal !== undefined && dCal > 0) {
+        calibrated = true;
+        calib = dCal;
+      }
+      const spp = member(pm, "sPicturePlanes");
+      if (spp !== undefined) {
+        asObject(spp, "sPicturePlanes");
+        planeCount = opt(spp, "uiCount", asInteger) ?? 0;
+        const spn = member(spp, "sPlaneNew");
+        if (spn !== undefined) {
+          asObject(spn, "sPlaneNew");
+          if (spn.k === "object") {
+            for (const [nm, pv] of spn.m) {
+              const mm = /^a(0|[1-9][0-9]*)$/.exec(nm);
+              if (!mm) continue;
+              const i = Number(mm[1]);
+              if (!(i < planeCount)) continue;
+              asObject(pv, nm);
+              planes.set(i, {
+                desc: opt(pv, "sDescription", asString) ?? "",
+                color: opt(pv, "uiColor", asColor) ?? 0xffffff,
+                comps: opt(pv, "uiCompCount", asInteger) ?? 1,
+              });
+            }
+          }
         }
       }
     }
   }
 
   // §4.4 frames
-  const R = (width * comp * bpc) / 8;
-  if (!Number.isSafeInteger(R)) reject("row size too large");
-  if (widthBytes < R) reject(`uiWidthBytes ${widthBytes} < ${R}`);
-  if (compressed && widthBytes !== R) reject("compressed frames with padded rows");
   let N = 1n;
   for (const l of loops) N *= BigInt(l.count);
-  const frames: { f: bigint; o: bigint }[] = [];
-  for (const [name, o] of map) {
+  if (N > MAX_SAFE_BIG) reject("too many frames");
+  const frames: { f: number; o: bigint }[] = [];
+  for (const [name, o] of chunks) {
     const fm = /^ImageDataSeq\|(0|[1-9][0-9]*)!$/.exec(name);
     if (!fm) continue;
     const f = BigInt(fm[1]);
-    if (f < N) frames.push({ f, o });
+    if (f >= N) continue;
+    frames.push({ f: Number(f), o });
   }
-  frames.sort((a, b) => (a.f < b.f ? -1 : a.f > b.f ? 1 : 0));
-
-  type FrameRef = { f: bigint; ranges: Range[][] }; // one range list per chunk (block)
-  const frameRefs: FrameRef[] = [];
+  frames.sort((a, b) => a.f - b.f);
+  const itemSize = bpc / 8;
+  const Rb = BigInt(width) * BigInt(comp) * BigInt(itemSize);
+  if (Rb > MAX_SAFE_BIG) reject("row too long");
+  const R = Number(Rb);
+  if (widthBytes < R) reject("uiWidthBytes is less than the row size");
+  const frameRanges = new Map<number, [number, number, number][][]>(); // f -> blocks
   let h = height;
-  if (frames.length > 0) {
-    if (!compressed) {
-      const lo = await header(src, frames[0].o);
-      const hi = await header(src, frames[frames.length - 1].o);
-      if (lo.n !== hi.n) reject("frame header name lengths differ");
-      const needD = 8 + height * widthBytes;
-      if (lo.d < needD || hi.d < needD) reject("frame data too short");
-      const starts = frames.map((fr) => {
-        const s = big2num(fr.o, "frame offset") + 16 + lo.n + 8;
-        if (!Number.isSafeInteger(s)) reject("frame offset too large");
-        return s;
-      });
+  if (!compressed) {
+    if (frames.length > 0) {
+      const lo = await readHeader(src, frames[0].o, "first frame");
+      const hi = await readHeader(src, frames[frames.length - 1].o, "last frame");
+      if (lo.n !== hi.n) reject("frame name lengths differ");
+      const need = 8n + BigInt(height) * BigInt(widthBytes);
+      if (BigInt(lo.d) < need || BigInt(hi.d) < need) reject("frame data too short");
+      const n = lo.n;
+      const starts = frames.map((fr) => safe(fr.o + BigInt(16 + n + 8), "frame start"));
       if (widthBytes === R) {
-        frames.forEach((fr, i) => frameRefs.push({ f: fr.f, ranges: [[[starts[i], height * R]]] }));
+        const len = safe(BigInt(height) * Rb, "frame length");
+        frames.forEach((fr, i) => frameRanges.set(fr.f, [[[0, starts[i], len]]]));
       } else {
-        // largest divisor h of height with every block payload <= 65519
-        const maxStart = Math.max(...starts);
-        const blockOk = (hh: number) => {
-          const b0 = maxStart + (height - hh) * widthBytes; // last block of the frame starting last
-          const rs: Range[] = [];
-          for (let r = 0; r < hh; r++) rs.push([b0 + r * widthBytes, R]);
-          return payloadLen(rs) <= 65519;
+        // row blocks: largest divisor h of height with every block's payload <= 65519
+        const rowLen = (s: number, r: number) => {
+          const o = s + r * widthBytes;
+          const l = (o > 0 ? 1 : 0) + (o > 0 ? varint(o) : 0) + 1 + varint(R);
+          return 1 + varint(l) + l;
         };
-        h = 1;
-        const divs: number[] = [];
-        for (let d = 1; d * d <= height; d++) {
+        const divisors: number[] = [];
+        for (let d = 1; d * d <= height; d++)
           if (height % d === 0) {
-            divs.push(d);
-            if (d * d !== height) divs.push(height / d);
+            divisors.push(d);
+            if (d !== height / d) divisors.push(height / d);
           }
-        }
-        divs.sort((a, b) => b - a);
-        for (const d of divs) {
-          if (d > 10920) continue; // a row costs at least 6 payload bytes
-          if (blockOk(d)) {
+        divisors.sort((a, b) => b - a);
+        h = 1;
+        for (const d of divisors) {
+          if (d === 1) break;
+          let ok = true;
+          for (const s of starts) {
+            if (!Number.isSafeInteger(s + height * widthBytes)) reject("frame offset out of range");
+            for (let j = 0; ok && j < height / d; j++) {
+              let t = 0;
+              for (let r = j * d; r < j * d + d; r++) t += rowLen(s, r);
+              if (t > 65519) ok = false;
+            }
+            if (!ok) break;
+          }
+          if (ok) {
             h = d;
             break;
           }
         }
         frames.forEach((fr, i) => {
-          const blocks: Range[][] = [];
+          const blocks: [number, number, number][][] = [];
           for (let j = 0; j < height / h; j++) {
-            const rs: Range[] = [];
-            for (let r = j * h; r < j * h + h; r++) rs.push([starts[i] + r * widthBytes, R]);
+            const rs: [number, number, number][] = [];
+            for (let r = j * h; r < j * h + h; r++) rs.push([0, starts[i] + r * widthBytes, R]);
             blocks.push(rs);
           }
-          frameRefs.push({ f: fr.f, ranges: blocks });
+          frameRanges.set(fr.f, blocks);
         });
       }
-    } else {
-      const hs: Header[] = new Array(frames.length);
-      const CONC = 16;
-      for (let i = 0; i < frames.length; i += CONC) {
-        const batch = frames.slice(i, i + CONC);
-        const res = await Promise.all(batch.map((fr) => header(src, fr.o)));
-        res.forEach((r, k) => (hs[i + k] = r));
-      }
-      frames.forEach((fr, i) => {
-        const hd = hs[i];
-        if (hd.d <= 8) reject("compressed frame without data");
-        frameRefs.push({ f: fr.f, ranges: [[[hd.dataOff + 8, hd.d - 8]]] });
-      });
+    }
+  } else {
+    if (widthBytes !== R) reject("compressed frames with padded rows");
+    for (const fr of frames) {
+      const hd = await readHeader(src, fr.o, `frame ${fr.f}`);
+      if (hd.d <= 8) reject(`frame ${fr.f} data too short`);
+      frameRanges.set(fr.f, [[[0, hd.offset + 16 + hd.n + 8, hd.d - 8]]]);
     }
   }
 
   // §4.5 channels
-  let channels: { label: string; color: string }[] = [];
-  const hex = (c: number) => {
-    const r = c & 0xff, g = (c >>> 8) & 0xff, b = (c >>> 16) & 0xff;
-    return [r, g, b].map((x) => x.toString(16).toUpperCase().padStart(2, "0")).join("");
-  };
-  let labeled = planeCount >= 1;
-  if (labeled) {
+  const channels: { label: string; color: string }[] = [];
+  let labeled = false;
+  if (planeCount >= 1) {
+    let ok = true;
     let sum = 0;
     for (let i = 0; i < planeCount; i++) {
       const pl = planes.get(i);
-      if (!pl || (pl.comps !== 1 && pl.comps !== 3)) {
-        labeled = false;
+      if (pl === undefined || (pl.comps !== 1 && pl.comps !== 3)) {
+        ok = false;
         break;
       }
       sum += pl.comps;
     }
-    if (labeled && sum !== comp) labeled = false;
-  }
-  if (labeled) {
-    for (let i = 0; i < planeCount; i++) {
-      const pl = planes.get(i)!;
-      if (pl.comps === 1) channels.push({ label: pl.desc, color: hex(pl.color) });
-      else {
-        channels.push({ label: `${pl.desc} R`, color: "FF0000" });
-        channels.push({ label: `${pl.desc} G`, color: "00FF00" });
-        channels.push({ label: `${pl.desc} B`, color: "0000FF" });
+    if (ok && sum === comp) {
+      labeled = true;
+      for (let i = 0; i < planeCount; i++) {
+        const pl = planes.get(i)!;
+        if (pl.comps === 1) channels.push({ label: pl.desc, color: hex6(pl.color) });
+        else
+          channels.push(
+            { label: `${pl.desc} R`, color: "FF0000" },
+            { label: `${pl.desc} G`, color: "00FF00" },
+            { label: `${pl.desc} B`, color: "0000FF" },
+          );
       }
     }
-  } else {
-    channels = Array.from({ length: comp }, (_, k) => ({ label: `C${k}`, color: "FFFFFF" }));
   }
+  if (!labeled) for (let k = 0; k < comp; k++) channels.push({ label: `C${k}`, color: "FFFFFF" });
 
   // §4.6 output
-  const tLoop = loops.find((l) => l.kind === "t");
+  const tLoop = loops.find((l) => l.kind === "time");
   const zLoop = loops.find((l) => l.kind === "z");
-  const pLoop = loops.find((l) => l.kind === "p");
+  const pLoop = loops.find((l) => l.kind === "position");
   const nPos = pLoop ? pLoop.count : 1;
   const dims: string[] = [];
   if (tLoop) dims.push("t");
@@ -397,80 +443,113 @@ export async function virtualizeNd2(src: Source, out: Output): Promise<void> {
   dims.push("y", "x");
   const shape: number[] = [];
   const chunk: number[] = [];
+  const axes: Record<string, string>[] = [];
   const scale: number[] = [];
-  const axes = dims.map((d) => {
-    switch (d) {
-      case "t":
-        shape.push(tLoop!.count); chunk.push(1);
-        if (tLoop!.val > 0) { scale.push(fin(tLoop!.val / 1000, "t scale")); return axisObj("t", "second"); }
-        scale.push(1); return axisObj("t", undefined);
-      case "c":
-        shape.push(comp); chunk.push(comp); scale.push(1); return axisObj("c", undefined);
-      case "z":
-        shape.push(zLoop!.count); chunk.push(1);
-        if (zLoop!.val > 0) { scale.push(zLoop!.val); return axisObj("z", "micrometer"); }
-        scale.push(1); return axisObj("z", undefined);
-      case "y":
-        shape.push(height); chunk.push(h);
-        if (calibrated) { scale.push(fin(cal * aspect, "y scale")); return axisObj("y", "micrometer"); }
-        scale.push(1); return axisObj("y", undefined);
-      default:
-        shape.push(width); chunk.push(width);
-        if (calibrated) { scale.push(cal); return axisObj("x", "micrometer"); }
-        scale.push(1); return axisObj("x", undefined);
-    }
-  });
-  const codecs: unknown[] = [];
-  if (dims.includes("c")) codecs.push(transposeCodec(dims));
-  codecs.push(bytesCodec(bpc / 8, true));
-  if (compressed) codecs.push({ name: "zlib", configuration: { level: 1 } });
-  let b = bpc;
-  if (Number.isInteger(bpcSig) && bpcSig >= 1 && bpcSig <= bpc) b = bpcSig;
-  const omero = {
-    channels: channels.map((c) => {
-      const o: Record<string, unknown> = { label: c.label, color: c.color, active: true };
-      if (dataType !== "float32") {
-        const V = 2 ** b - 1;
-        o.window = { min: 0, max: V, start: 0, end: V };
+  for (const d of dims) {
+    const ax: Record<string, string> = { name: d, type: AXIS_TYPE[d] };
+    let sc = 1;
+    if (d === "t") {
+      shape.push(tLoop!.count);
+      chunk.push(1);
+      if (tLoop!.value > 0) {
+        ax.unit = "second";
+        sc = finite(tLoop!.value / 1000, "time scale");
       }
-      return o;
-    }),
-  };
+    } else if (d === "c") {
+      shape.push(comp);
+      chunk.push(comp);
+    } else if (d === "z") {
+      shape.push(zLoop!.count);
+      chunk.push(1);
+      if (zLoop!.value > 0) {
+        ax.unit = "micrometer";
+        sc = zLoop!.value;
+      }
+    } else if (d === "y") {
+      shape.push(height);
+      chunk.push(h);
+      if (calibrated) {
+        ax.unit = "micrometer";
+        sc = finite(calib * aspect, "y scale");
+      }
+    } else {
+      shape.push(width);
+      chunk.push(width);
+      if (calibrated) {
+        ax.unit = "micrometer";
+        sc = calib;
+      }
+    }
+    axes.push(ax);
+    scale.push(sc);
+  }
+  const codecs: unknown[] = [];
+  if (comp > 1) codecs.push(transposeCodec(dims));
+  codecs.push(bytesCodec(itemSize, "little"));
+  if (compressed) codecs.push({ name: "zlib", configuration: { level: 1 } });
+  let bits = bpc;
+  if (Number.isInteger(bpcSig) && bpcSig >= 1 && bpcSig <= bpc) bits = bpcSig;
+  const omeroChannels = channels.map((c) => {
+    const o: Record<string, unknown> = { label: c.label, color: c.color, active: true };
+    if (dataType !== "float32") {
+      const V = 2 ** bits - 1;
+      o.window = { min: 0, max: V, start: 0, end: V };
+    }
+    return o;
+  });
 
-  out.json("zarr.json", groupDoc({ ome: { version: "0.5", "bioformats2raw.layout": 3 } }));
-  out.json("OME/zarr.json", groupDoc({ ome: { version: "0.5", series: Array.from({ length: nPos }, (_, p) => String(p)) } }));
-  for (let p = 0; p < nPos; p++) {
-    out.json(
-      `${p}/zarr.json`,
-      groupDoc({
+  out.json("zarr.json", { zarr_format: 3, node_type: "group", attributes: { ome: { version: "0.5", "bioformats2raw.layout": 3 } } });
+  const series: string[] = [];
+  for (let pi = 0; pi < nPos; pi++) series.push(String(pi));
+  out.json("OME/zarr.json", { zarr_format: 3, node_type: "group", attributes: { ome: { version: "0.5", series } } });
+  for (let pi = 0; pi < nPos; pi++) {
+    out.json(`${pi}/zarr.json`, {
+      zarr_format: 3,
+      node_type: "group",
+      attributes: {
         ome: {
           version: "0.5",
           multiscales: [
             {
-              name: `position ${p}`,
+              name: `position ${pi}`,
               axes,
               datasets: [{ path: "0", coordinateTransformations: [{ type: "scale", scale }] }],
             },
           ],
-          omero,
+          omero: { channels: omeroChannels },
         },
-      }),
-    );
-    out.json(`${p}/0/zarr.json`, arrayDoc(shape, dataType, chunk, codecs, dims));
+      },
+    });
+    out.json(`${pi}/0/zarr.json`, arrayJson({ shape, dataType, chunkShape: chunk, codecs, dims }));
   }
-  for (const fr of frameRefs) {
-    // row-major coordinates over the loops, last fastest
+  for (const fr of frames) {
+    // coordinates: row-major over the loops, last fastest
     let rem = fr.f;
-    const idx: Record<string, number> = { t: 0, z: 0, p: 0 };
+    const idx = new Map<string, number>();
     for (let i = loops.length - 1; i >= 0; i--) {
-      const c = BigInt(loops[i].count);
-      idx[loops[i].kind] = Number(rem % c);
-      rem /= c;
+      idx.set(loops[i].kind, rem % loops[i].count);
+      rem = Math.floor(rem / loops[i].count);
     }
-    const co: number[] = [];
-    if (tLoop) co.push(idx.t);
-    if (comp > 1) co.push(0);
-    if (zLoop) co.push(idx.z);
-    fr.ranges.forEach((rs, j) => out.ref(`${idx.p}/0/c/${[...co, j, 0].join("/")}`, rs));
+    const pos = idx.get("position") ?? 0;
+    const blocks = frameRanges.get(fr.f)!;
+    blocks.forEach((ranges, j) => {
+      const coords: number[] = [];
+      for (const d of dims) {
+        if (d === "t") coords.push(idx.get("time")!);
+        if (d === "c") coords.push(0);
+        if (d === "z") coords.push(idx.get("z")!);
+      }
+      coords.push(j, 0);
+      out.ref(`${pos}/0/c/${coords.join("/")}`, ranges);
+    });
   }
+}
+
+function varint(v: number): number {
+  let n = 1;
+  while (v >= 128) {
+    v = Math.floor(v / 128);
+    n++;
+  }
+  return n;
 }

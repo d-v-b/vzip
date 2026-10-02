@@ -236,6 +236,12 @@ def main() -> None:
     t.chain([t.ifd([(256, SHORT, [64]), (257, SHORT, [64]), (258, SHORT, [8]), (322, SHORT, [32]), (323, SHORT, [32]),
                     (324, 16, struct.pack("<4Q", *offsets)), (325, LONG, [1024, 1024, 1024, 0])])])
     t.write("edge_reject_big_offset.tif")
+    # A SubIFD's next-IFD offset is not used, so pointing past the file is fine.
+    t = Tiff()
+    sub = image(t, 32, 32)
+    struct.pack_into("<I", t.buf, t.next_at, 0xFFFFFFF0)
+    t.chain([image(t, subifds=[sub])])
+    t.write("edge_subifd_next_ignored.tif")
     (OUT / "edge_reject_no_ifds.tif").write_bytes(b"II*\0\0\0\0\0" + b"\0" * 64)
     for p in sorted(OUT.glob("edge_*.tif")):
         print(p.name, p.stat().st_size)
