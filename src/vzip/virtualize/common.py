@@ -42,7 +42,8 @@ class Output:
 
 UNITS = {
     "µm": "micrometer", "μm": "micrometer", "um": "micrometer", "nm": "nanometer",
-    "mm": "millimeter", "cm": "centimeter", "m": "meter", "Å": "angstrom", "pm": "picometer",
+    "mm": "millimeter", "cm": "centimeter", "m": "meter", "\u00c5": "angstrom", "\u212b": "angstrom",
+    "pm": "picometer",
     "in": "inch", "ft": "foot", "s": "second", "ms": "millisecond", "min": "minute", "h": "hour",
 }
 

@@ -218,6 +218,132 @@ def rejected() -> None:
     (OUT / "nd2_reject_legacy.nd2").write_bytes(b"\x00\x00\x00\x0cjP  \r\n\x87\n" + b"\0" * 64)
 
 
+def record(typ: int, name: str, payload: bytes) -> bytes:
+    """An LV record of any type, with a raw payload."""
+    return bytes([typ]) + _name(name) + payload
+
+
+def edges() -> None:
+    """The edges of §4 that the files above do not reach."""
+    h, w = 3, 4
+
+    def frames(f: Nd2, n: int, comp: int = 1, dtype=np.uint16, width_bytes=None, skip=()) -> dict:
+        out = {}
+        for i in range(n):
+            px = rng.integers(0, 200, (h, w, comp)).astype(dtype)
+            if i not in skip:
+                f.chunk(f"ImageDataSeq|{i}!", frame_bytes(px, width_bytes or w * comp * px.itemsize, False))
+            out[i] = px
+        return out
+
+    # Spectral nodes: a counted one is not a loop and its children stay at
+    # its depth; one with count 0 is skipped with its children. Frames past
+    # N are ignored. Time 2 x z 2.
+    f = Nd2()
+    f.chunk("ImageAttributesLV!", attributes(w, h, 1, 16, sequence=4))
+    spectral = node(6, {"pPlanes": {"uiCount": 2}}, [node(4, {"uiCount": 2, "dZStep": 0.5})])
+    empty = node(6, {"uiCount": 0}, [node(2, {"Points": [{"dPosX": 0.0}] * 3})])
+    f.chunk("ImageMetadataLV!", experiment(node(1, {"uiCount": 2, "dPeriod": 0.0}, [spectral, empty])))
+    px = frames(f, 5)
+    write("nd2_edge_spectral", f, {f"0/0/c/{i // 2}/{i % 2}/0/0": px[i][:, :, 0] for i in range(4)})
+
+    # Validity: no pPeriodValid (all valid), and a pItemValid shorter than
+    # Points (the missing entries are invalid): time 3 x position 1.
+    f = Nd2()
+    f.chunk("ImageAttributesLV!", attributes(w, h, 1, 16, sequence=3))
+    positions = node(2, {"Points": [{"dPosX": 0.0}] * 3}, item_valid=bytes([1]))
+    f.chunk("ImageMetadataLV!", experiment(node(8, {"pPeriod": [{"uiCount": 1, "dPeriod": 0.0}, {"uiCount": 2}]},
+                                                [positions])))
+    px = frames(f, 3)
+    write("nd2_edge_validity", f, {f"0/0/c/{i}/0/0": px[i][:, :, 0] for i in range(3)})
+
+    # Picture defaults: no uiColor, no uiCompCount, bCalibrated as a u32,
+    # dAspect 0, uiBpcSignificant 0, an unpaired surrogate in a name, and a
+    # string member where a number is not needed. Last of duplicate map names
+    # wins (frame 0 is written twice).
+    f = Nd2()
+    f.chunk("ImageAttributesLV!", lv("SLxImageAttributes", {"uiWidth": w, "uiWidthBytes": w * 4, "uiHeight": h, "uiComp": 2,
+                                      "uiBpcInMemory": 16, "uiBpcSignificant": 0, "ePixelType": "x"}))
+    planes = level("sPlaneNew", [
+        level("a0", [record(8, "sDescription", b"A\x00\x42\xd8B\x00\0\0")]),
+        level("a1", [lv("sDescription", "B"), lv("uiColor", 0x0000FF)])])
+    f.chunk("ImageMetadataSeqLV|0!", level("SLxPictureMetadata", [
+        lv("dCalibration", 0.5), lv("dAspect", 0.0), record(3, "bCalibrated", struct.pack("<I", 7)),
+        level("sPicturePlanes", [lv("uiCount", 2), planes])]))
+    frames(f, 1, comp=2)
+    px = frames(f, 1, comp=2)
+    write("nd2_edge_picture", f, {"0/0/c/0/0/0": np.moveaxis(px[0], -1, 0)})
+
+    # A plane with 2 components: generic channel labels; 8-bit, no endian.
+    f = Nd2()
+    f.chunk("ImageAttributesLV!", attributes(w, h, 2, 8, sequence=1))
+    f.chunk("ImageMetadataSeqLV|0!", picture([("AB", 0x00FF00, 2)], None))
+    px = frames(f, 1, comp=2, dtype=np.uint8)
+    write("nd2_edge_generic_channels", f, {"0/0/c/0/0/0": np.moveaxis(px[0], -1, 0)})
+
+    # Objects: a repeated name keeps its first position and last value;
+    # integer-like names keep their order.
+    f = Nd2()
+    f.chunk("ImageAttributesLV!", level("SLxImageAttributes", [
+        lv("uiWidth", 99), lv("2", 0), lv("uiHeight", h), lv("1", 0), lv("uiWidthBytes", w * 2), lv("uiComp", 1),
+        lv("uiBpcInMemory", 16), lv("uiBpcSignificant", 16), lv("uiWidth", w)]))
+    px = frames(f, 1)
+    write("nd2_edge_duplicate_member", f, {"0/0/c/0/0": px[0][:, :, 0]})
+
+    # Rejected.
+    base = attributes(w, h, 1, 16, sequence=1)
+    good_level = lv("SLxImageAttributes", {"uiWidth": w})
+    cases = {
+        "nd2_reject_etype_without_pars": dict(exp=experiment({"eType": 7})),
+        "nd2_reject_missing_etype": dict(exp=experiment({"uLoopPars": {"uiCount": 2}})),
+        "nd2_reject_trailing_byte": dict(attrs=base + b"\0"),
+        "nd2_reject_level_short": dict(attrs=good_level[:1 + 1 + 2 * 19 + 4] + struct.pack("<Q", 5) + good_level[1 + 1 + 2 * 19 + 12:]),
+        "nd2_reject_nested_compression": dict(attrs=compressed(compressed(base))),
+        "nd2_reject_zlib_trailing": dict(attrs=compressed(base) + b"\0"),
+        "nd2_reject_lv_type": dict(attrs=base + record(10, "x", b"")),
+        "nd2_reject_number_type": dict(attrs=lv("SLxImageAttributes", {"uiWidth": "4", "uiHeight": h, "uiWidthBytes": 8,
+                                                                       "uiComp": 1, "uiBpcInMemory": 16, "uiBpcSignificant": 16})),
+        "nd2_reject_missing_width_bytes": dict(attrs=lv("SLxImageAttributes", {"uiWidth": w, "uiHeight": h, "uiComp": 1,
+                                                                               "uiBpcInMemory": 16, "uiBpcSignificant": 16})),
+        "nd2_reject_width_bytes": dict(attrs=attributes(w, h, 1, 16, sequence=1, width_bytes=6)),
+        "nd2_reject_compression": dict(attrs=attributes(w, h, 1, 16, sequence=1, compression=3)),
+        "nd2_reject_width_zero": dict(attrs=attributes(0, h, 1, 16, sequence=1, width_bytes=8)),
+        "nd2_reject_two_time_loops": dict(exp=experiment(node(1, {"uiCount": 2}, [node(8, {"pPeriod": [{"uiCount": 2}]})]))),
+    }
+    for name, c in cases.items():
+        f = Nd2()
+        f.chunk("ImageAttributesLV!", c.get("attrs", base))
+        if "exp" in c:
+            f.chunk("ImageMetadataLV!", c["exp"])
+        frames(f, 4)
+        write(name, f, {})
+    # Frames: the last is too short; a compressed frame with no data.
+    f = Nd2()
+    f.chunk("ImageAttributesLV!", attributes(w, h, 1, 16, sequence=3))
+    f.chunk("ImageMetadataLV!", experiment(node(1, {"uiCount": 3})))
+    frames(f, 2)
+    f.chunk("ImageDataSeq|2!", struct.pack("<d", 0) + b"\0" * (h * w * 2 - 1))
+    write("nd2_reject_short_frame", f, {})
+    f = Nd2()
+    f.chunk("ImageAttributesLV!", attributes(w, h, 1, 16, sequence=1, compression=0))
+    f.chunk("ImageDataSeq|0!", struct.pack("<d", 0))
+    write("nd2_reject_empty_compressed_frame", f, {})
+    # Padded rows whose reference payload exceeds 65519 bytes.
+    tall = 12000
+    f = Nd2()
+    f.chunk("ImageAttributesLV!", attributes(1, tall, 1, 8, sequence=1, width_bytes=4))
+    f.chunk("ImageDataSeq|0!", struct.pack("<d", 0) + b"\0" * (4 * tall))
+    write("nd2_reject_payload", f, {})
+    # A chunk map entry pointing at bytes without the magic.
+    f = Nd2()
+    f.chunk("ImageAttributesLV!", base)
+    frames(f, 1)
+    f.map[-1] = (f.map[-1][0], f.map[-1][1] + 1, f.map[-1][2])
+    write("nd2_reject_magic", f, {})
+    # Too short for a chunk map.
+    (OUT / "nd2_reject_tiny.nd2").write_bytes(Nd2().buf[:32] + b"\0" * 4)
+
+
 if __name__ == "__main__":
     OUT.mkdir(exist_ok=True)
     tz_uint16()
@@ -225,5 +351,6 @@ if __name__ == "__main__":
     compressed_positions()
     float_uncalibrated()
     rejected()
+    edges()
     for p in sorted(OUT.glob("nd2_*.nd2")):
         print(p.name, p.stat().st_size)

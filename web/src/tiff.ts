@@ -35,7 +35,9 @@ const TYPE_SIZE: Record<number, number> = {
 
 export interface Ifd {
   offset: number;
-  tags: Map<number, number[] | string>;
+  tags: Map<number, number[] | Uint8Array>;
+  /** Field type of each tag. */
+  types: Map<number, number>;
   subIfds: Ifd[];
 }
 
@@ -93,12 +95,9 @@ function values(
   type: number,
   count: number,
   le: boolean,
-): number[] | string {
+): number[] | Uint8Array {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (type === 2) {
-    const end = bytes.indexOf(0);
-    return new TextDecoder().decode(end < 0 ? bytes : bytes.subarray(0, end));
-  }
+  if (type === 2) return bytes.slice(); // ASCII: kept as bytes
   const out: number[] = [];
   for (let i = 0; i < count; i++) {
     switch (type) {
@@ -133,7 +132,7 @@ export async function readTiff(read: ByteReader, fileSize: number): Promise<Tiff
     bigTiff = false;
     first = hview.getUint32(4, le);
   } else if (magic === 43) {
-    if (header.length < 16 || hview.getUint16(4, le) !== 8) {
+    if (header.length < 16 || hview.getUint16(4, le) !== 8 || hview.getUint16(6, le) !== 0) {
       throw new TiffError("invalid BigTIFF header");
     }
     bigTiff = true;
@@ -148,6 +147,7 @@ export async function readTiff(read: ByteReader, fileSize: number): Promise<Tiff
 
   async function readIfd(offset: number): Promise<{ ifd: Ifd; next: number }> {
     if (seen.has(offset)) throw new TiffError(`IFD cycle at ${offset}`);
+    if (seen.size >= 100000) throw new TiffError("too many IFDs");
     seen.add(offset);
     const cbytes = await read(offset, countSize);
     const cview = new DataView(cbytes.buffer, cbytes.byteOffset, cbytes.byteLength);
@@ -155,21 +155,24 @@ export async function readTiff(read: ByteReader, fileSize: number): Promise<Tiff
     if (count > 1 << 16) throw new TiffError(`IFD with ${count} entries`);
     const body = await read(offset + countSize, count * entrySize + fieldSize);
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
-    const tags = new Map<number, number[] | string>();
+    const tags = new Map<number, number[] | Uint8Array>();
+    const types = new Map<number, number>();
     const pending: Promise<void>[] = [];
     for (let i = 0; i < count; i++) {
       const at = i * entrySize;
       const tag = view.getUint16(at, le);
-      if (!WANTED.has(tag)) continue;
+      if (!WANTED.has(tag) || types.has(tag)) continue; // unused, or a duplicate (the first is used)
       const type = view.getUint16(at + 2, le);
       const n = bigTiff ? u64(view, at + 4, le) : view.getUint32(at + 4, le);
       const size = TYPE_SIZE[type];
       if (size === undefined) throw new TiffError(`tag ${tag} has unknown type ${type}`);
       const valueAt = at + 4 + (bigTiff ? 8 : 4);
       if (n * size <= fieldSize) {
+        types.set(tag, type);
         tags.set(tag, values(body.subarray(valueAt, valueAt + n * size), type, n, le));
       } else {
         const where = bigTiff ? u64(view, valueAt, le) : view.getUint32(valueAt, le);
+        types.set(tag, type);
         pending.push(
           read(where, n * size).then((b) => {
             tags.set(tag, values(b, type, n, le));
@@ -180,12 +183,11 @@ export async function readTiff(read: ByteReader, fileSize: number): Promise<Tiff
     await Promise.all(pending);
     const nextAt = count * entrySize;
     const next = bigTiff ? u64(view, nextAt, le) : view.getUint32(nextAt, le);
-    return { ifd: { offset, tags, subIfds: [] }, next };
+    return { ifd: { offset, tags, types, subIfds: [] }, next };
   }
 
   const ifds: Ifd[] = [];
   for (let offset = first; offset !== 0; ) {
-    if (ifds.length >= 100000) throw new TiffError("too many IFDs");
     const { ifd, next } = await readIfd(offset);
     ifds.push(ifd);
     offset = next;
