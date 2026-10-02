@@ -1,5 +1,7 @@
-// Writes <site>/index.html: a list of the demos in <site>'s subdirectories,
-// from each one's index.html <title> and <meta name="description">.
+// Writes <site>/index.html and <site>/README.md: a list of the demos in
+// <site>'s subdirectories, from each one's index.html <title> and
+// <meta name="description">. Directories that only redirect (a page with
+// <meta http-equiv="refresh">) are left out.
 // Usage: node web/pages_index.mjs <site dir>
 
 import fs from "node:fs";
@@ -14,6 +16,7 @@ const demos = fs
     const file = path.join(site, d.name, "index.html");
     if (!fs.existsSync(file)) return undefined;
     const html = fs.readFileSync(file, "utf8");
+    if (/http-equiv="refresh"/.test(html)) return undefined;
     const title = html.match(/<title>([^<]*)<\/title>/)?.[1] ?? d.name;
     const description = html.match(/<meta name="description" content="([^"]*)"/)?.[1] ?? "";
     return { dir: d.name, title, description };
@@ -55,6 +58,24 @@ ${demos.map((d) => `    <li><a href="${escape(d.dir)}/">${escape(d.title)}</a><s
 </main>
 </body>
 </html>
+`,
+);
+fs.writeFileSync(
+  path.join(site, "README.md"),
+  `# vzip demos
+
+Live demos of [vzip](https://github.com/d-v-b/vzip), a ZIP container for
+byte-range references: **https://d-v-b.github.io/vzip-demo/**
+
+| demo | what it does |
+|---|---|
+${demos.map((d) => `| [${d.title}](https://d-v-b.github.io/vzip-demo/${d.dir}/) | ${d.description} |`).join("\n")}
+
+This repository holds only the built sites, one directory per demo, published
+with GitHub Pages from the \`gh-pages\` branch. The source is in
+[d-v-b/vzip](https://github.com/d-v-b/vzip) (the demos are in \`web/\` and are
+published by \`web/pages.sh\`) and in the vzip-enabled Neuroglancer fork,
+[d-v-b/neuroglancer](https://github.com/d-v-b/neuroglancer/tree/vzip).
 `,
 );
 console.log(`index: ${demos.map((d) => d.dir).join(", ")}`);

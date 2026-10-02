@@ -10,3 +10,14 @@ wheels/
 .venv
 experiments/_bench/
 __pycache__/
+
+# vzip archives are generated (see `just archives`); regenerate them instead of
+# committing them. Hand-made test vectors can still be added with `git add -f`.
+*.vzip
+experiments/out/ng_demo/expected.npy
+
+# Conformance and comparison outputs
+conformance/results/
+
+# Test scratch output
+impls/typescript/test/.tmp/

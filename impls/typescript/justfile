@@ -1,0 +1,11 @@
+# The TypeScript SPEC.md implementation (Node >= 23, no dependencies).
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+[private]
+default:
+    @just --list
+
+# Run the tests
+test:
+    node --no-warnings --test test/

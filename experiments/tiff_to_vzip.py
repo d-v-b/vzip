@@ -1,4 +1,9 @@
-"""Virtualize a remote tiled (pyramidal, OME-) TIFF as a vzip archive.
+"""Virtualize a remote tiled (pyramidal, OME-) TIFF as a vzip archive, with pins.
+
+This is the original experiment. The TIFF profile of VIRTUALIZE.md, which
+two implementations follow, is `python -m vzip.virtualize`; this script
+differs from it in its OME metadata (no units or physical scales) and in
+pinning the source by default.
 
 Reads only the TIFF's IFDs over HTTP range requests, then writes:
 

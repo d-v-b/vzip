@@ -1,0 +1,16 @@
+# The Rust SPEC.md implementation (./vzip runs the release build).
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+[private]
+default:
+    @just --list
+
+# Build the release binary that ./vzip runs
+build:
+    cargo build --release
+
+# Run the unit tests and the CLI tests
+test: build
+    cargo test --release --quiet
+    python3 tests/cli_tests.py

@@ -1,0 +1,18 @@
+# url|name of the public ND2 files in the corpus (sources and licenses: experiments/out/nd2/README.md)
+https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/1-SR_1_9_6hPre-C_MC1.nd2|biad3015_1-SR_1_9_6hPre-C_MC1
+https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/2-SR_1_9_6hPre-C_1mM_IPTG_TS_MC1.nd2|biad3015_2-SR_1_9_6hPre-C_1mM_IPTG_TS_MC1
+https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/2-SR_1_9_6hPre-C_1mM_IPTG_TS_MC2.nd2|biad3015_2-SR_1_9_6hPre-C_1mM_IPTG_TS_MC2
+https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/3-SR_1_9_6hPre-C_PlainM9_TS_MC1.nd2|biad3015_3-SR_1_9_6hPre-C_PlainM9_TS_MC1
+https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/3-SR_1_9_6hPre-C_PlainM9_TS_MC2.nd2|biad3015_3-SR_1_9_6hPre-C_PlainM9_TS_MC2
+https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/3-SR_1_9_6hPre-C_PlainM9_TS_MC3.nd2|biad3015_3-SR_1_9_6hPre-C_PlainM9_TS_MC3
+https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/3-SR_1_9_6hPre-C_PlainM9_TS_MC4.nd2|biad3015_3-SR_1_9_6hPre-C_PlainM9_TS_MC4
+https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/3-SR_1_9_6hPre-C_PlainM9_TS_MC5.nd2|biad3015_3-SR_1_9_6hPre-C_PlainM9_TS_MC5
+https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/3-SR_1_9_6hPre-C_PlainM9_TS_MC6.nd2|biad3015_3-SR_1_9_6hPre-C_PlainM9_TS_MC6
+https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/3-SR_1_9_6hPre-C_PlainM9_TS_MC7.nd2|biad3015_3-SR_1_9_6hPre-C_PlainM9_TS_MC7
+https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/3-SR_1_9_6hPre-C_PlainM9_TS_MC8.nd2|biad3015_3-SR_1_9_6hPre-C_PlainM9_TS_MC8
+https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/3-SR_1_9_6hPre-C_PlainM9_TS_MC9.nd2|biad3015_3-SR_1_9_6hPre-C_PlainM9_TS_MC9
+https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/3-SR_1_9_6hPre-C_PlainM9_TS_MC10.nd2|biad3015_3-SR_1_9_6hPre-C_PlainM9_TS_MC10
+https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/077/S-BIAD2077/Files/373_230614_A1_Blk_Reg2_40x.nd2|biad2077_373_A1
+https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/573/S-BIAD1573/Files/McCausland_etal_2025/Bb54_1hr_rep1.nd2|biad1573_Bb54_1hr_rep1
+https://zenodo.org/api/records/15493140/files/169_Cropped.nd2/content|pollen_169_cropped
+https://zenodo.org/api/records/8161776/files/2D%20500uM%20VPA002.nd2/content|zenodo_vpa002

@@ -151,8 +151,10 @@ export async function readHttpRange(
 }
 
 /**
- * Opens an http(s) object for range reads: its size comes from a HEAD
- * request (`Content-Length` is visible cross-origin without being exposed).
+ * Opens an http(s) object for range reads. Its size comes from a HEAD
+ * request (`Content-Length` is visible cross-origin without being exposed),
+ * or, if the server refuses HEAD, from the `Content-Range` of a one-byte
+ * range request (visible cross-origin only if the server exposes it).
  */
 export async function openHttpFile(
   url: string,
@@ -161,15 +163,47 @@ export async function openHttpFile(
   size: number;
   read: (offset: number, length: number) => Promise<Uint8Array>;
 }> {
-  const head = await fetch(url, { method: "HEAD", signal });
-  const length = head.headers.get("Content-Length");
-  if (!head.ok || length === null || !/^\d+$/.test(length)) {
+  // The size, from the first of these that gives it: a HEAD request; the total
+  // in a range response's Content-Range; or the Content-Length of a plain GET,
+  // cancelled once its headers arrive. Each can fail in a browser: a URL
+  // presigned for GET (as figshare's S3 redirects are) refuses HEAD, and a
+  // cross-origin server may not expose Content-Range, while Content-Length is
+  // always readable.
+  const lengthOf = (r: Response) => {
+    const v = r.headers.get("Content-Length");
+    // Only a 200 describes the object: a 202 (such as a bot challenge) or
+    // other success status says nothing about its size.
+    return r.status === 200 && v !== null && /^\d+$/.test(v) ? Number(v) : undefined;
+  };
+  let size: number | undefined;
+  let headStatus = "failed";
+  try {
+    const head = await fetch(url, { method: "HEAD", signal });
+    headStatus = String(head.status);
+    size = lengthOf(head);
+  } catch (e) {
+    if (signal?.aborted) throw e;
+  }
+  if (size === undefined) {
+    const probe = await fetch(url, { headers: { Range: "bytes=0-0" }, signal });
+    const total = probe.headers.get("Content-Range")?.match(/\/(\d+)$/)?.[1];
+    await probe.body?.cancel();
+    if (probe.status === 206 && total !== undefined) size = Number(total);
+  }
+  if (size === undefined) {
+    const abort = new AbortController();
+    signal?.addEventListener("abort", () => abort.abort(), { once: true });
+    const full = await fetch(url, { signal: abort.signal });
+    if (full.status === 200) size = lengthOf(full);
+    abort.abort(); // only the headers were needed
+  }
+  if (size === undefined) {
     throw new HttpResolutionError(
-      `${url}: cannot determine the size (HEAD ${head.status})`,
+      `${url}: cannot determine the size (HEAD ${headStatus})`,
     );
   }
   return {
-    size: Number(length),
+    size,
     read: async (offset, n) =>
       n === 0
         ? new Uint8Array()

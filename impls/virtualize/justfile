@@ -1,0 +1,20 @@
+# The VIRTUALIZE.md implementations of the latest spec round (python/,
+# typescript/, rust/), each run as `<dir>/virtualize <url> <out.json>`. The
+# directories are replaced every round; this file stays.
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+[private]
+default:
+    @just --list
+
+# Build the Rust virtualizer (offline; flate2 is its only dependency)
+build:
+    cargo build --release --offline --quiet --manifest-path rust/Cargo.toml
+
+# Compare this round's implementations with the maintained ones (`--quick`, `--fixtures <dir>`, ...)
+compare *args: build
+    cd ../.. && uv run python conformance/virtualize/compare.py conformance/results/virtualize-round \
+        --impl python=impls/virtualize/python/virtualize \
+        --impl typescript=impls/virtualize/typescript/virtualize \
+        --impl rust=impls/virtualize/rust/virtualize {{args}}
