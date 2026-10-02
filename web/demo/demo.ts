@@ -11,6 +11,9 @@ const EXAMPLE =
 // A Nikon ND2 time-lapse (BioImage Archive S-BIAD3015, 4.6 GB).
 const ND2_EXAMPLE =
   "https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/1-SR_1_9_6hPre-C_MC1.nd2";
+// A Nikon ND2 z-stack with five channels (BioImage Archive S-BIAD2077, 263 MB).
+const ND2_ZSTACK_EXAMPLE =
+  "https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/077/S-BIAD2077/Files/373_230614_A1_Blk_Reg2_40x.nd2";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const input = $<HTMLInputElement>("url");
@@ -203,7 +206,7 @@ $("form").addEventListener("submit", (event) => {
   }
   virtualize(input.value.trim()).catch((e) => setStatus(String(e.message ?? e), true));
 });
-for (const [id, url] of [["example", EXAMPLE], ["example-nd2", ND2_EXAMPLE]]) {
+for (const [id, url] of [["example", EXAMPLE], ["example-nd2", ND2_EXAMPLE], ["example-nd2-zstack", ND2_ZSTACK_EXAMPLE]]) {
   $(id).addEventListener("click", (event) => {
     event.preventDefault();
     input.value = url;
