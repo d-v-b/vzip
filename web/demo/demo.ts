@@ -34,6 +34,7 @@ async function getJson(url: string) {
 }
 
 /** A Neuroglancer state for an OME-Zarr image; RGB as three additive layers. */
+const SECONDS: Record<string, number> = { second: 1, millisecond: 1e-3, minute: 60, hour: 3600 };
 const METERS: Record<string, number> = {
   meter: 1, millimeter: 1e-3, micrometer: 1e-6, nanometer: 1e-9, picometer: 1e-12, angstrom: 1e-10,
   centimeter: 1e-2, inch: 0.0254, foot: 0.3048,
@@ -54,15 +55,30 @@ function neuroglancerState(
   omero: OmeroChannel[] = [],
 ) {
   const source = `${zarrUrl}|zarr3:`;
-  // Fit the whole image in the view: crossSectionScale is in meters per
-  // screen pixel (or voxels per pixel if the axes have no unit).
   const n = shape.length;
-  const extent = (i: number) => shape[i] * scale[i] * (METERS[axes[i].unit ?? ""] ?? 1);
+  // The coordinate space, declared up front so that displayDimensions can
+  // name x and y before the layers load (otherwise Neuroglancer may display a
+  // non-spatial axis such as t).
+  const dimensions: Record<string, [number, string]> = {};
+  axes.forEach((a, i) => {
+    if (a.name === "c") return;
+    const unit = a.unit ?? "";
+    if (unit in METERS) dimensions[a.name] = [scale[i] * METERS[unit], "m"];
+    else if (unit in SECONDS) dimensions[a.name] = [scale[i] * SECONDS[unit], "s"];
+    else dimensions[a.name] = [scale[i], ""];
+  });
+  // Start at the first time point (Neuroglancer would pick the middle one),
+  // the middle z slice, and the centre of the image.
+  const position = axes.flatMap((a, i) =>
+    a.name === "c" ? [] : [a.name === "t" ? 0 : a.name === "z" ? Math.floor(shape[i] / 2) : shape[i] / 2]);
   const view = {
-    crossSectionScale: Math.max(extent(n - 2) / 600, extent(n - 1) / 850),
-    layout: "xy",
-    // Without this, Neuroglancer may display a non-spatial axis such as t.
+    dimensions,
+    position,
     displayDimensions: ["x", "y"],
+    // Fit the whole image: with the coordinate space declared, this counts
+    // full-resolution voxels per screen pixel.
+    crossSectionScale: Math.max(shape[n - 2] / 600, shape[n - 1] / 850),
+    layout: "xy",
   };
   const c = axes.findIndex((a) => a.name === "c");
   if (c >= 0 && shape[c] === 3 && dtype === "uint8") {
