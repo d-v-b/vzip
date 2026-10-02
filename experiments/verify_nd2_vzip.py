@@ -1,10 +1,10 @@
-"""Check a vzip made by nd2_to_vzip.py against the nd2 package reading the ND2.
+"""Check a vzip made from an ND2 file (python -m vzip.virtualize) against the nd2 package reading the ND2.
 
 Reads a sample of frames (first, last, and random ones) through the archive
 (vzip reference reader + zarr-python) and with `nd2` from the remote file, and
 compares them.
 
-Usage: uv run --with nd2 python experiments/verify_nd2_vzip.py <archive.vzip> <nd2 url> [frames]
+Usage: uv run python experiments/verify_nd2_vzip.py <archive.vzip> <nd2 url> [frames]
 """
 
 from __future__ import annotations
