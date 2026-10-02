@@ -51,8 +51,8 @@ Notes:
   allows cross-origin range requests, but its CORS preflight rejects `If-Match`
   and `If-Unmodified-Since`. It also does not expose `ETag`, `Last-Modified` or
   `Content-Range`. A browser therefore cannot check pins, and pinned reads fail
-  closed. The pinned archive (`experiments/out/idr0096_4000_d11_m5_LT_2.vzip`)
-  still works outside the browser.
+  closed. The pinned archive (`experiments/out/idr0096_4000_d11_m5_LT_2.vzip`,
+  from `just archives-idr`) still works outside the browser.
 - **Hidden `Content-Range`.** For the same reason, the driver accepts a
   cross-origin `206` whose `Content-Range` is hidden, as long as the body has
   exactly the requested length. This deviates from spec §6.2.

@@ -1,0 +1,32 @@
+# The browser implementation: a service worker serving vzip archives and
+# virtualized TIFF and ND2 files as plain HTTP Zarr.
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+[private]
+default:
+    @just --list
+
+# Install the pinned development dependencies
+install:
+    npm ci
+
+# Bundle the service worker and demo (build.mjs)
+build:
+    node build.mjs
+
+# Type-check the sources
+typecheck:
+    npx tsc -p .
+
+# Type-check, then run the Node tests
+test: typecheck
+    node --test test/
+
+# Serve the demo locally (default port 8000)
+serve port="8000":
+    node serve.mjs {{port}}
+
+# Virtualize a TIFF or ND2 URL into the harness's JSON description (conformance/virtualize/HARNESS.md)
+virtualize url out:
+    node conformance/virtualize.ts {{quote(url)}} {{quote(out)}}
