@@ -15,10 +15,11 @@ from __future__ import annotations
 
 from vzip.virtualize import ndpi
 from vzip.virtualize.common import Output, Rejected, file_reader, http_reader
+from vzip.virtualize.ims import virtualize_ims
 from vzip.virtualize.nd2 import is_nd2, virtualize_nd2
 from vzip.virtualize.tiff import virtualize_tiff
 
-__all__ = ["Output", "Rejected", "virtualize", "virtualize_nd2", "virtualize_tiff"]
+__all__ = ["Output", "Rejected", "virtualize", "virtualize_ims", "virtualize_nd2", "virtualize_tiff"]
 
 
 def virtualize(location: str, url: str | None = None) -> tuple[str, Output]:
@@ -28,7 +29,7 @@ def virtualize(location: str, url: str | None = None) -> tuple[str, Output]:
     else:
         read, size = file_reader(location)
     url = url or location
-    head = read(0, min(8, size))
+    head = read(0, min(552, size))
     if head[:2] in (b"II", b"MM"):
         first = ndpi.detect(read, size)
         if first is not None:
@@ -36,4 +37,6 @@ def virtualize(location: str, url: str | None = None) -> tuple[str, Output]:
         return "tiff", virtualize_tiff(url, read, size)
     if is_nd2(head):
         return "nd2", virtualize_nd2(url, read, size)
+    if head[:8] == b"\x89HDF\r\n\x1a\n":
+        return "ims", virtualize_ims(url, read, size)
     raise Rejected("not a TIFF or ND2 file")

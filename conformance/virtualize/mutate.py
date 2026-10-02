@@ -38,7 +38,7 @@ def main(argv: list[str]) -> int:
     count = int(argv[1]) if len(argv) > 1 else 10
     rng = random.Random(int(argv[2]) if len(argv) > 2 else 0)
     out.mkdir(parents=True, exist_ok=True)
-    for p in sorted([*FIXTURES.rglob("*.tif"), *FIXTURES.rglob("*.ndpi"), *FIXTURES.rglob("*.nd2")]):
+    for p in sorted([*FIXTURES.rglob("*.tif"), *FIXTURES.rglob("*.ndpi"), *FIXTURES.rglob("*.nd2"), *FIXTURES.rglob("*.ims")]):
         data = p.read_bytes()
         if len(data) > 256 * 1024 or len(data) < 2:
             continue
