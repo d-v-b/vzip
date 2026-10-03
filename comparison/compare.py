@@ -8,7 +8,7 @@ vzip, then read each back over HTTP and compare.
    source files.
 3. Write each format with its own library (one small function per format,
    below), and measure size on disk and object count.
-4. Serve everything from a local HTTP server that honours Range requests,
+4. Serve everything from a local HTTP server that honors Range requests,
    adds a fixed latency to every request (a stand-in for an object store)
    and logs every request.
 5. For each format, from a cold start: open the dataset with xarray, read

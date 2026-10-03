@@ -58,7 +58,7 @@ regenerated with `just compare-formats`.
    the table above. vzip is written twice: without and with a page index
    (SPEC.md §7).
 4. **Serve** the source files and the written formats from one local HTTP
-   server. It honours Range requests, waits 20 ms before answering each
+   server. It honors Range requests, waits 20 ms before answering each
    request (a stand-in for an object store round trip), and logs every
    request. The server runs in its own process and times the wait by
    watching the clock: on the machine used here, macOS timer coalescing

@@ -28,7 +28,7 @@ uv run pytest tests/test_comparison.py             # a tiny run, no latency
      virtual chunk container;
    - vzip with `vzip.convert.write_vzip`, without and with a page index.
 4. **Serve** the sources and the written formats from a local HTTP server. It
-   honours Range requests, waits 20 ms before answering each request (a
+   honors Range requests, waits 20 ms before answering each request (a
    stand-in for an object store round trip; `--latency`), and logs every
    request. The server runs in its own process and times the wait by
    watching the clock, because macOS timer coalescing can stretch a 20 ms
