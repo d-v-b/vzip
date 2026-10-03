@@ -49,8 +49,10 @@ in a directory and lists them at https://d-v-b.github.io/vzip-demo/).
 The rules are [VIRTUALIZE.md](../VIRTUALIZE.md)'s profiles:
 [TIFF](../profiles/tiff.md), [NDPI](../profiles/ndpi.md),
 [ND2](../profiles/nd2.md), [DICOM](../profiles/dicom.md),
-[NIfTI](../profiles/nifti.md) and [IMS](../profiles/ims.md), each implemented
-in its own directory of `src/virtualize/`. The
+[NIfTI](../profiles/nifti.md), [IMS](../profiles/ims.md),
+[N5](../profiles/n5.md) and [Zarr v2](../profiles/zarr2.md), each implemented
+in its own directory of `src/virtualize/` (`store.ts` holds what the two store
+profiles share). The
 Python reference implementation (`python -m vzip.virtualize`) produces
 equivalent archives; `conformance/virtualize/compare.py` checks that.
 
@@ -125,6 +127,23 @@ Imaris IMS (HDF5):
 
 Not supported, and refused with HTTP 422: LZ4 or shuffle compression (as
 Imaris 10 can write), and HDF5 features Imaris files do not use.
+
+N5 and Zarr v2 stores (a URL ending in `/`, listed with S3 ListObjectsV2):
+
+- Every group and array of the store under that URL, as a Zarr v3 hierarchy
+  at the same paths; each chunk is the whole chunk object, one url source per
+  chunk, so the archive grows with the number of chunks.
+- N5: datasets through the `n5_default` codec (raw, gzip, zlib, zstd and
+  blosc blocks, truncated or padded at the edges); COSEM and n5-viewer
+  multiscale metadata as OME-NGFF 0.5.
+- Zarr v2: C and F order, either separator, numeric and bool types in either
+  byte order, zlib, gzip, zstd and blosc; OME-NGFF 0.4 metadata as 0.5.
+
+Not supported, and refused with HTTP 422: stores without a listing (a plain
+web server), N5 lz4, xz, bzip2 and jpeg blocks, Zarr v2 filters, lz4 and other
+compressors, and string, object, structured, complex and date-time types.
+A store that lists more than 100000 objects is refused with HTTP 507 (a
+limit of this implementation, VIRTUALIZE.md §11).
 
 ## Limits
 

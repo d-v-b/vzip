@@ -2,7 +2,8 @@
 // can read them. Archives are either virtualized TIFFs or existing .vzip
 // files, named by URL:
 //
-//   <prefix>image/<id>/<key>     the TIFF or ND2 file at decodeId(id),
+//   <prefix>image/<id>/<key>     the image file at decodeId(id), or the N5 or
+//                                Zarr v2 store if that URL ends in "/",
 //                                virtualized by VIRTUALIZE.md
 //   <prefix>tiff/<id>/<key>      the same, for TIFF files only
 //   <prefix>archive/<id>/<key>   the .vzip archive at decodeId(id)
@@ -15,7 +16,10 @@
 import { Archive, type RangeFetcher, VzipError } from "./archive.ts";
 import { HttpResolutionError, openHttpFile, readHttpRange } from "./http.ts";
 import { blockReader, ImageError } from "./virtualize/common.ts";
-import { virtualizeImage } from "./virtualize/index.ts";
+import { isStoreUrl, virtualizeImage, virtualizeStore } from "./virtualize/index.ts";
+import { N5Error } from "./virtualize/n5/virtualize.ts";
+import { openHttpStore, StoreError, StoreLimitError, StoreReadError } from "./virtualize/store.ts";
+import { Zarr2Error } from "./virtualize/zarr2/virtualize.ts";
 import { DicomError } from "./virtualize/dicom/virtualize.ts";
 import { ImsError } from "./virtualize/ims/virtualize.ts";
 import { LVError } from "./virtualize/nd2/lv.ts";
@@ -48,6 +52,8 @@ export interface HandlerOptions {
   /** Absolute URL that every served path starts with, ending in "/". */
   prefix: string;
   openFile?: typeof openHttpFile;
+  /** Lists and reads store inputs (§1.5); defaults to `fetch`. */
+  fetchStore?: (url: string, init?: RequestInit) => Promise<Response>;
   fetchRange?: RangeFetcher;
   fetchArchive?: (url: string) => Promise<Uint8Array>;
 }
@@ -89,6 +95,7 @@ export function makeHandler(options: HandlerOptions) {
   const {
     prefix,
     openFile = openHttpFile,
+    fetchStore = (u, i) => fetch(u, i),
     fetchRange = (url, start, end, pins) => readHttpRange(url, start, end, pins),
     fetchArchive = async (url) => {
       const r = await fetch(url);
@@ -104,19 +111,25 @@ export function makeHandler(options: HandlerOptions) {
     if (p === undefined) {
       p = (async () => {
         const base = url.split(/[?#]/, 1)[0];
-        const stem = decodeURIComponent(base.slice(base.lastIndexOf("/") + 1)) || "archive";
+        const trimmed = base.endsWith("/") ? base.slice(0, -1) : base;
+        const stem = decodeURIComponent(trimmed.slice(trimmed.lastIndexOf("/") + 1)) || "archive";
         if (kind === "archive") {
           return { archive: await Archive.open(await fetchArchive(url), url, fetchRange), filename: stem };
         }
-        const file = await openFile(url);
-        const read = blockReader(file.read, file.size);
-        const virtual = kind === "tiff"
-          ? await virtualizeTiff(url, read, file.size)
-          : await virtualizeImage(url, read, file.size);
+        let virtual;
+        if (kind === "image" && isStoreUrl(url)) {
+          virtual = await virtualizeStore(await openHttpStore(url, { fetch: fetchStore }));
+        } else {
+          const file = await openFile(url);
+          const read = blockReader(file.read, file.size);
+          virtual = kind === "tiff"
+            ? await virtualizeTiff(url, read, file.size)
+            : await virtualizeImage(url, read, file.size);
+        }
         const bytes = await writeVzip(virtual);
         return {
           archive: await Archive.open(bytes, url, fetchRange),
-          filename: `${stem.replace(/\.(ome\.tiff?|tiff?|nd2)$/i, "")}.vzip`,
+          filename: `${stem.replace(/\.(ome\.tiff?|tiff?|nd2|n5|zarr)$/i, "")}.vzip`,
         };
       })();
       opened.set(name, p);
@@ -182,7 +195,12 @@ export function makeHandler(options: HandlerOptions) {
       if (e instanceof DicomError) return response(422, `DICOM: ${message}`);
       if (e instanceof NiftiError) return response(422, `NIfTI: ${message}`);
       if (e instanceof ImsError) return response(422, `IMS: ${message}`);
+      if (e instanceof N5Error) return response(422, `N5: ${message}`);
+      if (e instanceof Zarr2Error) return response(422, `Zarr v2: ${message}`);
+      if (e instanceof StoreError) return response(422, `store: ${message}`);
       if (e instanceof ImageError) return response(422, message);
+      if (e instanceof StoreLimitError) return response(507, message);
+      if (e instanceof StoreReadError) return response(502, message);
       if (e instanceof HttpResolutionError) return response(502, message);
       return response(500, message);
     }
