@@ -1,7 +1,8 @@
 # url|name[|py-only] of the public Zarr v2 stores in the corpus (store URLs end in "/"), from
 # OpenOrganelle's public bucket janelia-cosem-datasets (CC BY 4.0), listed anonymously with S3
-# ListObjectsV2. Small levels and groups only (below the browser limit, VIRTUALIZE.md §11): OME-NGFF
-# 0.4 multiscale groups (blosc, nested "/" keys) and single low-resolution levels.
+# ListObjectsV2. Small levels and groups only (below the browser limit, VIRTUALIZE.md §12): OME-NGFF
+# 0.4 multiscale groups (blosc, nested "/" keys) and single low-resolution levels. A group whose root
+# declares OME-NGFF 0.4 (crop1/ves) is read by the OME-Zarr profile (§11), the others by §10.
 https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8/s5/|hela2_fibsem_uint8_s5
 https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8/s4/|hela2_fibsem_uint8_s4
 https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.zarr/recon-1/labels/groundtruth/crop1/ves/|hela2_groundtruth_crop1_ves
