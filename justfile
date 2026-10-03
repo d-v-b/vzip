@@ -83,6 +83,10 @@ verify-nifti:
 verify-ims:
     uv run python web/test/ims/verify.py
 
+# Store one virtual dataset as kerchunk JSON, kerchunk Parquet, Icechunk and vzip, and read each over HTTP (see comparison/README.md)
+compare-formats *args:
+    uv run python comparison/compare.py {{args}}
+
 # VIRTUALIZE.md: compare implementations on the corpus (network; e.g. `just compare --quick`)
 compare *args:
     uv run python conformance/virtualize/compare.py conformance/results/virtualize {{args}}
