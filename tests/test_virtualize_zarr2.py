@@ -5,6 +5,7 @@ conformance/virtualize/compare.py, and pixel correctness against zarr-python's
 Zarr v2 reader by web/test/zarr2/verify.py.
 """
 
+import json
 from pathlib import Path
 
 import pytest
@@ -59,8 +60,7 @@ CASES = {
         "a/b/zero_d": ("int32", [LE], ".", 0), "a/c": ("uint16", [LE], "/", 0), "g/h": ("float32", [LE], ".", 0),
         "sp ace/é/x y": ("uint8", [ONE], ".", 0), "empty_shape": ("int16", [LE], ".", 0),
     }, {"arrays": 5, "groups": 6}),
-    "zarr2_ome_04": ({"0/0": ("uint16", [LE, blosc("lz4", 5, "shuffle", 2)], "/", 0)}, {"images": ["0", "0/labels/cells",
-                                                                                                "dup_axes"]}),
+    "zarr2_ome_attrs": ({"0/0": ("uint16", [LE, blosc("lz4", 5, "shuffle", 2)], "/", 0)}, {"groups": 8}),
 }
 
 
@@ -89,19 +89,13 @@ def test_virtualizes_the_synthetic_stores():
     assert out.docs["a/zarr.json"] == {"zarr_format": 3, "node_type": "group", "attributes": {}}
     assert out.docs["a/c/zarr.json"]["attributes"] == {"_ARRAY_DIMENSIONS": ["y", "x"]}
     assert not {"a/c/inside/zarr.json", "orphan/zarr.json", "ghost/zarr.json", "notes/zarr.json"} & set(out.docs)
-    # OME-NGFF 0.4 becomes 0.5 under `ome`, with dimension names on the levels.
-    _, out = virtualize(str(FIXTURES / "zarr2_ome_04"), url=URL.format("o"))
-    a = out.docs["0/zarr.json"]["attributes"]
-    assert set(a) == {"ome", "other"} and set(a["ome"]) == {"version", "multiscales", "omero"}
-    assert a["ome"]["version"] == "0.5" and "version" not in a["ome"]["multiscales"][0]
-    assert a["ome"]["multiscales"][0]["type"] == "mean" and a["ome"]["omero"]["rdefs"] == {"model": "color"}
-    assert out.docs["0/1/zarr.json"]["dimension_names"] == ["c", "y", "x"]
-    assert out.docs["0/labels/cells/0/zarr.json"]["dimension_names"] == ["c", "y", "x"]
-    assert out.docs["0/labels/cells/zarr.json"]["attributes"]["image-label"]["version"] == "0.4"
-    assert out.docs["0/labels/zarr.json"]["attributes"] == {"labels": ["cells"]}
-    assert "ome" not in out.docs["v03/zarr.json"]["attributes"] and "ome" not in out.docs["mixed/zarr.json"]["attributes"]
-    assert out.docs["has_ome/zarr.json"]["attributes"]["ome"] == {"version": "0.5"}
-    assert "dimension_names" not in out.docs["dup_axes/0/zarr.json"]
+    # Attributes are copied unchanged, OME-NGFF 0.4 ones included: the root does not declare
+    # OME-NGFF 0.4 (VIRTUALIZE.md §1.4), so the store is not read by the OME-Zarr profile.
+    _, out = virtualize(str(FIXTURES / "zarr2_ome_attrs"), url=URL.format("o"))
+    for path in ("", "0", "0/labels", "0/labels/cells", "v03", "has_ome", "mixed", "dup_axes"):
+        zattrs = FIXTURES / "zarr2_ome_attrs" / path / ".zattrs"
+        assert out.docs[key(path)]["attributes"] == json.loads(zattrs.read_text()), path
+    assert not any("dimension_names" in d for d in out.docs.values())
 
 
 @pytest.mark.parametrize("name,message", [

@@ -1,6 +1,6 @@
 # Virtualizing Zarr v2 hierarchies
 
-The Zarr v2 profile of [VIRTUALIZE.md](../VIRTUALIZE.md) (revision 12),
+The Zarr v2 profile of [VIRTUALIZE.md](../VIRTUALIZE.md) (revision 13),
 numbered as its §10. §1 is in VIRTUALIZE.md and applies here, in particular
 the store input rules of §1.4–§1.6; §2 is not used.
 
@@ -12,9 +12,11 @@ document, and either may have a `.zattrs` document of user attributes. An
 array's chunks are objects at keys `<array>/<chunk key>`. The output is a
 Zarr v3 hierarchy with a node at the path of every Zarr v2 node; each
 array's chunks are its chunk objects, referenced whole, under the same keys
-(the Zarr v3 `v2` chunk key encoding produces exactly the Zarr v2 keys). The
-profile was chosen because the store's root has a `.zarray` or a `.zgroup`
-(§1.4).
+(the Zarr v3 `v2` chunk key encoding produces exactly the Zarr v2 keys).
+Attributes are copied unchanged. The profile was chosen because the store's
+root has a `.zarray` or a `.zgroup` and the store does not declare
+OME-NGFF 0.4 (§1.4); a store that does is read by the OME-Zarr profile
+(§11, [ome-zarr.md](ome-zarr.md)), which builds on §10.1–§10.3.
 
 ### 10.1 Nodes
 
@@ -54,7 +56,7 @@ The output has one `zarr.json` per node, at `<path>/zarr.json`
   `{"zarr_format": 3, "node_type": "group", "attributes": {}}`;
 - an explicit group:
   `{"zarr_format": 3, "node_type": "group", "attributes": A}`, where `A` is
-  its attributes, changed as §10.4 says when it holds OME-NGFF 0.4 metadata;
+  its attributes, unchanged;
 - an array: §10.2.
 
 ### 10.2 Arrays
@@ -134,9 +136,9 @@ objects (`O`), void and structured types (`V`, or a list), date-times
 }
 ```
 
-with the member `"dimension_names"` only when §10.4 gives the array axis
-names, and no other members, where `s` is the dimension separator and `A`
-its attributes (`.zattrs`, unchanged).
+with no other members, where `s` is the dimension separator and `A` its
+attributes (`.zattrs`, unchanged). (Zarr v2 has no dimension names; the
+xarray convention `_ARRAY_DIMENSIONS` stays an attribute.)
 
 **Chunks.** The chunk keys of an array at path `D` are `D/` (nothing at
 the root) followed by: `0` when `n = 0`; otherwise `i0`, `i1`, …, `i(n−1)`
@@ -173,41 +175,9 @@ The compressor object's `id` selects the codec:
   describes itself, so this configuration does not change how chunks decode;
   it is exactly the compressor's.)
 
-### 10.4 OME-NGFF 0.4
-
-OME-NGFF 0.4 keeps its metadata in a group's `.zattrs`, at the top level;
-0.5, the version for Zarr v3, keeps it in the member `ome`, without a
-`version` in each multiscale. An explicit group's attributes `A` hold **0.4
-multiscales** when `A` has no member `ome`, and its member `multiscales` is
-a nonempty array of objects each of whose member `version` is the string
-`"0.4"`. Then the group's output attributes are `A` without the members
-`multiscales` and `omero`, plus the member `ome`:
-
-```json
-{"version": "0.5", "multiscales": [m1, m2, ...], "omero": o}
-```
-
-where each `mi` is the corresponding multiscale without its member
-`version` (every other member unchanged), and `omero` is present only when
-`A` has a member `omero`, whose value `o` it is. Nothing else is checked or
-changed: a 0.4 document that is invalid in other ways is converted as it
-is. Attributes without 0.4 multiscales (including other OME-NGFF versions,
-which predate Zarr v3 conventions this profile could follow exactly) are
-kept unchanged.
-
-**Dimension names.** OME-NGFF 0.5 requires every level array to have
-`dimension_names` equal to its image's axis names. After every group has
-been considered, in ascending order of path (compared as UTF-8), and, within
-a group, in the order of its multiscales: a converted multiscale whose
-member `axes` is an array of objects, each with a string member `name`, the
-names distinct, gives its names to every element of its member `datasets`
-that is an object whose member `path` is a string naming (as a path relative
-to the group, with no empty, `.` or `..` segment) an array with as many
-dimensions as there are names, and that has no `dimension_names` yet.
-
-### 10.5 Summary
+### 10.4 Summary
 
 This section is informative. Both implementations print a one-line JSON
 summary: `groups` (explicit and implicit), `arrays`, `chunks` (chunk
 entries), `emptyChunks` (chunk objects of size 0), `objects` (the store's
-objects), `images` (groups converted by §10.4) and `listingRequests`.
+objects) and `listingRequests`.
