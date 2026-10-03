@@ -16,7 +16,7 @@ regenerated with `just compare-formats`.
   per chunk).
 - **Opening a large dataset:**
   - kerchunk Parquet and Icechunk read a few kilobytes in 6 to 11 requests.
-  - vzip with a page index reads 257 kB in 5 requests. Without one, it reads
+  - vzip with a page index reads 115 kB in 2 requests. Without one, it reads
     its whole 18.8 MB central directory in 2 requests (see
     [vzip at open](#vzip-at-open)).
   - kerchunk JSON downloads its whole file, three times.
@@ -95,21 +95,21 @@ files are the same for every format and are not shown.
 
 | format | size | objects | open | first value | everything | values |
 |---|---:|---:|---|---|---|---|
-| kerchunk JSON | 305.5 kB | 1 | 6 (6) · 916.6 kB · 0.22 s | 1 (0) · 0 · 0.02 s | 2,880 (0) · 0 · 6.14 s | identical |
-| kerchunk Parquet | 21.8 kB | 6 | 6 (6) · 10.0 kB · 0.09 s | 2 (1) · 6.8 kB · 0.04 s | 2,890 (10) · 82.0 kB · 6.16 s | identical |
-| Icechunk | 62.7 kB | 13 | 10 (10) · 8.5 kB · 0.13 s | 10 (5) · 20.0 kB · 0.04 s | 14,405 (5) · 21.2 kB · 6.40 s | identical |
-| vzip | 374.8 kB | 1 | 2 (2) · 222.7 kB · 0.05 s | 1 (0) · 0 · 0.03 s | 2,880 (0) · 0 · 7.55 s | identical |
-| vzip, paged | 375.2 kB | 1 | 5 (5) · 222.9 kB · 0.11 s | 2 (1) · 65.6 kB · 0.05 s | 2,880 (0) · 0 · 7.51 s | identical |
+| kerchunk JSON | 305.5 kB | 1 | 6 (6) · 916.6 kB · 0.23 s | 1 (0) · 0 · 0.02 s | 2,880 (0) · 0 · 6.12 s | identical |
+| kerchunk Parquet | 21.8 kB | 6 | 6 (6) · 10.0 kB · 0.09 s | 2 (1) · 6.8 kB · 0.04 s | 2,890 (10) · 82.0 kB · 6.14 s | identical |
+| Icechunk | 62.8 kB | 13 | 10 (10) · 8.5 kB · 0.13 s | 10 (5) · 20.0 kB · 0.04 s | 14,405 (5) · 21.3 kB · 6.41 s | identical |
+| vzip | 379.9 kB | 1 | 2 (2) · 227.8 kB · 0.05 s | 1 (0) · 0 · 0.03 s | 2,880 (0) · 0 · 7.46 s | identical |
+| vzip, paged | 380.3 kB | 1 | 2 (2) · 82.8 kB · 0.04 s | 2 (1) · 65.6 kB · 0.05 s | 2,883 (3) · 145.2 kB · 7.51 s | identical |
 
 **Large run:** 259,200 references; full reads skipped.
 
 | format | size | objects | open | first value | values |
 |---|---:|---:|---|---|---|
-| kerchunk JSON | 26.4 MB | 1 | 6 (6) · 79.28 MB · 0.65 s | 1 (0) · 0 · 0.11 s | identical |
+| kerchunk JSON | 26.4 MB | 1 | 6 (6) · 79.28 MB · 0.62 s | 1 (0) · 0 · 0.10 s | identical |
 | kerchunk Parquet | 768.3 kB | 8 | 6 (6) · 16.2 kB · 0.09 s | 2 (1) · 269.0 kB · 0.06 s | identical |
 | Icechunk | 4.9 MB | 13 | 11 (11) · 11.7 kB · 0.13 s | 6 (5) · 1.66 MB · 0.07 s | identical |
-| vzip | 32.4 MB | 1 | 2 (2) · 18.81 MB · 1.22 s | 1 (0) · 0 · 0.04 s | identical |
-| vzip, paged | 32.4 MB | 1 | 5 (5) · 256.6 kB · 0.12 s | 2 (1) · 65.5 kB · 0.06 s | identical |
+| vzip | 32.4 MB | 1 | 2 (2) · 18.81 MB · 1.06 s | 1 (0) · 0 · 0.04 s | identical |
+| vzip, paged | 32.4 MB | 1 | 2 (2) · 114.7 kB · 0.05 s | 2 (1) · 65.5 kB · 0.06 s | identical |
 
 The raw results, with every count, are in
 [`comparison/results/`](comparison/results/).
@@ -144,38 +144,41 @@ Per reference in the large run:
   references.
 - **kerchunk Parquet** reads its consolidated `.zmetadata`: 6 requests, 16 kB.
 - **Icechunk** reads its own small metadata files: 11 requests, 12 kB.
-- **vzip** reads 257 kB in 5 requests with a page index, and its whole
+- **vzip** reads 115 kB in 2 requests with a page index, and its whole
   18.8 MB central directory without one. The next section explains both.
 
 ### vzip at open
 
 The format lets a reader open an archive in two range requests: the tail,
 then the region from the source table to the end (SPEC.md §9.2). In the
-large run, the paged archive opens with 5 requests:
+large run, the paged archive opens in exactly those two:
 
 1. the last 64 KiB of the file;
-2. the source table, the pinned entries and the page index, in one read;
-3. to 5. three 64 KiB central directory pages, for the listing.
+2. the source table, the pinned entries and the page index, in one read.
 
-Two things in the reference reader and converter make that possible:
+Three things in the reference converter and reader make that possible:
 
-- **The listing seeks past each array's keys.** To find the arrays, xarray
-  lists the root of the store. The keys are sorted when there is a page
-  index (SPEC.md §7.1). `VZipStore.list_dir` reads the page where the first
-  child starts, then seeks to the first key after that child's subtree
-  (from `pr/…` to the first key after `pr/`), and so on. It reads at most
-  one page per child, rather than all 290 pages.
+- **Consolidated metadata.** `write_vzip` writes Zarr's consolidated
+  metadata into the root `zarr.json`, so xarray finds every array there and
+  never lists the store. It is a zarr-python convention, not part of the
+  Zarr v3 specification.
 - **Coordinates come with the metadata.** `write_vzip` writes the chunks of
   indexed coordinates (here 120 `time` chunks, one per source file) next to
   the `zarr.json` documents, with `late=True`. They are pinned in the page
   index and fall inside read 2, so loading them costs no request.
+- **The listing seeks past each array's keys**, for readers that do list:
+  - Readers without consolidated metadata find the arrays by listing the
+    root, and the keys are sorted when there is a page index (SPEC.md §7.1).
+  - `VZipStore.list_dir` reads the page where the first child starts, then
+    seeks to the first key after that child's subtree (from `pr/…` to the
+    first key after `pr/`), and so on.
+  - It reads at most one page per child, rather than all 290 pages. Before
+    consolidated metadata, that made the open 5 requests (three of them
+    pages) and 257 kB.
 
 Without a page index, a reader can only find keys by reading the whole
 central directory: 18.8 MB in 2 requests at 259,200 references. Large
 archives should be written with `page_size=`.
-
-vzip archives don't carry Zarr's consolidated metadata, so xarray lists
-them. With a page index, the listing costs about one page per array.
 
 ### The first value
 
