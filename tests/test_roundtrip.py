@@ -2,6 +2,7 @@ import itertools
 
 import xarray as xr
 import zarr
+from zarr.core.sync import sync
 
 from vzip.convert import write_vzip
 from vzip.store import VZipStore
@@ -39,3 +40,23 @@ def test_naive_view_is_a_plain_zip(netcdf_files, tmp_path):
     zarr.open_group(store, mode="r")  # metadata is plain bytes, readable naively
     assert VZipStore(str(out), resolve=False) is not None
     assert ref.length > 0
+
+
+def test_what_xarray_reads_at_open_is_written_late(netcdf_files, tmp_path):
+    from vzip.convert import read_at_open
+
+    paths, _ = netcdf_files
+    vds = xr.concat([virtualize(p) for p in paths], dim="time", coords="minimal",
+                    compat="override")
+    assert {k: read_at_open(k, vds) for k in [
+        "zarr.json", "temp/zarr.json", "time/c/0", "lat/c/0", "temp/c/0/0/0", "mask/c/0/0",
+    ]} == {"zarr.json": True, "temp/zarr.json": True, "time/c/0": True, "lat/c/0": True,
+           "temp/c/0/0/0": False, "mask/c/0/0": False}
+    for page_size in [None, 256]:
+        out = tmp_path / f"{page_size}.vzip"
+        write_vzip(vds, out, page_size=page_size)
+        s = VZipStore(str(out), resolve=False)
+        sources = sync(s.kind("__vz__/sources")) and s.entry("__vz__/sources").data_offset
+        for k in ["zarr.json", "time/zarr.json", "time/c/0", "lat/c/0", "temp/c/0/0/0"]:
+            assert sync(s.kind(k)) == "bytes"
+            assert (s.entry(k).data_offset > sources) == read_at_open(k, vds), (page_size, k)
