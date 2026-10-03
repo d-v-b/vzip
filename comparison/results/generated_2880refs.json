@@ -22,16 +22,16 @@
    "n_refs": 2880,
    "bytes": 305519,
    "objects": 1,
-   "write_seconds": 0.01375658344477415,
+   "write_seconds": 0.007538000121712685,
    "open": {
-    "seconds": 1.152203624136746,
+    "seconds": 0.2200399162247777,
     "index_requests": 6,
     "index_bytes": 916557,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.16332887578755617,
+    "seconds": 0.022473542019724846,
     "index_requests": 0,
     "index_bytes": 0,
     "data_requests": 1,
@@ -39,7 +39,7 @@
    },
    "problems": [],
    "everything": {
-    "seconds": 47.78718074969947,
+    "seconds": 6.13613704033196,
     "index_requests": 0,
     "index_bytes": 0,
     "data_requests": 2880,
@@ -51,16 +51,16 @@
    "n_refs": 2880,
    "bytes": 21769,
    "objects": 6,
-   "write_seconds": 0.10744179226458073,
+   "write_seconds": 0.0827452503144741,
    "open": {
-    "seconds": 0.7110731657594442,
+    "seconds": 0.09397849999368191,
     "index_requests": 6,
     "index_bytes": 10017,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.3332422096282244,
+    "seconds": 0.0445631667971611,
     "index_requests": 1,
     "index_bytes": 6832,
     "data_requests": 1,
@@ -68,7 +68,7 @@
    },
    "problems": [],
    "everything": {
-    "seconds": 47.835467415861785,
+    "seconds": 6.158414375036955,
     "index_requests": 10,
     "index_bytes": 82040,
     "data_requests": 2880,
@@ -78,28 +78,28 @@
   {
    "format": "Icechunk",
    "n_refs": 2880,
-   "bytes": 62523,
+   "bytes": 62710,
    "objects": 13,
-   "write_seconds": 0.04941870737820864,
+   "write_seconds": 0.02030604239553213,
    "open": {
-    "seconds": 1.0213090423494577,
+    "seconds": 0.1268089171499014,
     "index_requests": 10,
-    "index_bytes": 8558,
+    "index_bytes": 8538,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.34837150014936924,
+    "seconds": 0.043744416907429695,
     "index_requests": 5,
-    "index_bytes": 19802,
+    "index_bytes": 20026,
     "data_requests": 5,
     "data_bytes": 37773
    },
    "problems": [],
    "everything": {
-    "seconds": 48.377205749973655,
+    "seconds": 6.398238665424287,
     "index_requests": 5,
-    "index_bytes": 21294,
+    "index_bytes": 21237,
     "data_requests": 14400,
     "data_bytes": 106334512
    }
@@ -109,16 +109,16 @@
    "n_refs": 2880,
    "bytes": 374776,
    "objects": 1,
-   "write_seconds": 0.020635833963751793,
+   "write_seconds": 0.035528707318007946,
    "open": {
-    "seconds": 1.3174842493608594,
-    "index_requests": 18,
-    "index_bytes": 222636,
+    "seconds": 0.05420737527310848,
+    "index_requests": 2,
+    "index_bytes": 222688,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.17232645768672228,
+    "seconds": 0.025132457725703716,
     "index_requests": 0,
     "index_bytes": 0,
     "data_requests": 1,
@@ -126,7 +126,7 @@
    },
    "problems": [],
    "everything": {
-    "seconds": 49.33620300050825,
+    "seconds": 7.545376583002508,
     "index_requests": 0,
     "index_bytes": 0,
     "data_requests": 2880,
@@ -136,26 +136,26 @@
   {
    "format": "vzip, paged",
    "n_refs": 2880,
-   "bytes": 375070,
+   "bytes": 375190,
    "objects": 1,
-   "write_seconds": 0.020115832798182964,
+   "write_seconds": 0.024727082811295986,
    "open": {
-    "seconds": 1.5451341252774,
-    "index_requests": 22,
-    "index_bytes": 288288,
+    "seconds": 0.11303054261952639,
+    "index_requests": 5,
+    "index_bytes": 222886,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.1756772492080927,
-    "index_requests": 0,
-    "index_bytes": 0,
+    "seconds": 0.04627741686999798,
+    "index_requests": 1,
+    "index_bytes": 65574,
     "data_requests": 1,
     "data_bytes": 37773
    },
    "problems": [],
    "everything": {
-    "seconds": 48.90428141690791,
+    "seconds": 7.506545083597302,
     "index_requests": 0,
     "index_bytes": 0,
     "data_requests": 2880,

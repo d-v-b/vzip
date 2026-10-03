@@ -27,11 +27,14 @@ from __future__ import annotations
 
 import argparse
 import glob
+import heapq
 import json
+import multiprocessing
 import shutil
 import sys
 import threading
 import time
+import urllib.request
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -53,72 +56,129 @@ HERE = Path(__file__).parent
 
 class Server:
     """Serves `root` with Range support, `latency` seconds per request, and a
-    log of (method, path, bytes sent)."""
+    log of (method, path, bytes sent).
+
+    The server runs in its own process, so that the readers being measured
+    don't compete with it for the GIL.
+    """
 
     def __init__(self, root: Path, latency: float):
-        self.log: list[tuple[str, str, int]] = []
-        lock = threading.Lock()
-        log = self.log
-
-        class Handler(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
-
-            def log_message(self, *a):
-                pass
-
-            def _serve(self, body: bool):
-                time.sleep(latency)
-                p = root / self.path.split("?")[0].lstrip("/")
-                if not p.is_file():
-                    self.send_response(404)
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                    with lock:
-                        log.append((self.command, self.path, 0))
-                    return
-                size = p.stat().st_size
-                start, end = 0, size
-                rng = self.headers.get("Range")
-                if rng and rng.startswith("bytes="):
-                    a, b = rng[6:].split(",")[0].split("-")
-                    if a == "":
-                        start = max(size - int(b), 0)
-                    else:
-                        start, end = int(a), min(int(b) + 1, size) if b else size
-                    self.send_response(206)
-                    self.send_header("Content-Range", f"bytes {start}-{end - 1}/{size}")
-                else:
-                    self.send_response(200)
-                self.send_header("Content-Length", str(end - start))
-                self.send_header("Accept-Ranges", "bytes")
-                self.end_headers()
-                n = 0
-                if body:
-                    with open(p, "rb") as f:
-                        f.seek(start)
-                        data = f.read(end - start)
-                    self.wfile.write(data)
-                    n = len(data)
-                with lock:
-                    log.append((self.command, self.path, n))
-
-            def do_GET(self):
-                self._serve(True)
-
-            def do_HEAD(self):
-                self._serve(False)
-
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        ctx = multiprocessing.get_context("spawn")
+        parent, child = ctx.Pipe()
+        ctx.Process(target=_serve, args=(root, latency, child), daemon=True).start()
+        self.base = f"http://127.0.0.1:{parent.recv()}"
 
     def take(self) -> dict:
         """Requests since the last call: index (format files) and data (sources)."""
-        entries, self.log[:] = list(self.log), []
+        with urllib.request.urlopen(f"{self.base}{_LOG_PATH}") as r:
+            entries = json.loads(r.read())
         index = [e for e in entries if not e[1].startswith("/sources/")]
         data = [e for e in entries if e[1].startswith("/sources/")]
         return {"index_requests": len(index), "index_bytes": sum(e[2] for e in index),
                 "data_requests": len(data), "data_bytes": sum(e[2] for e in data)}
+
+
+_LOG_PATH = "/__log__"  # answers with the log so far (unlogged, no latency), and clears it
+
+
+class _Delay:
+    """Holds callers for `latency` seconds, accurately.
+
+    `time.sleep` can't be trusted for this: macOS coalesces timers, and a
+    20 ms sleep can last 150 ms or more. One thread instead watches the clock
+    and releases each waiting request when its time comes. Waiting on an
+    Event without a timeout needs no timer.
+    """
+
+    def __init__(self, latency: float):
+        self.latency = latency
+        self._due: list[tuple[float, int, threading.Event]] = []
+        self._cond = threading.Condition()
+        self._seq = 0
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def wait(self) -> None:
+        if self.latency <= 0:
+            return
+        ev = threading.Event()
+        with self._cond:
+            self._seq += 1
+            heapq.heappush(self._due, (time.perf_counter() + self.latency, self._seq, ev))
+            self._cond.notify()
+        ev.wait()
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                while not self._due:
+                    self._cond.wait()
+                now = time.perf_counter()
+                while self._due and self._due[0][0] <= now:
+                    heapq.heappop(self._due)[2].set()
+            time.sleep(0)  # let the handler threads run
+
+
+def _serve(root: Path, latency: float, conn) -> None:
+    log: list[tuple[str, str, int]] = []
+    lock = threading.Lock()
+    delay = _Delay(latency)
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a):
+            pass
+
+        def _send(self, status: int, headers: dict, data: bytes, logged: int | None) -> None:
+            if logged is not None:  # before the body, so a client that has it sees the entry
+                with lock:
+                    log.append((self.command, self.path, logged))
+            self.send_response(status)
+            for k, v in headers.items():
+                self.send_header(k, v)
+            self.end_headers()
+            if data:
+                self.wfile.write(data)
+
+        def _serve(self, body: bool):
+            if self.path == _LOG_PATH:
+                with lock:
+                    out = json.dumps(log).encode()
+                    log.clear()
+                return self._send(200, {"Content-Length": str(len(out))}, out, None)
+            delay.wait()
+            p = root / self.path.split("?")[0].lstrip("/")
+            if not p.is_file():
+                return self._send(404, {"Content-Length": "0"}, b"", 0)
+            size = p.stat().st_size
+            start, end = 0, size
+            status, headers = 200, {}
+            rng = self.headers.get("Range")
+            if rng and rng.startswith("bytes="):
+                a, b = rng[6:].split(",")[0].split("-")
+                if a == "":
+                    start = max(size - int(b), 0)
+                else:
+                    start, end = int(a), min(int(b) + 1, size) if b else size
+                status, headers = 206, {"Content-Range": f"bytes {start}-{end - 1}/{size}"}
+            headers.update({"Content-Length": str(end - start), "Accept-Ranges": "bytes"})
+            data = b""
+            if body:
+                with open(p, "rb") as f:
+                    f.seek(start)
+                    data = f.read(end - start)
+            self._send(status, headers, data, len(data))
+
+        def do_GET(self):
+            self._serve(True)
+
+        def do_HEAD(self):
+            self._serve(False)
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    httpd.daemon_threads = True
+    conn.send(httpd.server_address[1])
+    httpd.serve_forever()
 
 
 # -------------------------------------------------------------------- sources

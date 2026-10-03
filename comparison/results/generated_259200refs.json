@@ -22,16 +22,16 @@
    "n_refs": 259200,
    "bytes": 26427865,
    "objects": 1,
-   "write_seconds": 0.6831490006297827,
+   "write_seconds": 0.6594260418787599,
    "open": {
-    "seconds": 1.497235957533121,
+    "seconds": 0.6521356673911214,
     "index_requests": 6,
     "index_bytes": 79283595,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.23861312493681908,
+    "seconds": 0.10631825029850006,
     "index_requests": 0,
     "index_bytes": 0,
     "data_requests": 1,
@@ -42,20 +42,20 @@
   {
    "format": "kerchunk Parquet",
    "n_refs": 259200,
-   "bytes": 768345,
+   "bytes": 768347,
    "objects": 8,
-   "write_seconds": 1.1998037500306964,
+   "write_seconds": 1.078903124667704,
    "open": {
-    "seconds": 0.6518754996359348,
+    "seconds": 0.09426204115152359,
     "index_requests": 6,
     "index_bytes": 16228,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.3575653750449419,
+    "seconds": 0.06276649981737137,
     "index_requests": 1,
-    "index_bytes": 268998,
+    "index_bytes": 268999,
     "data_requests": 1,
     "data_bytes": 1198
    },
@@ -64,20 +64,20 @@
   {
    "format": "Icechunk",
    "n_refs": 259200,
-   "bytes": 4902168,
+   "bytes": 4901401,
    "objects": 13,
-   "write_seconds": 0.20574995875358582,
+   "write_seconds": 0.20324549917131662,
    "open": {
-    "seconds": 1.0074544996023178,
+    "seconds": 0.13224587496370077,
     "index_requests": 11,
-    "index_bytes": 11676,
+    "index_bytes": 11674,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.35837020818144083,
+    "seconds": 0.07006570789963007,
     "index_requests": 5,
-    "index_bytes": 1658472,
+    "index_bytes": 1658567,
     "data_requests": 1,
     "data_bytes": 1198
    },
@@ -88,16 +88,16 @@
    "n_refs": 259200,
    "bytes": 32385463,
    "objects": 1,
-   "write_seconds": 1.339876833371818,
+   "write_seconds": 1.3866467913612723,
    "open": {
-    "seconds": 4.2516393745318055,
-    "index_requests": 126,
-    "index_bytes": 18804099,
+    "seconds": 1.223737707361579,
+    "index_requests": 2,
+    "index_bytes": 18808383,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.19342495780438185,
+    "seconds": 0.040886957198381424,
     "index_requests": 0,
     "index_bytes": 0,
     "data_requests": 1,
@@ -108,20 +108,20 @@
   {
    "format": "vzip, paged",
    "n_refs": 259200,
-   "bytes": 32388722,
+   "bytes": 32389428,
    "objects": 1,
-   "write_seconds": 1.5297946250066161,
+   "write_seconds": 1.4166178340092301,
    "open": {
-    "seconds": 4.924014042131603,
-    "index_requests": 413,
-    "index_bytes": 18872640,
+    "seconds": 0.11897579114884138,
+    "index_requests": 5,
+    "index_bytes": 256628,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.22965625021606684,
-    "index_requests": 0,
-    "index_bytes": 0,
+    "seconds": 0.06294566672295332,
+    "index_requests": 1,
+    "index_bytes": 65547,
     "data_requests": 1,
     "data_bytes": 1198
    },

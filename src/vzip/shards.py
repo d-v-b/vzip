@@ -29,7 +29,7 @@ from zarr.codecs import BytesCodec, ShardingCodec
 from zarr.storage import MemoryStore
 
 from vzip.archive import VZipWriter
-from vzip.convert import consolidate
+from vzip.convert import consolidate, read_at_open
 from vzip.pb import Range
 
 _MISSING = np.uint64(2**64 - 1)
@@ -125,7 +125,7 @@ def write_vzip_sharded(
 
     with open(path, "wb") as f, VZipWriter(f, page_size=page_size) as w:
         for k, v in sorted(mem._store_dict.items()):
-            w.add_bytes(k, v.to_bytes(), late=k.endswith("zarr.json"))
+            w.add_bytes(k, v.to_bytes(), late=read_at_open(k, vds))
         for k in sorted(refs):
             url, end, index = refs[k]
             if inline_index:
