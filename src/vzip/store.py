@@ -15,12 +15,15 @@ from __future__ import annotations
 import asyncio
 import bisect
 import datetime
+import http.client
 import math
 import os
 import re
+import threading
 import zlib
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
+from email.message import Message
 from pathlib import Path
 from urllib.parse import unquote, urljoin, urlparse
 
@@ -123,11 +126,93 @@ def _abs_range(size: int, br: ByteRequest | None) -> tuple[int, int]:
     raise TypeError(f"unexpected byte request {br!r}")
 
 
+class _Pool:
+    """Kept-alive HTTP connections, per origin, shared by the reader threads.
+
+    A new TCP connection costs far more than a small range read, so reusing
+    connections is most of what makes reading many chunks fast."""
+
+    def __init__(self, max_idle: int = 32) -> None:
+        self._idle: dict[tuple[str, str, int | None], list] = {}
+        self._lock = threading.Lock()
+        self._max_idle = max_idle
+
+    def get(self, scheme: str, host: str, port: int | None):
+        """A connection, and whether it was used before."""
+        with self._lock:
+            idle = self._idle.get((scheme, host, port))
+            if idle:
+                return idle.pop(), True
+        cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
+        return cls(host, port, timeout=60), False
+
+    def put(self, scheme: str, host: str, port: int | None, conn) -> None:
+        with self._lock:
+            idle = self._idle.setdefault((scheme, host, port), [])
+            if len(idle) < self._max_idle:
+                idle.append(conn)
+                return
+        conn.close()
+
+
+_POOL = _Pool()
+
+
+def _send(url: str, headers: dict[str, str]) -> tuple[int, Message, bytes]:
+    """One GET of `url`, without following redirects: (status, headers, body)."""
+    import urllib.request
+
+    pu = urlparse(url)
+    if urllib.request.getproxies().get(pu.scheme) and not urllib.request.proxy_bypass(pu.hostname):
+        return _send_urllib(url, headers)
+    # the request target exactly as written in the URL: path and query, without the fragment
+    rest = url.split("://", 1)[1]
+    target = rest[re.match(r"[^/?#]*", rest).end():].split("#", 1)[0]
+    target = target if target.startswith("/") else "/" + target
+    for attempt in (0, 1):
+        conn, reused = _POOL.get(pu.scheme, pu.hostname, pu.port)
+        try:
+            conn.request("GET", target, headers=headers)
+            r = conn.getresponse()
+            body = r.read()
+        except Exception:
+            conn.close()
+            if reused and attempt == 0:  # the server closed an idle connection: retry once
+                continue
+            raise
+        if r.will_close:
+            conn.close()
+        else:
+            _POOL.put(pu.scheme, pu.hostname, pu.port, conn)
+        return r.status, r.msg, body
+    raise AssertionError("unreachable")
+
+
+def _send_urllib(url: str, headers: dict[str, str]) -> tuple[int, Message, bytes]:
+    """`_send` through urllib, which honors the proxy settings in the environment."""
+    import urllib.error
+    import urllib.request
+
+    class NoRedirects(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args):
+            return None  # http_range follows redirects itself
+
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.build_opener(NoRedirects).open(req, timeout=60) as r:
+            return r.status, r.headers, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers, e.read()
+
+
+_REDIRECTS = (301, 302, 303, 307, 308)
+
+
 def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int | None]:
     """Bytes [start, end) of an http(s) object, and its size if known (spec §6.2)."""
     import email.utils
-    import urllib.error
-    import urllib.request
+
+    from vzip.uri import is_uri_reference
 
     _check_http_url(url)
     headers = {"Range": f"bytes={start}-{end - 1}", "Accept-Encoding": "identity"}
@@ -140,39 +225,38 @@ def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int 
         when = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc) + datetime.timedelta(
             seconds=t)
         headers["If-Unmodified-Since"] = email.utils.format_datetime(when, usegmt=True)
-    class Redirects(urllib.request.HTTPRedirectHandler):
-        max_redirections = 5  # spec §6.2
-
-        def redirect_request(self, req, fp, code, msg, hdrs, newurl):
-            from vzip.uri import is_uri_reference
-
-            if not is_uri_reference(hdrs.get("Location", "")):
-                raise ResolutionError(f"redirect with an invalid Location: {hdrs.get('Location')!r}")
-            if urlparse(newurl).scheme.lower() not in ("http", "https"):
-                raise ResolutionError(f"redirect to a non-http URL: {newurl}")
-            if len(hdrs.get_all("Location") or []) > 1:
-                raise ResolutionError("redirect with more than one Location field")
-            _check_http_url(newurl)
-            return super().redirect_request(req, fp, code, msg, hdrs, newurl)
-
-    req = urllib.request.Request(url, headers=headers, method="GET")
-    try:
-        with urllib.request.build_opener(Redirects).open(req, timeout=60) as r:
-            status, body = r.status, r.read()
-            for name in ("Content-Range", "ETag", "Last-Modified"):
-                if len(r.headers.get_all(name) or []) > 1:
-                    raise ResolutionError(f"{url}: more than one {name} field")
-            encs = r.headers.get_all("Content-Encoding") or []
-            enc = ", ".join(e.strip() for e in encs).lower() if encs else "identity"
-            crange = r.headers.get("Content-Range")
-            etag, last_modified = r.headers.get("ETag"), r.headers.get("Last-Modified")
-    except urllib.error.HTTPError as e:
+    first = url
+    for redirects in range(6):  # spec §6.2: at most 5 redirects
+        try:
+            status, msg, body = _send(url, headers)
+        except Exception as e:  # noqa: BLE001
+            raise ResolutionError(f"{url}: {type(e).__name__}: {e}") from None
+        if status not in _REDIRECTS:
+            break
+        locations = msg.get_all("Location") or []
+        if not locations:
+            raise ResolutionError(f"{url}: HTTP {status} without a Location")
+        if len(locations) > 1:
+            raise ResolutionError("redirect with more than one Location field")
+        if not is_uri_reference(locations[0]):
+            raise ResolutionError(f"redirect with an invalid Location: {locations[0]!r}")
+        newurl = urljoin(url, locations[0]).split("#", 1)[0]
+        if urlparse(newurl).scheme.lower() not in ("http", "https"):
+            raise ResolutionError(f"redirect to a non-http URL: {newurl}")
+        _check_http_url(newurl)
+        if redirects == 5:
+            raise ResolutionError(f"{first}: more than 5 redirects")
+        url = newurl
+    if status in (412, 416) or not 200 <= status < 300:
         what = {412: "a pin failed (412)", 416: "the object is shorter than the range (416)"}
-        raise ResolutionError(f"{url}: {what.get(e.code, f'HTTP {e.code}')}") from None
-    except ResolutionError:
-        raise
-    except Exception as e:  # noqa: BLE001
-        raise ResolutionError(f"{url}: {type(e).__name__}: {e}") from None
+        raise ResolutionError(f"{url}: {what.get(status, f'HTTP {status}')}")
+    for name in ("Content-Range", "ETag", "Last-Modified"):
+        if len(msg.get_all(name) or []) > 1:
+            raise ResolutionError(f"{url}: more than one {name} field")
+    encs = msg.get_all("Content-Encoding") or []
+    enc = ", ".join(e.strip() for e in encs).lower() if encs else "identity"
+    crange = msg.get("Content-Range")
+    etag, last_modified = msg.get("ETag"), msg.get("Last-Modified")
     # spec §6.2: servers may ignore conditional headers, so check the response itself
     if src.etag is not None and etag != src.etag:
         raise ResolutionError(f"{url}: ETag {etag!r} does not match the pin {src.etag!r}")
