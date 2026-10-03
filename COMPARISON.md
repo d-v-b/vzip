@@ -32,22 +32,19 @@ Every value read, in every run and access pattern, matched the source files.
     Parquet fetched the fewest bytes (4 requests, 13 kB).
 - **One value or one map:** 0.02–0.14 s in every format.
 - **A time series at one grid point (3,600 chunks):**
-  - kerchunk JSON, kerchunk Parquet and default Icechunk: 7.4–7.6 s.
-  - vzip without a page index: 9.3 s.
-  - Icechunk with split manifests: 10.2 s. It reads 120 manifests.
-  - vzip with a page index: 10.8 s. It reads 145 pages, 9.5 MB.
+  - kerchunk JSON, kerchunk Parquet, default Icechunk and vzip without a
+    page index: 7.4–7.6 s.
+  - vzip with a page index: 8.5 s. It reads 145 pages, 9.5 MB.
+  - Icechunk with split manifests: 10.1 s. It reads 120 manifests.
 - **Everything (small run, 2,880 chunks):**
-  - kerchunk: 6.1 s;
-  - Icechunk: 6.7–6.8 s;
-  - vzip: 7.5 s.
-
-  vzip's reader made the same requests as kerchunk JSON's, and fetched the
-  same bytes, so the extra time is spent in the reader.
+  - kerchunk: 6.1–6.2 s;
+  - vzip: 6.2–6.3 s;
+  - Icechunk: 6.7–6.8 s.
 - **Writing:**
   - Icechunk: 0.2–0.5 s;
-  - kerchunk JSON: 0.8–1.0 s;
-  - kerchunk Parquet: 1.2–1.3 s;
-  - vzip: 1.4–1.5 s.
+  - kerchunk JSON: 0.7–1.0 s;
+  - kerchunk Parquet: 1.1–1.3 s;
+  - vzip: 1.4 s.
 - **Updates:**
   - Only Icechunk supports updates in place: commits, history, branches and
     appends.
@@ -148,6 +145,11 @@ This version gives every format a default and a tuned variant, opens all of
 them the same way, and adds access patterns, write times, bandwidth and
 repeated runs.
 
+Those runs showed vzip's Python reader 20–25% slower than kerchunk's on the
+same requests. Most of that was a new TCP connection for every chunk. vzip's
+store now reuses connections (#24), and the results below are from after
+that change.
+
 ## Results
 
 Cells under "Requests" read **requests (of which to the format's own files)
@@ -164,14 +166,14 @@ runs, with the range in parentheses. Raw results, with every repeat, are in
 
 | format | setting | size | objects | write |
 |---|---|---:|---:|---:|
-| kerchunk JSON | default | 27.21 MB | 1 | 0.75 s |
+| kerchunk JSON | default | 27.21 MB | 1 | 0.67 s |
 | kerchunk JSON | tuned | 2.24 MB | 1 | 1.01 s |
-| kerchunk Parquet | default | 768.3 kB | 8 | 1.31 s |
-| kerchunk Parquet | tuned | 833.2 kB | 30 | 1.22 s |
-| Icechunk | default | 4.90 MB (of which history 1.52 MB) | 13 | 0.21 s |
-| Icechunk | tuned | 4.74 MB (of which history 1.52 MB) | 254 | 0.54 s |
-| vzip | default | 32.39 MB | 1 | 1.36 s |
-| vzip | tuned | 32.39 MB | 1 | 1.50 s |
+| kerchunk Parquet | default | 768.3 kB | 8 | 1.26 s |
+| kerchunk Parquet | tuned | 833.2 kB | 30 | 1.10 s |
+| Icechunk | default | 4.90 MB (of which history 1.52 MB) | 13 | 0.20 s |
+| Icechunk | tuned | 4.74 MB (of which history 1.52 MB) | 254 | 0.53 s |
+| vzip | default | 32.39 MB | 1 | 1.38 s |
+| vzip | tuned | 32.39 MB | 1 | 1.39 s |
 
 **Requests (of which to the format's own files) · bytes of the format's own files**
 
@@ -182,7 +184,7 @@ runs, with the range in parentheses. Raw results, with every repeat, are in
 | kerchunk Parquet | default | 4 (4) · 12.9 kB | 2 (1) · 269.0 kB | 3,602 (2) · 353.4 kB | 37 (1) · 269.0 kB |
 | kerchunk Parquet | tuned | 4 (4) · 12.6 kB | 2 (1) · 30.1 kB | 3,613 (13) · 391.2 kB | 37 (1) · 30.1 kB |
 | Icechunk | default | 11 (11) · 11.7 kB | 6 (5) · 1.66 MB | 3,605 (5) · 1.66 MB | 41 (5) · 1.66 MB |
-| Icechunk | tuned | 13 (13) · 20.1 kB | 2 (1) · 13.5 kB | 3,720 (120) · 1.58 MB | 37 (1) · 13.5 kB |
+| Icechunk | tuned | 13 (13) · 20.1 kB | 2 (1) · 13.4 kB | 3,720 (120) · 1.58 MB | 37 (1) · 13.4 kB |
 | vzip | default | 2 (2) · 18.81 MB | 1 (0) · 0 | 3,600 (0) · 0 | 36 (0) · 0 |
 | vzip | tuned | 2 (2) · 114.7 kB | 2 (1) · 65.5 kB | 3,745 (145) · 9.46 MB | 37 (1) · 65.5 kB |
 
@@ -190,14 +192,14 @@ runs, with the range in parentheses. Raw results, with every repeat, are in
 
 | format | setting | open | point | time series | map |
 |---|---|---|---|---|---|
-| kerchunk JSON | default | 0.62 (0.47–0.70) | 0.02 (0.02–0.02) | 7.44 (7.44–7.68) | 0.09 (0.09–0.09) |
-| kerchunk JSON | tuned | 0.46 (0.38–0.52) | 0.02 (0.02–0.02) | 7.60 (7.44–7.64) | 0.09 (0.09–0.09) |
-| kerchunk Parquet | default | 0.09 (0.09–0.09) | 0.05 (0.05–0.05) | 7.52 (7.50–7.61) | 0.11 (0.11–0.11) |
-| kerchunk Parquet | tuned | 0.09 (0.09–0.09) | 0.04 (0.04–0.04) | 7.60 (7.59–7.69) | 0.11 (0.11–0.11) |
-| Icechunk | default | 0.13 (0.13–0.13) | 0.06 (0.06–0.06) | 7.60 (7.58–7.68) | 0.14 (0.12–0.14) |
-| Icechunk | tuned | 0.17 (0.17–0.17) | 0.04 (0.04–0.04) | 10.22 (10.14–10.32) | 0.13 (0.11–0.13) |
-| vzip | default | 0.62 (0.50–0.69) | 0.02 (0.02–0.03) | 9.28 (9.17–9.34) | 0.11 (0.11–0.11) |
-| vzip | tuned | 0.05 (0.05–0.05) | 0.05 (0.05–0.05) | 10.83 (10.61–11.06) | 0.13 (0.13–0.14) |
+| kerchunk JSON | default | 0.57 (0.54–0.63) | 0.02 (0.02–0.02) | 7.44 (7.44–7.46) | 0.09 (0.09–0.09) |
+| kerchunk JSON | tuned | 0.47 (0.35–0.54) | 0.02 (0.02–0.02) | 7.45 (7.44–7.46) | 0.09 (0.09–0.09) |
+| kerchunk Parquet | default | 0.09 (0.09–0.09) | 0.05 (0.05–0.05) | 7.52 (7.51–7.53) | 0.11 (0.11–0.11) |
+| kerchunk Parquet | tuned | 0.09 (0.09–0.09) | 0.04 (0.04–0.04) | 7.62 (7.60–7.63) | 0.11 (0.11–0.11) |
+| Icechunk | default | 0.13 (0.13–0.13) | 0.06 (0.06–0.06) | 7.58 (7.57–7.58) | 0.14 (0.14–0.14) |
+| Icechunk | tuned | 0.17 (0.17–0.17) | 0.04 (0.04–0.04) | 10.12 (10.10–10.30) | 0.12 (0.11–0.13) |
+| vzip | default | 0.61 (0.56–0.61) | 0.02 (0.02–0.02) | 7.58 (7.57–7.62) | 0.09 (0.09–0.09) |
+| vzip | tuned | 0.05 (0.05–0.05) | 0.04 (0.04–0.04) | 8.53 (8.49–8.56) | 0.11 (0.11–0.11) |
 
 Values: every value read matched the source files.
 
@@ -214,10 +216,10 @@ reading everything.
 | kerchunk JSON | tuned | 33.5 kB | 1 | 0.01 s |
 | kerchunk Parquet | default | 21.8 kB | 6 | 0.08 s |
 | kerchunk Parquet | tuned | 21.5 kB | 6 | 0.02 s |
-| Icechunk | default | 62.7 kB (of which history 12.8 kB) | 13 | 0.02 s |
+| Icechunk | default | 62.9 kB (of which history 12.8 kB) | 13 | 0.02 s |
 | Icechunk | tuned | 67.1 kB (of which history 12.8 kB) | 35 | 0.01 s |
 | vzip | default | 379.9 kB | 1 | 0.02 s |
-| vzip | tuned | 380.3 kB | 1 | 0.04 s |
+| vzip | tuned | 380.3 kB | 1 | 0.02 s |
 
 **Requests (of which to the format's own files) · bytes of the format's own files**
 
@@ -227,7 +229,7 @@ reading everything.
 | kerchunk JSON | tuned | 2 (2) · 33.5 kB | 1 (0) · 0 | 360 (0) · 0 | 4 (0) · 0 | 2,880 (0) · 0 |
 | kerchunk Parquet | default | 4 (4) · 6.7 kB | 2 (1) · 6.8 kB | 361 (1) · 6.8 kB | 5 (1) · 6.8 kB | 2,882 (2) · 15.0 kB |
 | kerchunk Parquet | tuned | 4 (4) · 6.6 kB | 2 (1) · 6.8 kB | 361 (1) · 6.8 kB | 5 (1) · 6.8 kB | 2,882 (2) · 14.9 kB |
-| Icechunk | default | 10 (10) · 8.5 kB | 10 (5) · 20.0 kB | 1,805 (5) · 20.0 kB | 25 (5) · 20.0 kB | 14,410 (10) · 41.3 kB |
+| Icechunk | default | 10 (10) · 8.5 kB | 10 (5) · 20.2 kB | 1,805 (5) · 20.2 kB | 25 (5) · 20.2 kB | 14,410 (10) · 41.4 kB |
 | Icechunk | tuned | 10 (10) · 9.5 kB | 2 (1) · 1.8 kB | 372 (12) · 21.8 kB | 5 (1) · 1.8 kB | 2,904 (24) · 44.7 kB |
 | vzip | default | 2 (2) · 227.8 kB | 1 (0) · 0 | 360 (0) · 0 | 4 (0) · 0 | 2,880 (0) · 0 |
 | vzip | tuned | 2 (2) · 82.8 kB | 2 (1) · 65.6 kB | 363 (3) · 145.2 kB | 5 (1) · 65.6 kB | 2,884 (4) · 210.8 kB |
@@ -236,14 +238,14 @@ reading everything.
 
 | format | setting | open | point | time series | map | everything |
 |---|---|---|---|---|---|---|
-| kerchunk JSON | default | 0.05 (0.05–0.16) | 0.02 (0.02–0.02) | 0.77 (0.77–0.78) | 0.02 (0.02–0.02) | 6.12 (6.11–6.18) |
-| kerchunk JSON | tuned | 0.05 (0.05–0.06) | 0.02 (0.02–0.02) | 0.77 (0.77–0.78) | 0.02 (0.02–0.02) | 6.11 (6.10–6.12) |
-| kerchunk Parquet | default | 0.09 (0.09–0.09) | 0.04 (0.04–0.04) | 0.79 (0.79–0.81) | 0.04 (0.04–0.04) | 6.16 (6.15–6.18) |
-| kerchunk Parquet | tuned | 0.09 (0.09–0.09) | 0.04 (0.04–0.04) | 0.79 (0.79–0.81) | 0.04 (0.04–0.04) | 6.15 (6.15–6.17) |
-| Icechunk | default | 0.13 (0.13–0.13) | 0.04 (0.04–0.04) | 0.92 (0.90–0.93) | 0.10 (0.08–0.10) | 6.78 (6.73–6.80) |
-| Icechunk | tuned | 0.13 (0.13–0.13) | 0.04 (0.04–0.04) | 1.03 (1.03–1.03) | 0.04 (0.04–0.04) | 6.68 (6.67–6.71) |
-| vzip | default | 0.05 (0.05–0.05) | 0.02 (0.02–0.03) | 0.93 (0.91–0.97) | 0.03 (0.03–0.03) | 7.48 (7.41–7.49) |
-| vzip | tuned | 0.04 (0.04–0.04) | 0.05 (0.05–0.05) | 0.96 (0.95–1.01) | 0.05 (0.05–0.06) | 7.54 (7.50–7.61) |
+| kerchunk JSON | default | 0.05 (0.05–0.16) | 0.02 (0.02–0.02) | 0.77 (0.77–0.78) | 0.02 (0.02–0.02) | 6.13 (6.10–6.13) |
+| kerchunk JSON | tuned | 0.05 (0.05–0.06) | 0.02 (0.02–0.02) | 0.77 (0.77–0.78) | 0.02 (0.02–0.02) | 6.12 (6.11–6.13) |
+| kerchunk Parquet | default | 0.09 (0.09–0.09) | 0.04 (0.04–0.04) | 0.79 (0.79–0.81) | 0.04 (0.04–0.04) | 6.16 (6.15–6.17) |
+| kerchunk Parquet | tuned | 0.09 (0.09–0.09) | 0.04 (0.04–0.04) | 0.79 (0.79–0.80) | 0.04 (0.04–0.04) | 6.17 (6.14–6.17) |
+| Icechunk | default | 0.13 (0.13–0.13) | 0.04 (0.04–0.04) | 0.92 (0.90–0.93) | 0.08 (0.08–0.08) | 6.77 (6.74–6.83) |
+| Icechunk | tuned | 0.13 (0.13–0.13) | 0.04 (0.04–0.04) | 1.03 (1.03–1.03) | 0.04 (0.04–0.04) | 6.68 (6.66–6.69) |
+| vzip | default | 0.05 (0.05–0.05) | 0.02 (0.02–0.02) | 0.78 (0.78–0.82) | 0.02 (0.02–0.02) | 6.20 (6.19–6.22) |
+| vzip | tuned | 0.04 (0.04–0.04) | 0.04 (0.04–0.04) | 0.80 (0.80–0.82) | 0.04 (0.04–0.04) | 6.26 (6.23–6.27) |
 
 Values: every value read matched the source files.
 
@@ -255,14 +257,14 @@ Values: every value read matched the source files.
 
 | format | setting | size | objects | write |
 |---|---|---:|---:|---:|
-| kerchunk JSON | default | 6.21 MB | 1 | 0.14 s |
-| kerchunk JSON | tuned | 575.0 kB | 1 | 0.24 s |
-| kerchunk Parquet | default | 306.5 kB | 44 | 0.57 s |
-| kerchunk Parquet | tuned | 304.4 kB | 44 | 0.32 s |
-| Icechunk | default | 954.9 kB (of which history 159.4 kB) | 51 | 0.13 s |
-| Icechunk | tuned | 1.04 MB (of which history 160.4 kB) | 491 | 0.12 s |
-| vzip | default | 7.40 MB | 1 | 0.32 s |
-| vzip | tuned | 7.41 MB | 1 | 0.33 s |
+| kerchunk JSON | default | 6.21 MB | 1 | 0.15 s |
+| kerchunk JSON | tuned | 575.0 kB | 1 | 0.23 s |
+| kerchunk Parquet | default | 306.5 kB | 44 | 0.61 s |
+| kerchunk Parquet | tuned | 304.3 kB | 44 | 0.35 s |
+| Icechunk | default | 953.9 kB (of which history 159.0 kB) | 51 | 0.13 s |
+| Icechunk | tuned | 1.04 MB (of which history 157.6 kB) | 491 | 0.12 s |
+| vzip | default | 7.40 MB | 1 | 0.33 s |
+| vzip | tuned | 7.41 MB | 1 | 0.32 s |
 
 **Requests (of which to the format's own files) · bytes of the format's own files**
 
@@ -272,8 +274,8 @@ Values: every value read matched the source files.
 | kerchunk JSON | tuned | 2 (2) · 575.0 kB | 1 (0) · 0 | 360 (0) · 0 | 4 (0) · 0 |
 | kerchunk Parquet | default | 4 (4) · 20.1 kB | 2 (1) · 6.7 kB | 361 (1) · 6.7 kB | 5 (1) · 6.7 kB |
 | kerchunk Parquet | tuned | 4 (4) · 19.9 kB | 2 (1) · 6.7 kB | 361 (1) · 6.7 kB | 5 (1) · 6.7 kB |
-| Icechunk | default | 10 (10) · 9.4 kB | 8 (5) · 20.0 kB | 1,085 (5) · 20.0 kB | 17 (5) · 20.0 kB |
-| Icechunk | tuned | 10 (10) · 21.8 kB | 2 (1) · 1.8 kB | 372 (12) · 21.6 kB | 5 (1) · 1.8 kB |
+| Icechunk | default | 10 (10) · 9.4 kB | 8 (5) · 20.1 kB | 1,085 (5) · 20.1 kB | 17 (5) · 20.1 kB |
+| Icechunk | tuned | 10 (10) · 21.7 kB | 2 (1) · 1.8 kB | 372 (12) · 21.6 kB | 5 (1) · 1.8 kB |
 | vzip | default | 2 (2) · 4.33 MB | 1 (0) · 0 | 360 (0) · 0 | 4 (0) · 0 |
 | vzip | tuned | 2 (2) · 162.5 kB | 2 (1) · 65.6 kB | 363 (3) · 196.7 kB | 5 (1) · 65.6 kB |
 
@@ -281,14 +283,14 @@ Values: every value read matched the source files.
 
 | format | setting | open | point | time series | map |
 |---|---|---|---|---|---|
-| kerchunk JSON | default | 0.17 (0.14–0.28) | 0.02 (0.02–0.02) | 0.77 (0.75–0.79) | 0.02 (0.02–0.02) |
-| kerchunk JSON | tuned | 0.12 (0.11–0.13) | 0.02 (0.02–0.02) | 0.76 (0.75–0.76) | 0.02 (0.02–0.02) |
-| kerchunk Parquet | default | 0.09 (0.09–0.11) | 0.04 (0.04–0.04) | 0.78 (0.77–0.78) | 0.04 (0.04–0.04) |
-| kerchunk Parquet | tuned | 0.09 (0.09–0.10) | 0.04 (0.04–0.04) | 0.78 (0.77–0.78) | 0.04 (0.04–0.04) |
-| Icechunk | default | 0.13 (0.13–0.13) | 0.04 (0.04–0.04) | 0.86 (0.84–0.86) | 0.07 (0.06–0.08) |
-| Icechunk | tuned | 0.20 (0.20–0.20) | 0.04 (0.04–0.04) | 1.02 (1.01–1.03) | 0.04 (0.04–0.04) |
-| vzip | default | 0.17 (0.16–0.17) | 0.02 (0.02–0.02) | 0.94 (0.92–0.96) | 0.03 (0.03–0.03) |
-| vzip | tuned | 0.05 (0.05–0.05) | 0.05 (0.05–0.05) | 0.98 (0.96–1.03) | 0.05 (0.05–0.05) |
+| kerchunk JSON | default | 0.17 (0.14–0.28) | 0.02 (0.02–0.02) | 0.76 (0.75–0.77) | 0.02 (0.02–0.02) |
+| kerchunk JSON | tuned | 0.13 (0.12–0.14) | 0.02 (0.02–0.02) | 0.75 (0.75–0.76) | 0.02 (0.02–0.02) |
+| kerchunk Parquet | default | 0.09 (0.09–0.11) | 0.04 (0.04–0.04) | 0.78 (0.78–0.78) | 0.04 (0.04–0.04) |
+| kerchunk Parquet | tuned | 0.09 (0.09–0.09) | 0.04 (0.04–0.04) | 0.78 (0.78–0.78) | 0.04 (0.04–0.04) |
+| Icechunk | default | 0.13 (0.13–0.13) | 0.04 (0.04–0.04) | 0.86 (0.84–0.87) | 0.07 (0.07–0.08) |
+| Icechunk | tuned | 0.20 (0.20–0.20) | 0.04 (0.04–0.04) | 1.02 (1.01–1.02) | 0.04 (0.04–0.04) |
+| vzip | default | 0.18 (0.17–0.18) | 0.02 (0.02–0.02) | 0.77 (0.77–0.78) | 0.02 (0.02–0.02) |
+| vzip | tuned | 0.05 (0.05–0.06) | 0.04 (0.04–0.04) | 0.79 (0.79–0.79) | 0.04 (0.04–0.04) |
 
 Values: every value read matched the source files.
 
@@ -316,7 +318,7 @@ Values: every value read matched the source files.
 
 ### Writing
 
-All four writers took between 0.2 and 1.5 s for 259,200 references. Icechunk
+All four writers took between 0.2 and 1.4 s for 259,200 references. Icechunk
 was fastest and vzip slowest. vzip's writer is the reference Python
 implementation in this repository.
 
@@ -358,17 +360,15 @@ milliseconds.
 
 This pattern touches one chunk in each of 3,600 time steps.
 
-- kerchunk JSON and Parquet and default Icechunk took 7.4–7.6 s.
+- kerchunk JSON and Parquet, default Icechunk and vzip without a page index
+  took 7.4–7.6 s.
 - The finer-grained indexes did worse on it, because the time series crosses
   every piece of the index:
+  - vzip with a page index read 145 pages (9.5 MB) and took 8.5 s. Its keys
+    are sorted by variable and then chunk index, so one grid point's chunks
+    are spread over every page of `tas`.
   - Icechunk with one manifest per file read 120 manifests (1.6 MB) and took
-    10.2 s.
-  - vzip with a page index read 145 pages (9.5 MB) and took 10.8 s, because
-    its keys are sorted by variable and then chunk index, and one grid
-    point's chunks are spread over every page of `tas`.
-- vzip without a page index fetched nothing beyond the chunks, as kerchunk
-  JSON did, but took 9.3 s against 7.4–7.6 s. The difference is in the
-  reader.
+    10.1 s.
 
 So the setting that helps a point read can hurt a time series. The right
 granularity depends on the access pattern.
@@ -376,14 +376,17 @@ granularity depends on the access pattern.
 ### Everything
 
 In the small run, every format read 2,880 chunks:
-- kerchunk: 6.1 s;
-- Icechunk: 6.7–6.8 s;
-- vzip: 7.5 s.
+- kerchunk: 6.1–6.2 s;
+- vzip: 6.2–6.3 s;
+- Icechunk: 6.7–6.8 s.
 
 Default Icechunk made 14,410 requests, because by default its HTTP store
 splits each read into five ranges. With one request per object it made
-2,904. vzip and kerchunk JSON made the same requests, so vzip's extra 1.4 s
-is in its reader.
+2,904.
+
+An earlier version of vzip's reader opened a new connection for every
+chunk, and took 7.5 s here and 9.3 s for the large time series. Reusing
+connections brought it level with the others (see the history above).
 
 ## Where each format fits
 
@@ -415,7 +418,6 @@ measured here.
   - It is the largest of the four: 1.2× plain kerchunk JSON, about 7×
     Icechunk, 14× compressed kerchunk JSON and 40× kerchunk Parquet.
   - It is the slowest to write.
-  - Its Python reader is 20–25% slower than kerchunk's on the same requests.
 
   Other costs follow from its design:
   - Without a page index, it loads every reference at open.
