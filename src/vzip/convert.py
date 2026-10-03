@@ -8,6 +8,7 @@ reference (the reference key space).
 
 from __future__ import annotations
 
+import warnings
 from collections import Counter
 from pathlib import Path
 
@@ -18,6 +19,16 @@ from virtualizarr.writers.icechunk import extract_codecs, update_attributes
 from zarr.storage import MemoryStore
 
 from vzip.archive import VZipWriter
+
+
+def consolidate(store) -> None:
+    """Write Zarr consolidated metadata into the root zarr.json, so readers
+    that know it find every array there instead of listing the archive's
+    every key to discover them. It is a zarr-python convention, not part of
+    the Zarr v3 specification; readers that don't know it list as before."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Consolidated metadata is currently not part")
+        zarr.consolidate_metadata(store, zarr_format=3)
 
 
 def split_virtual_dataset(
@@ -59,6 +70,7 @@ def split_virtual_dataset(
         for idx, data in ma.manifest._inlined.items():
             inlined[f"{name}/{arr.metadata.encode_chunk_key(idx)}"] = bytes(data)
     update_attributes(group, vds.attrs, coords=vds.coords)
+    consolidate(mem)
 
     concrete = {k: v.to_bytes() for k, v in mem._store_dict.items()}
     concrete.update(inlined)
@@ -94,7 +106,7 @@ def write_vzip(
 def read_vzip(path: str, **kwargs) -> xr.Dataset:
     from vzip.store import VZipStore
 
-    return xr.open_zarr(VZipStore(str(path), **kwargs), consolidated=False, zarr_format=3)
+    return xr.open_zarr(VZipStore(str(path), **kwargs), zarr_format=3)
 
 
-__all__ = ["split_virtual_dataset", "write_vzip", "read_vzip"]
+__all__ = ["consolidate", "read_vzip", "split_virtual_dataset", "write_vzip"]

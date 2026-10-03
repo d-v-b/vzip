@@ -17,11 +17,21 @@ def test_roundtrip_single_and_combined(netcdf_files, tmp_path):
         ("one.vzip", vdss[0], xr.open_dataset(paths[0], engine="h5netcdf")),
         ("all.vzip", combined, expected),
     ]
-    for (name, vds, exp), page_size in itertools.product(cases, [None, 256]):
+    for (name, vds, exp), page_size, consolidated in itertools.product(
+        cases, [None, 256], [False, True]
+    ):
         out = tmp_path / f"{page_size}{name}"
         write_vzip(vds, out, page_size=page_size)
-        ds = xr.open_zarr(VZipStore(str(out)), consolidated=False, zarr_format=3)
+        store = VZipStore(str(out))
+        if consolidated:
+            # the root zarr.json lists every array, so opening never lists the archive
+            store.list_dir = store.list_prefix = store.list = _no_listing
+        ds = xr.open_zarr(store, consolidated=consolidated, zarr_format=3)
         xr.testing.assert_identical(ds.load(), exp.load())
+
+
+def _no_listing(*args):
+    raise AssertionError("listed the archive")
 
 
 def test_naive_view_is_a_plain_zip(netcdf_files, tmp_path):
