@@ -1,8 +1,9 @@
 """Virtualizing image files and N5 / Zarr v2 stores in vzip archives (VIRTUALIZE.md).
 
 Each profile is a subpackage: tiff, ndpi, nd2, dicom, nifti, ims (file inputs)
-and n5, zarr2 (store inputs, profiles/n5.md and profiles/zarr2.md); common
-holds what they share, and store the store machinery (§1.4–§1.6).
+and n5, zarr2, ome_zarr (store inputs, profiles/n5.md, profiles/zarr2.md and
+profiles/ome-zarr.md); common holds what they share, and store the store
+machinery (§1.4–§1.6).
 
     python -m vzip.virtualize <url or path> <out.vzip> [--url <source url>]
 
@@ -21,6 +22,7 @@ from vzip.virtualize.dicom import is_dicom, virtualize_dicom
 from vzip.virtualize.ims import virtualize_ims
 from vzip.virtualize.n5 import virtualize_n5
 from vzip.virtualize.nd2 import is_nd2, virtualize_nd2
+from vzip.virtualize.ome_zarr import declares_04, virtualize_ome_zarr
 from vzip.virtualize.store import StoreOutput, choose_profile, open_store
 from vzip.virtualize.tiff import virtualize_tiff
 from vzip.virtualize.zarr2 import virtualize_zarr2
@@ -39,7 +41,11 @@ def virtualize_store(location: str, url: str | None = None, *,
     """(format, output) for the store at `location` (§1.4)."""
     store = open_store(location, url, max_objects=max_objects)
     fmt = choose_profile(store)
-    return fmt, (virtualize_n5 if fmt == "n5" else virtualize_zarr2)(store)
+    if fmt == "n5":
+        return fmt, virtualize_n5(store)
+    if declares_04(store):
+        return "ome-zarr", virtualize_ome_zarr(store)
+    return fmt, virtualize_zarr2(store)
 
 
 def is_store(location: str) -> bool:
