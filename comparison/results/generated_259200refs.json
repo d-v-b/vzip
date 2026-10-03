@@ -22,16 +22,16 @@
    "n_refs": 259200,
    "bytes": 26427865,
    "objects": 1,
-   "write_seconds": 0.6310937497764826,
+   "write_seconds": 0.6831490006297827,
    "open": {
-    "seconds": 1.5028919586911798,
+    "seconds": 1.497235957533121,
     "index_requests": 6,
     "index_bytes": 79283595,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.2546795420348644,
+    "seconds": 0.23861312493681908,
     "index_requests": 0,
     "index_bytes": 0,
     "data_requests": 1,
@@ -42,20 +42,20 @@
   {
    "format": "kerchunk Parquet",
    "n_refs": 259200,
-   "bytes": 768347,
+   "bytes": 768345,
    "objects": 8,
-   "write_seconds": 1.0498988749459386,
+   "write_seconds": 1.1998037500306964,
    "open": {
-    "seconds": 0.6862622918561101,
-    "index_requests": 5,
-    "index_bytes": 14588,
+    "seconds": 0.6518754996359348,
+    "index_requests": 6,
+    "index_bytes": 16228,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.3774024583399296,
+    "seconds": 0.3575653750449419,
     "index_requests": 1,
-    "index_bytes": 268999,
+    "index_bytes": 268998,
     "data_requests": 1,
     "data_bytes": 1198
    },
@@ -64,20 +64,20 @@
   {
    "format": "Icechunk",
    "n_refs": 259200,
-   "bytes": 4902326,
+   "bytes": 4902168,
    "objects": 13,
-   "write_seconds": 0.20052633341401815,
+   "write_seconds": 0.20574995875358582,
    "open": {
-    "seconds": 0.9972735419869423,
+    "seconds": 1.0074544996023178,
     "index_requests": 11,
-    "index_bytes": 11673,
+    "index_bytes": 11676,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.36744945868849754,
+    "seconds": 0.35837020818144083,
     "index_requests": 5,
-    "index_bytes": 1657884,
+    "index_bytes": 1658472,
     "data_requests": 1,
     "data_bytes": 1198
    },
@@ -88,16 +88,16 @@
    "n_refs": 259200,
    "bytes": 32385463,
    "objects": 1,
-   "write_seconds": 1.358813582919538,
+   "write_seconds": 1.339876833371818,
    "open": {
-    "seconds": 4.23387320805341,
+    "seconds": 4.2516393745318055,
     "index_requests": 126,
     "index_bytes": 18804099,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.33144745882600546,
+    "seconds": 0.19342495780438185,
     "index_requests": 0,
     "index_bytes": 0,
     "data_requests": 1,
@@ -110,16 +110,16 @@
    "n_refs": 259200,
    "bytes": 32388722,
    "objects": 1,
-   "write_seconds": 1.4874405404552817,
+   "write_seconds": 1.5297946250066161,
    "open": {
-    "seconds": 5.2582752499729395,
+    "seconds": 4.924014042131603,
     "index_requests": 413,
     "index_bytes": 18872640,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.1867747502401471,
+    "seconds": 0.22965625021606684,
     "index_requests": 0,
     "index_bytes": 0,
     "data_requests": 1,

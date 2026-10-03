@@ -32,8 +32,9 @@ uv run pytest tests/test_comparison.py             # a tiny run, no latency
    stand-in for an object store round trip; `--latency`), and logs every
    request.
 5. **Read** each format from a cold start. Each step is measured on its own:
-   - **open:** `xr.open_zarr(store)`, which reads the hierarchy's metadata and
-     loads the coordinates;
+   - **open:** `xr.open_zarr(store)` with xarray's defaults (consolidated
+     metadata if the store has it, else a listing), which reads the
+     hierarchy's metadata and loads the coordinates;
    - **first value:** one element of `tas`;
    - **everything:** `ds.load()`, every variable in full.
 6. **Check** every value of every variable and coordinate against the source
