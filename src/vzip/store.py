@@ -15,12 +15,15 @@ from __future__ import annotations
 import asyncio
 import bisect
 import datetime
+import http.client
 import math
 import os
 import re
+import threading
 import zlib
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
+from email.message import Message
 from pathlib import Path
 from urllib.parse import unquote, urljoin, urlparse
 
@@ -123,11 +126,93 @@ def _abs_range(size: int, br: ByteRequest | None) -> tuple[int, int]:
     raise TypeError(f"unexpected byte request {br!r}")
 
 
+class _Pool:
+    """Kept-alive HTTP connections, per origin, shared by the reader threads.
+
+    A new TCP connection costs far more than a small range read, so reusing
+    connections is most of what makes reading many chunks fast."""
+
+    def __init__(self, max_idle: int = 32) -> None:
+        self._idle: dict[tuple[str, str, int | None], list] = {}
+        self._lock = threading.Lock()
+        self._max_idle = max_idle
+
+    def get(self, scheme: str, host: str, port: int | None):
+        """A connection, and whether it was used before."""
+        with self._lock:
+            idle = self._idle.get((scheme, host, port))
+            if idle:
+                return idle.pop(), True
+        cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
+        return cls(host, port, timeout=60), False
+
+    def put(self, scheme: str, host: str, port: int | None, conn) -> None:
+        with self._lock:
+            idle = self._idle.setdefault((scheme, host, port), [])
+            if len(idle) < self._max_idle:
+                idle.append(conn)
+                return
+        conn.close()
+
+
+_POOL = _Pool()
+
+
+def _send(url: str, headers: dict[str, str]) -> tuple[int, Message, bytes]:
+    """One GET of `url`, without following redirects: (status, headers, body)."""
+    import urllib.request
+
+    pu = urlparse(url)
+    if urllib.request.getproxies().get(pu.scheme) and not urllib.request.proxy_bypass(pu.hostname):
+        return _send_urllib(url, headers)
+    # the request target exactly as written in the URL: path and query, without the fragment
+    rest = url.split("://", 1)[1]
+    target = rest[re.match(r"[^/?#]*", rest).end():].split("#", 1)[0]
+    target = target if target.startswith("/") else "/" + target
+    for attempt in (0, 1):
+        conn, reused = _POOL.get(pu.scheme, pu.hostname, pu.port)
+        try:
+            conn.request("GET", target, headers=headers)
+            r = conn.getresponse()
+            body = r.read()
+        except Exception:
+            conn.close()
+            if reused and attempt == 0:  # the server closed an idle connection: retry once
+                continue
+            raise
+        if r.will_close:
+            conn.close()
+        else:
+            _POOL.put(pu.scheme, pu.hostname, pu.port, conn)
+        return r.status, r.msg, body
+    raise AssertionError("unreachable")
+
+
+def _send_urllib(url: str, headers: dict[str, str]) -> tuple[int, Message, bytes]:
+    """`_send` through urllib, which honors the proxy settings in the environment."""
+    import urllib.error
+    import urllib.request
+
+    class NoRedirects(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args):
+            return None  # http_range follows redirects itself
+
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.build_opener(NoRedirects).open(req, timeout=60) as r:
+            return r.status, r.headers, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers, e.read()
+
+
+_REDIRECTS = (301, 302, 303, 307, 308)
+
+
 def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int | None]:
     """Bytes [start, end) of an http(s) object, and its size if known (spec §6.2)."""
     import email.utils
-    import urllib.error
-    import urllib.request
+
+    from vzip.uri import is_uri_reference
 
     _check_http_url(url)
     headers = {"Range": f"bytes={start}-{end - 1}", "Accept-Encoding": "identity"}
@@ -140,39 +225,38 @@ def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int 
         when = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc) + datetime.timedelta(
             seconds=t)
         headers["If-Unmodified-Since"] = email.utils.format_datetime(when, usegmt=True)
-    class Redirects(urllib.request.HTTPRedirectHandler):
-        max_redirections = 5  # spec §6.2
-
-        def redirect_request(self, req, fp, code, msg, hdrs, newurl):
-            from vzip.uri import is_uri_reference
-
-            if not is_uri_reference(hdrs.get("Location", "")):
-                raise ResolutionError(f"redirect with an invalid Location: {hdrs.get('Location')!r}")
-            if urlparse(newurl).scheme.lower() not in ("http", "https"):
-                raise ResolutionError(f"redirect to a non-http URL: {newurl}")
-            if len(hdrs.get_all("Location") or []) > 1:
-                raise ResolutionError("redirect with more than one Location field")
-            _check_http_url(newurl)
-            return super().redirect_request(req, fp, code, msg, hdrs, newurl)
-
-    req = urllib.request.Request(url, headers=headers, method="GET")
-    try:
-        with urllib.request.build_opener(Redirects).open(req, timeout=60) as r:
-            status, body = r.status, r.read()
-            for name in ("Content-Range", "ETag", "Last-Modified"):
-                if len(r.headers.get_all(name) or []) > 1:
-                    raise ResolutionError(f"{url}: more than one {name} field")
-            encs = r.headers.get_all("Content-Encoding") or []
-            enc = ", ".join(e.strip() for e in encs).lower() if encs else "identity"
-            crange = r.headers.get("Content-Range")
-            etag, last_modified = r.headers.get("ETag"), r.headers.get("Last-Modified")
-    except urllib.error.HTTPError as e:
+    first = url
+    for redirects in range(6):  # spec §6.2: at most 5 redirects
+        try:
+            status, msg, body = _send(url, headers)
+        except Exception as e:  # noqa: BLE001
+            raise ResolutionError(f"{url}: {type(e).__name__}: {e}") from None
+        if status not in _REDIRECTS:
+            break
+        locations = msg.get_all("Location") or []
+        if not locations:
+            raise ResolutionError(f"{url}: HTTP {status} without a Location")
+        if len(locations) > 1:
+            raise ResolutionError("redirect with more than one Location field")
+        if not is_uri_reference(locations[0]):
+            raise ResolutionError(f"redirect with an invalid Location: {locations[0]!r}")
+        newurl = urljoin(url, locations[0]).split("#", 1)[0]
+        if urlparse(newurl).scheme.lower() not in ("http", "https"):
+            raise ResolutionError(f"redirect to a non-http URL: {newurl}")
+        _check_http_url(newurl)
+        if redirects == 5:
+            raise ResolutionError(f"{first}: more than 5 redirects")
+        url = newurl
+    if status in (412, 416) or not 200 <= status < 300:
         what = {412: "a pin failed (412)", 416: "the object is shorter than the range (416)"}
-        raise ResolutionError(f"{url}: {what.get(e.code, f'HTTP {e.code}')}") from None
-    except ResolutionError:
-        raise
-    except Exception as e:  # noqa: BLE001
-        raise ResolutionError(f"{url}: {type(e).__name__}: {e}") from None
+        raise ResolutionError(f"{url}: {what.get(status, f'HTTP {status}')}")
+    for name in ("Content-Range", "ETag", "Last-Modified"):
+        if len(msg.get_all(name) or []) > 1:
+            raise ResolutionError(f"{url}: more than one {name} field")
+    encs = msg.get_all("Content-Encoding") or []
+    enc = ", ".join(e.strip() for e in encs).lower() if encs else "identity"
+    crange = msg.get("Content-Range")
+    etag, last_modified = msg.get("ETag"), msg.get("Last-Modified")
     # spec §6.2: servers may ignore conditional headers, so check the response itself
     if src.etag is not None and etag != src.etag:
         raise ResolutionError(f"{url}: ETag {etag!r} does not match the pin {src.etag!r}")
@@ -286,6 +370,7 @@ class VZipStore(Store):
         self._pages: list = []  # CdIndex pages, when the archive has one
         self._page_keys: list[str] = []
         self._loaded: set[int] = set()
+        self._fetching: dict[int, asyncio.Future] = {}  # page -> the task reading it
         self._bad_pages: dict[int, str] = {}
         self._file_size = 0
 
@@ -400,26 +485,37 @@ class VZipStore(Store):
         )
 
     async def _load_pages(self, idxs: Iterable[int]) -> None:
-        todo = [i for i in idxs if i not in self._loaded]
-        if not todo:
-            return
-        datas = await asyncio.gather(*(
-            self._read(self.url, self._cd_offset + self._pages[i].offset,
-                       self._cd_offset + self._pages[i].offset + self._pages[i].length,
-                       external=False)
-            for i in todo
-        ))
-        for i, data in zip(todo, datas):
-            try:
-                parsed = parse_central_directory(data, trust_offsets=True)
-            except ValueError as e:
-                self._bad_pages[i] = str(e)
-                parsed = {}
-            for k, e in parsed.items():
-                if bisect.bisect_right(self._page_keys, k) - 1 == i:  # spec §7.2
-                    self._entries.setdefault(k, e)
-            self._loaded.add(i)
-        self._refresh_keys()
+        """Load pages `idxs`; a page another caller is already fetching is read once."""
+        todo = [i for i in dict.fromkeys(idxs) if i not in self._loaded]
+        new = [i for i in todo if i not in self._fetching]
+        if new:
+            task = asyncio.ensure_future(self._fetch_pages(new))
+            self._fetching.update(dict.fromkeys(new, task))
+        # shield: one caller being cancelled must not cancel a fetch others await
+        await asyncio.gather(*(asyncio.shield(t) for t in {self._fetching[i] for i in todo}))
+
+    async def _fetch_pages(self, idxs: list[int]) -> None:
+        try:
+            datas = await asyncio.gather(*(
+                self._read(self.url, self._cd_offset + self._pages[i].offset,
+                           self._cd_offset + self._pages[i].offset + self._pages[i].length,
+                           external=False)
+                for i in idxs
+            ))
+            for i, data in zip(idxs, datas):
+                try:
+                    parsed = parse_central_directory(data, trust_offsets=True)
+                except ValueError as e:
+                    self._bad_pages[i] = str(e)
+                    parsed = {}
+                for k, e in parsed.items():
+                    if bisect.bisect_right(self._page_keys, k) - 1 == i:  # spec §7.2
+                        self._entries.setdefault(k, e)
+                self._loaded.add(i)
+            self._refresh_keys()
+        finally:
+            for i in idxs:
+                self._fetching.pop(i, None)
 
     async def _lookup(self, key: str) -> None:
         """Make sure `key`'s central directory record is loaded, if it exists."""
@@ -704,14 +800,47 @@ class VZipStore(Store):
             i += 1
 
     async def list_dir(self, prefix: str) -> AsyncIterator[str]:
+        """The distinct next path segments of the keys under `prefix`.
+
+        Keys are sorted (spec §7.1), so after finding child `c` with keys below
+        it, the listing seeks straight past `prefix + c + "/"`: in an archive
+        with a page index it reads the pages where each child starts, not
+        every page under `prefix` as `list_prefix` must (spec §8.2).
+        """
+        await self._ensure_open()
         prefix = prefix.rstrip("/")
         prefix = prefix + "/" if prefix else ""
         seen: set[str] = set()
-        async for k in self.list_prefix(prefix):
-            child = k[len(prefix) :].split("/", 1)[0]
+        cursor = prefix
+        while (k := await self._next_key(cursor)) is not None and k.startswith(prefix):
+            child, sep, _ = k[len(prefix) :].partition("/")
             if child not in seen:
                 seen.add(child)
                 yield child
+            # "0" follows "/": the least string above every key under child/
+            cursor = prefix + child + "0" if sep else k + "\0"
+
+    async def _next_key(self, cursor: str) -> str | None:
+        """The least listed key that is at least `cursor`, loading only the pages
+        needed to find it."""
+        if not self._pages:
+            i = bisect.bisect_left(self._keys, cursor)
+            return self._keys[i] if i < len(self._keys) else None
+        while True:
+            if self.resolve and cursor.startswith(RESERVED_PREFIX):
+                cursor = RESERVED_PREFIX[:-1] + "0"  # hidden keys are never listed
+            p = max(bisect.bisect_right(self._page_keys, cursor) - 1, 0)
+            await self._load_pages([p])
+            if p in self._bad_pages:
+                raise EntryError(f"page {p} cannot be parsed: {self._bad_pages[p]}")
+            hi = self._page_keys[p + 1] if p + 1 < len(self._pages) else None
+            i = bisect.bisect_left(self._keys, cursor)
+            # pinned keys of later pages are known already; this page's own end is `hi`
+            if i < len(self._keys) and (hi is None or self._keys[i] < hi):
+                return self._keys[i]
+            if hi is None:
+                return None
+            cursor = hi
 
     # ------------------------------------------------------------ helpers
 
