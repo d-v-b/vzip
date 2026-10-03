@@ -28,39 +28,39 @@
    "bytes": 27205465,
    "history_bytes": 0,
    "objects": 1,
-   "write_seconds": 0.7520771659910679,
+   "write_seconds": 0.6682768752798438,
    "problems": [],
    "open": [
     {
-     "seconds": 0.6998341251164675,
+     "seconds": 0.632617125287652,
      "index_requests": 2,
      "index_bytes": 27205465,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.6205535419285297,
+     "seconds": 0.5401072073727846,
      "index_requests": 2,
      "index_bytes": 27205465,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.4849498327821493,
+     "seconds": 0.576281875371933,
      "index_requests": 2,
      "index_bytes": 27205465,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.6932507501915097,
+     "seconds": 0.5716372085735202,
      "index_requests": 2,
      "index_bytes": 27205465,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.4727222500368953,
+     "seconds": 0.5698990831151605,
      "index_requests": 2,
      "index_bytes": 27205465,
      "data_requests": 0,
@@ -69,35 +69,35 @@
    ],
    "point": [
     {
-     "seconds": 0.021419749595224857,
+     "seconds": 0.02133883349597454,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.020968208089470863,
+     "seconds": 0.020969833247363567,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.020980916917324066,
+     "seconds": 0.02097708359360695,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.020972957834601402,
+     "seconds": 0.02087295800447464,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.020990540273487568,
+     "seconds": 0.020867624320089817,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 1,
@@ -106,35 +106,35 @@
    ],
    "time series": [
     {
-     "seconds": 7.68470050022006,
+     "seconds": 7.455877374857664,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.452146875672042,
+     "seconds": 7.443688374944031,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.441858166828752,
+     "seconds": 7.435749959200621,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.439017416909337,
+     "seconds": 7.452160083688796,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.441014542244375,
+     "seconds": 7.435005375184119,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 3600,
@@ -143,35 +143,35 @@
    ],
    "map": [
     {
-     "seconds": 0.08544729184359312,
+     "seconds": 0.08503179159015417,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.0851293746381998,
+     "seconds": 0.08557658363133669,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.08564904145896435,
+     "seconds": 0.08537358418107033,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.08543362468481064,
+     "seconds": 0.08537679072469473,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.08540558256208897,
+     "seconds": 0.08535541594028473,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 36,
@@ -187,39 +187,39 @@
    "bytes": 2243567,
    "history_bytes": 0,
    "objects": 1,
-   "write_seconds": 1.0114189581945539,
+   "write_seconds": 1.0138552505522966,
    "problems": [],
    "open": [
     {
-     "seconds": 0.38087041676044464,
+     "seconds": 0.3486007498577237,
      "index_requests": 2,
      "index_bytes": 2243567,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.43500749953091145,
+     "seconds": 0.4023574162274599,
      "index_requests": 2,
      "index_bytes": 2243567,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.45694912504404783,
+     "seconds": 0.46699295844882727,
      "index_requests": 2,
      "index_bytes": 2243567,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.49323991779237986,
+     "seconds": 0.5038272505626082,
      "index_requests": 2,
      "index_bytes": 2243567,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.5155313331633806,
+     "seconds": 0.5388807076960802,
      "index_requests": 2,
      "index_bytes": 2243567,
      "data_requests": 0,
@@ -228,35 +228,35 @@
    ],
    "point": [
     {
-     "seconds": 0.020937208086252213,
+     "seconds": 0.020917500369250774,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.02088866662234068,
+     "seconds": 0.020879791118204594,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.020981833338737488,
+     "seconds": 0.020960791036486626,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.020942790433764458,
+     "seconds": 0.020888041704893112,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.02091808430850506,
+     "seconds": 0.02094349917024374,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 1,
@@ -265,35 +265,35 @@
    ],
    "time series": [
     {
-     "seconds": 7.642498709261417,
+     "seconds": 7.460369166918099,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.449005457572639,
+     "seconds": 7.450828624889255,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.625558000057936,
+     "seconds": 7.4479285422712564,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.4433547500520945,
+     "seconds": 7.441670707426965,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.600460999645293,
+     "seconds": 7.44565708283335,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 3600,
@@ -302,35 +302,35 @@
    ],
    "map": [
     {
-     "seconds": 0.0860387496650219,
+     "seconds": 0.08545808400958776,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.08527504187077284,
+     "seconds": 0.08541666716337204,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.08521558344364166,
+     "seconds": 0.08560029231011868,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.08601820934563875,
+     "seconds": 0.08587416727095842,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.08538158237934113,
+     "seconds": 0.08513583429157734,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 36,
@@ -346,39 +346,39 @@
    "bytes": 768291,
    "history_bytes": 0,
    "objects": 8,
-   "write_seconds": 1.306649750098586,
+   "write_seconds": 1.259277082979679,
    "problems": [],
    "open": [
     {
-     "seconds": 0.09353125002235174,
+     "seconds": 0.09362195897847414,
      "index_requests": 4,
      "index_bytes": 12948,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.08931254129856825,
+     "seconds": 0.08977383282035589,
      "index_requests": 4,
      "index_bytes": 12948,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.08913908433169127,
+     "seconds": 0.0900187911465764,
      "index_requests": 4,
      "index_bytes": 12948,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.0887598330155015,
+     "seconds": 0.09015475027263165,
      "index_requests": 4,
      "index_bytes": 12948,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.08915962558239698,
+     "seconds": 0.08983004186302423,
      "index_requests": 4,
      "index_bytes": 12948,
      "data_requests": 0,
@@ -387,35 +387,35 @@
    ],
    "point": [
     {
-     "seconds": 0.04875404201447964,
+     "seconds": 0.04844908230006695,
      "index_requests": 1,
      "index_bytes": 268988,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.04796787537634373,
+     "seconds": 0.048363582231104374,
      "index_requests": 1,
      "index_bytes": 268988,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.047885291278362274,
+     "seconds": 0.047933584079146385,
      "index_requests": 1,
      "index_bytes": 268988,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.047908916138112545,
+     "seconds": 0.048223791643977165,
      "index_requests": 1,
      "index_bytes": 268988,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.0479980418458581,
+     "seconds": 0.04783108364790678,
      "index_requests": 1,
      "index_bytes": 268988,
      "data_requests": 1,
@@ -424,35 +424,35 @@
    ],
    "time series": [
     {
-     "seconds": 7.593818207271397,
+     "seconds": 7.505549582652748,
      "index_requests": 2,
      "index_bytes": 353380,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.511905832216144,
+     "seconds": 7.519989707507193,
      "index_requests": 2,
      "index_bytes": 353380,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.522691000252962,
+     "seconds": 7.525951916351914,
      "index_requests": 2,
      "index_bytes": 353380,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.605307791382074,
+     "seconds": 7.518357374705374,
      "index_requests": 2,
      "index_bytes": 353380,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.496764124371111,
+     "seconds": 7.524761249311268,
      "index_requests": 2,
      "index_bytes": 353380,
      "data_requests": 3600,
@@ -461,35 +461,35 @@
    ],
    "map": [
     {
-     "seconds": 0.11266045831143856,
+     "seconds": 0.11246258392930031,
      "index_requests": 1,
      "index_bytes": 268988,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.11264770850539207,
+     "seconds": 0.11187166720628738,
      "index_requests": 1,
      "index_bytes": 268988,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.11266154237091541,
+     "seconds": 0.11269429139792919,
      "index_requests": 1,
      "index_bytes": 268988,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.11189933400601149,
+     "seconds": 0.11221825052052736,
      "index_requests": 1,
      "index_bytes": 268988,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.11256454046815634,
+     "seconds": 0.11224458273500204,
      "index_requests": 1,
      "index_bytes": 268988,
      "data_requests": 36,
@@ -502,42 +502,42 @@
    "config": "tuned",
    "setting": "record_size=10,000 (default 100,000)",
    "n_refs": 259200,
-   "bytes": 833229,
+   "bytes": 833225,
    "history_bytes": 0,
    "objects": 30,
-   "write_seconds": 1.2184295421466231,
+   "write_seconds": 1.1007780833169818,
    "problems": [],
    "open": [
     {
-     "seconds": 0.08789470884948969,
+     "seconds": 0.08834954164922237,
      "index_requests": 4,
      "index_bytes": 12581,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.08751608431339264,
+     "seconds": 0.087805500254035,
      "index_requests": 4,
      "index_bytes": 12581,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.08759141713380814,
+     "seconds": 0.08743287436664104,
      "index_requests": 4,
      "index_bytes": 12581,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.08721975050866604,
+     "seconds": 0.08759562484920025,
      "index_requests": 4,
      "index_bytes": 12581,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.08704525046050549,
+     "seconds": 0.08772791735827923,
      "index_requests": 4,
      "index_bytes": 12581,
      "data_requests": 0,
@@ -546,111 +546,111 @@
    ],
    "point": [
     {
-     "seconds": 0.042366040870547295,
+     "seconds": 0.04237054195255041,
      "index_requests": 1,
-     "index_bytes": 30143,
+     "index_bytes": 30142,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.04256358277052641,
+     "seconds": 0.04248504247516394,
      "index_requests": 1,
-     "index_bytes": 30143,
+     "index_bytes": 30142,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.042257207445800304,
+     "seconds": 0.042434874922037125,
      "index_requests": 1,
-     "index_bytes": 30143,
+     "index_bytes": 30142,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.04238575045019388,
+     "seconds": 0.042451958172023296,
      "index_requests": 1,
-     "index_bytes": 30143,
+     "index_bytes": 30142,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.04231391754001379,
+     "seconds": 0.04238974954932928,
      "index_requests": 1,
-     "index_bytes": 30143,
+     "index_bytes": 30142,
      "data_requests": 1,
      "data_bytes": 1198
     }
    ],
    "time series": [
     {
-     "seconds": 7.601681666448712,
+     "seconds": 7.626697833649814,
      "index_requests": 13,
-     "index_bytes": 391209,
+     "index_bytes": 391207,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.597438165917993,
+     "seconds": 7.5972998747602105,
      "index_requests": 13,
-     "index_bytes": 391209,
+     "index_bytes": 391207,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.5909702917560935,
+     "seconds": 7.612080416642129,
      "index_requests": 13,
-     "index_bytes": 391209,
+     "index_bytes": 391207,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.692050000652671,
+     "seconds": 7.625746249221265,
      "index_requests": 13,
-     "index_bytes": 391209,
+     "index_bytes": 391207,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.603705249726772,
+     "seconds": 7.624613082967699,
      "index_requests": 13,
-     "index_bytes": 391209,
+     "index_bytes": 391207,
      "data_requests": 3600,
      "data_bytes": 4306245
     }
    ],
    "map": [
     {
-     "seconds": 0.10719941649585962,
+     "seconds": 0.10736554209142923,
      "index_requests": 1,
-     "index_bytes": 30143,
+     "index_bytes": 30142,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.10748787503689528,
+     "seconds": 0.10635741613805294,
      "index_requests": 1,
-     "index_bytes": 30143,
+     "index_bytes": 30142,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.10740316659212112,
+     "seconds": 0.10652016662061214,
      "index_requests": 1,
-     "index_bytes": 30143,
+     "index_bytes": 30142,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.10692570824176073,
+     "seconds": 0.1066942922770977,
      "index_requests": 1,
-     "index_bytes": 30143,
+     "index_bytes": 30142,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.1068814154714346,
+     "seconds": 0.10694270767271519,
      "index_requests": 1,
-     "index_bytes": 30143,
+     "index_bytes": 30142,
      "data_requests": 36,
      "data_bytes": 43604
     }
@@ -661,155 +661,155 @@
    "config": "default",
    "setting": "",
    "n_refs": 259200,
-   "bytes": 4898165,
-   "history_bytes": 1517873,
+   "bytes": 4899406,
+   "history_bytes": 1517880,
    "objects": 13,
-   "write_seconds": 0.20517354272305965,
+   "write_seconds": 0.19797820784151554,
    "problems": [],
    "open": [
     {
-     "seconds": 0.13159912452101707,
+     "seconds": 0.13095499947667122,
      "index_requests": 11,
-     "index_bytes": 11661,
+     "index_bytes": 11678,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.13060012459754944,
+     "seconds": 0.13092754129320383,
      "index_requests": 11,
-     "index_bytes": 11661,
+     "index_bytes": 11678,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.13030712492763996,
+     "seconds": 0.13052120804786682,
      "index_requests": 11,
-     "index_bytes": 11661,
+     "index_bytes": 11678,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.13066641706973314,
+     "seconds": 0.13043741695582867,
      "index_requests": 11,
-     "index_bytes": 11661,
+     "index_bytes": 11678,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.1301552914083004,
+     "seconds": 0.13093979191035032,
      "index_requests": 11,
-     "index_bytes": 11661,
+     "index_bytes": 11678,
      "data_requests": 0,
      "data_bytes": 0
     }
    ],
    "point": [
     {
-     "seconds": 0.058493333868682384,
+     "seconds": 0.05836270842701197,
      "index_requests": 5,
-     "index_bytes": 1657886,
+     "index_bytes": 1659221,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.05830779206007719,
+     "seconds": 0.05830141715705395,
      "index_requests": 5,
-     "index_bytes": 1657886,
+     "index_bytes": 1659221,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.058412957936525345,
+     "seconds": 0.05786354187875986,
      "index_requests": 5,
-     "index_bytes": 1657886,
+     "index_bytes": 1659221,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.05802808329463005,
+     "seconds": 0.057944124564528465,
      "index_requests": 5,
-     "index_bytes": 1657886,
+     "index_bytes": 1659221,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.05801150016486645,
+     "seconds": 0.05787966586649418,
      "index_requests": 5,
-     "index_bytes": 1657886,
+     "index_bytes": 1659221,
      "data_requests": 1,
      "data_bytes": 1198
     }
    ],
    "time series": [
     {
-     "seconds": 7.678814083337784,
+     "seconds": 7.575762958265841,
      "index_requests": 5,
-     "index_bytes": 1657886,
+     "index_bytes": 1659221,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.599967624992132,
+     "seconds": 7.5782720828428864,
      "index_requests": 5,
-     "index_bytes": 1657886,
+     "index_bytes": 1659221,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.579476875253022,
+     "seconds": 7.582360791042447,
      "index_requests": 5,
-     "index_bytes": 1657886,
+     "index_bytes": 1659221,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.657285165973008,
+     "seconds": 7.568654540926218,
      "index_requests": 5,
-     "index_bytes": 1657886,
+     "index_bytes": 1659221,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 7.598633541725576,
+     "seconds": 7.568285875022411,
      "index_requests": 5,
-     "index_bytes": 1657886,
+     "index_bytes": 1659221,
      "data_requests": 3600,
      "data_bytes": 4306245
     }
    ],
    "map": [
     {
-     "seconds": 0.12312420830130577,
+     "seconds": 0.14172162488102913,
      "index_requests": 5,
-     "index_bytes": 1657886,
+     "index_bytes": 1659221,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.12279462534934282,
+     "seconds": 0.1426037922501564,
      "index_requests": 5,
-     "index_bytes": 1657886,
+     "index_bytes": 1659221,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.14124391693621874,
+     "seconds": 0.1412789160385728,
      "index_requests": 5,
-     "index_bytes": 1657886,
+     "index_bytes": 1659221,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.1414087088778615,
+     "seconds": 0.1422482505440712,
      "index_requests": 5,
-     "index_bytes": 1657886,
+     "index_bytes": 1659221,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.14248304069042206,
+     "seconds": 0.14044970832765102,
      "index_requests": 5,
-     "index_bytes": 1657886,
+     "index_bytes": 1659221,
      "data_requests": 36,
      "data_bytes": 43604
     }
@@ -820,155 +820,155 @@
    "config": "tuned",
    "setting": "manifest split every 30 time steps; one request per object",
    "n_refs": 259200,
-   "bytes": 4737353,
-   "history_bytes": 1523625,
+   "bytes": 4735987,
+   "history_bytes": 1523627,
    "objects": 254,
-   "write_seconds": 0.5444015404209495,
+   "write_seconds": 0.531684790737927,
    "problems": [],
    "open": [
     {
-     "seconds": 0.16621908359229565,
+     "seconds": 0.1684975828975439,
      "index_requests": 13,
-     "index_bytes": 20086,
+     "index_bytes": 20054,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.16680629085749388,
+     "seconds": 0.16636025067418814,
      "index_requests": 13,
-     "index_bytes": 20086,
+     "index_bytes": 20054,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.16649537533521652,
+     "seconds": 0.1660010414198041,
      "index_requests": 13,
-     "index_bytes": 20086,
+     "index_bytes": 20054,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.16559279151260853,
+     "seconds": 0.16511412523686886,
      "index_requests": 13,
-     "index_bytes": 20086,
+     "index_bytes": 20054,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.1665715416893363,
+     "seconds": 0.1659603752195835,
      "index_requests": 13,
-     "index_bytes": 20086,
+     "index_bytes": 20054,
      "data_requests": 0,
      "data_bytes": 0
     }
    ],
    "point": [
     {
-     "seconds": 0.04192550014704466,
+     "seconds": 0.041799791157245636,
      "index_requests": 1,
-     "index_bytes": 13452,
+     "index_bytes": 13441,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.04196104221045971,
+     "seconds": 0.041859292425215244,
      "index_requests": 1,
-     "index_bytes": 13452,
+     "index_bytes": 13441,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.041806042194366455,
+     "seconds": 0.04173170868307352,
      "index_requests": 1,
-     "index_bytes": 13452,
+     "index_bytes": 13441,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.04182641673833132,
+     "seconds": 0.041953541338443756,
      "index_requests": 1,
-     "index_bytes": 13452,
+     "index_bytes": 13441,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.04179833363741636,
+     "seconds": 0.04189554136246443,
      "index_requests": 1,
-     "index_bytes": 13452,
+     "index_bytes": 13441,
      "data_requests": 1,
      "data_bytes": 1198
     }
    ],
    "time series": [
     {
-     "seconds": 10.31874524988234,
+     "seconds": 10.298381791450083,
      "index_requests": 120,
-     "index_bytes": 1580241,
+     "index_bytes": 1579130,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 10.246380916796625,
+     "seconds": 10.098113666288555,
      "index_requests": 120,
-     "index_bytes": 1580241,
+     "index_bytes": 1579130,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 10.173395083285868,
+     "seconds": 10.108187375590205,
      "index_requests": 120,
-     "index_bytes": 1580241,
+     "index_bytes": 1579130,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 10.223030917346478,
+     "seconds": 10.133879084140062,
      "index_requests": 120,
-     "index_bytes": 1580241,
+     "index_bytes": 1579130,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 10.135098124854267,
+     "seconds": 10.11704474966973,
      "index_requests": 120,
-     "index_bytes": 1580241,
+     "index_bytes": 1579130,
      "data_requests": 3600,
      "data_bytes": 4306245
     }
    ],
    "map": [
     {
-     "seconds": 0.1258443333208561,
+     "seconds": 0.12507283315062523,
      "index_requests": 1,
-     "index_bytes": 13452,
+     "index_bytes": 13441,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.12536025047302246,
+     "seconds": 0.12659820821136236,
      "index_requests": 1,
-     "index_bytes": 13452,
+     "index_bytes": 13441,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.12497562542557716,
+     "seconds": 0.10718433279544115,
      "index_requests": 1,
-     "index_bytes": 13452,
+     "index_bytes": 13441,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.12508754059672356,
+     "seconds": 0.12457537557929754,
      "index_requests": 1,
-     "index_bytes": 13452,
+     "index_bytes": 13441,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.10761341731995344,
+     "seconds": 0.10650862567126751,
      "index_requests": 1,
-     "index_bytes": 13452,
+     "index_bytes": 13441,
      "data_requests": 36,
      "data_bytes": 43604
     }
@@ -982,39 +982,39 @@
    "bytes": 32390587,
    "history_bytes": 0,
    "objects": 1,
-   "write_seconds": 1.3604464177042246,
+   "write_seconds": 1.3763241674751043,
    "problems": [],
    "open": [
     {
-     "seconds": 0.6872987085953355,
+     "seconds": 0.5552101256325841,
      "index_requests": 2,
      "index_bytes": 18813507,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.6296977922320366,
+     "seconds": 0.6063824165612459,
      "index_requests": 2,
      "index_bytes": 18813507,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.502324958331883,
+     "seconds": 0.5924563342705369,
      "index_requests": 2,
      "index_bytes": 18813507,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.6194129586219788,
+     "seconds": 0.6073274593800306,
      "index_requests": 2,
      "index_bytes": 18813507,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.6134597919881344,
+     "seconds": 0.6082499576732516,
      "index_requests": 2,
      "index_bytes": 18813507,
      "data_requests": 0,
@@ -1023,35 +1023,35 @@
    ],
    "point": [
     {
-     "seconds": 0.029138500802218914,
+     "seconds": 0.021633957512676716,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.02404929045587778,
+     "seconds": 0.021413667127490044,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.02406966593116522,
+     "seconds": 0.02143858280032873,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.02412870805710554,
+     "seconds": 0.02138554211705923,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.02407654095441103,
+     "seconds": 0.0213813753798604,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 1,
@@ -1060,35 +1060,35 @@
    ],
    "time series": [
     {
-     "seconds": 9.233165834099054,
+     "seconds": 7.5680310828611255,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 9.174231125041842,
+     "seconds": 7.5840433752164245,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 9.343798666261137,
+     "seconds": 7.571369000710547,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 9.275294125080109,
+     "seconds": 7.608294541947544,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 9.318498374894261,
+     "seconds": 7.619002125225961,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 3600,
@@ -1097,35 +1097,35 @@
    ],
    "map": [
     {
-     "seconds": 0.11303533241152763,
+     "seconds": 0.0889043752104044,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.10954849980771542,
+     "seconds": 0.08891095966100693,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.1114149997010827,
+     "seconds": 0.08882858324795961,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.10512875020503998,
+     "seconds": 0.08913195785135031,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.10572958271950483,
+     "seconds": 0.08829266671091318,
      "index_requests": 0,
      "index_bytes": 0,
      "data_requests": 36,
@@ -1141,39 +1141,39 @@
    "bytes": 32394562,
    "history_bytes": 0,
    "objects": 1,
-   "write_seconds": 1.5014944579452276,
+   "write_seconds": 1.3896444588899612,
    "problems": [],
    "open": [
     {
-     "seconds": 0.049723667092621326,
+     "seconds": 0.0500898752361536,
      "index_requests": 2,
      "index_bytes": 114662,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.04923070780932903,
+     "seconds": 0.04967499990016222,
      "index_requests": 2,
      "index_bytes": 114662,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.04914229176938534,
+     "seconds": 0.04996954184025526,
      "index_requests": 2,
      "index_bytes": 114662,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.04885104205459356,
+     "seconds": 0.049331375397741795,
      "index_requests": 2,
      "index_bytes": 114662,
      "data_requests": 0,
      "data_bytes": 0
     },
     {
-     "seconds": 0.048989417031407356,
+     "seconds": 0.0492211664095521,
      "index_requests": 2,
      "index_bytes": 114662,
      "data_requests": 0,
@@ -1182,35 +1182,35 @@
    ],
    "point": [
     {
-     "seconds": 0.04599345754832029,
+     "seconds": 0.043419333174824715,
      "index_requests": 1,
      "index_bytes": 65547,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.0459866663441062,
+     "seconds": 0.043260167352855206,
      "index_requests": 1,
      "index_bytes": 65547,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.046007500030100346,
+     "seconds": 0.04326170776039362,
      "index_requests": 1,
      "index_bytes": 65547,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.04575075022876263,
+     "seconds": 0.043334792368113995,
      "index_requests": 1,
      "index_bytes": 65547,
      "data_requests": 1,
      "data_bytes": 1198
     },
     {
-     "seconds": 0.04588649980723858,
+     "seconds": 0.04337508324533701,
      "index_requests": 1,
      "index_bytes": 65547,
      "data_requests": 1,
@@ -1219,35 +1219,35 @@
    ],
    "time series": [
     {
-     "seconds": 10.614964541979134,
+     "seconds": 8.546886167488992,
      "index_requests": 145,
      "index_bytes": 9457106,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 10.77763449959457,
+     "seconds": 8.528490874916315,
      "index_requests": 145,
      "index_bytes": 9457106,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 10.828745166771114,
+     "seconds": 8.493119332939386,
      "index_requests": 145,
      "index_bytes": 9457106,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 11.06246995832771,
+     "seconds": 8.513439750298858,
      "index_requests": 145,
      "index_bytes": 9457106,
      "data_requests": 3600,
      "data_bytes": 4306245
     },
     {
-     "seconds": 10.919667666777968,
+     "seconds": 8.5599897922948,
      "index_requests": 145,
      "index_bytes": 9457106,
      "data_requests": 3600,
@@ -1256,35 +1256,35 @@
    ],
    "map": [
     {
-     "seconds": 0.13380308356136084,
+     "seconds": 0.11073745787143707,
      "index_requests": 1,
      "index_bytes": 65547,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.13667108304798603,
+     "seconds": 0.10977841634303331,
      "index_requests": 1,
      "index_bytes": 65547,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.134209374897182,
+     "seconds": 0.11037095822393894,
      "index_requests": 1,
      "index_bytes": 65547,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.13097341544926167,
+     "seconds": 0.11087716650217772,
      "index_requests": 1,
      "index_bytes": 65547,
      "data_requests": 36,
      "data_bytes": 43604
     },
     {
-     "seconds": 0.13203424960374832,
+     "seconds": 0.11049412563443184,
      "index_requests": 1,
      "index_bytes": 65547,
      "data_requests": 36,
