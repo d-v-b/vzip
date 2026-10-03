@@ -147,7 +147,7 @@ repeated runs.
 
 Those runs showed vzip's Python reader 20–25% slower than kerchunk's on the
 same requests. Most of that was a new TCP connection for every chunk. vzip's
-store now reuses connections (#PR), and the results below are from after
+store now reuses connections (#24), and the results below are from after
 that change.
 
 ## Results
