@@ -22,16 +22,16 @@
    "n_refs": 2880,
    "bytes": 305519,
    "objects": 1,
-   "write_seconds": 0.007493083365261555,
+   "write_seconds": 0.01375658344477415,
    "open": {
-    "seconds": 1.1371124172583222,
+    "seconds": 1.152203624136746,
     "index_requests": 6,
     "index_bytes": 916557,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.15364304184913635,
+    "seconds": 0.16332887578755617,
     "index_requests": 0,
     "index_bytes": 0,
     "data_requests": 1,
@@ -39,7 +39,7 @@
    },
    "problems": [],
    "everything": {
-    "seconds": 47.34976887423545,
+    "seconds": 47.78718074969947,
     "index_requests": 0,
     "index_bytes": 0,
     "data_requests": 2880,
@@ -51,16 +51,16 @@
    "n_refs": 2880,
    "bytes": 21769,
    "objects": 6,
-   "write_seconds": 0.0739693334326148,
+   "write_seconds": 0.10744179226458073,
    "open": {
-    "seconds": 0.7123603327199817,
-    "index_requests": 5,
-    "index_bytes": 8375,
+    "seconds": 0.7110731657594442,
+    "index_requests": 6,
+    "index_bytes": 10017,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.335765958763659,
+    "seconds": 0.3332422096282244,
     "index_requests": 1,
     "index_bytes": 6832,
     "data_requests": 1,
@@ -68,7 +68,7 @@
    },
    "problems": [],
    "everything": {
-    "seconds": 47.58151991665363,
+    "seconds": 47.835467415861785,
     "index_requests": 10,
     "index_bytes": 82040,
     "data_requests": 2880,
@@ -78,28 +78,28 @@
   {
    "format": "Icechunk",
    "n_refs": 2880,
-   "bytes": 62837,
+   "bytes": 62523,
    "objects": 13,
-   "write_seconds": 0.019442875869572163,
+   "write_seconds": 0.04941870737820864,
    "open": {
-    "seconds": 1.028190666809678,
+    "seconds": 1.0213090423494577,
     "index_requests": 10,
-    "index_bytes": 8540,
+    "index_bytes": 8558,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.34447845723479986,
+    "seconds": 0.34837150014936924,
     "index_requests": 5,
-    "index_bytes": 20099,
+    "index_bytes": 19802,
     "data_requests": 5,
     "data_bytes": 37773
    },
    "problems": [],
    "everything": {
-    "seconds": 47.91029308363795,
+    "seconds": 48.377205749973655,
     "index_requests": 5,
-    "index_bytes": 21290,
+    "index_bytes": 21294,
     "data_requests": 14400,
     "data_bytes": 106334512
    }
@@ -107,18 +107,18 @@
   {
    "format": "vzip",
    "n_refs": 2880,
-   "bytes": 374775,
+   "bytes": 374776,
    "objects": 1,
-   "write_seconds": 0.022957834415137768,
+   "write_seconds": 0.020635833963751793,
    "open": {
-    "seconds": 1.3672242499887943,
+    "seconds": 1.3174842493608594,
     "index_requests": 18,
-    "index_bytes": 222635,
+    "index_bytes": 222636,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.1605631671845913,
+    "seconds": 0.17232645768672228,
     "index_requests": 0,
     "index_bytes": 0,
     "data_requests": 1,
@@ -126,7 +126,7 @@
    },
    "problems": [],
    "everything": {
-    "seconds": 49.09911675006151,
+    "seconds": 49.33620300050825,
     "index_requests": 0,
     "index_bytes": 0,
     "data_requests": 2880,
@@ -136,18 +136,18 @@
   {
    "format": "vzip, paged",
    "n_refs": 2880,
-   "bytes": 375069,
+   "bytes": 375070,
    "objects": 1,
-   "write_seconds": 0.02209354192018509,
+   "write_seconds": 0.020115832798182964,
    "open": {
-    "seconds": 1.3503010841086507,
+    "seconds": 1.5451341252774,
     "index_requests": 22,
-    "index_bytes": 288287,
+    "index_bytes": 288288,
     "data_requests": 0,
     "data_bytes": 0
    },
    "one_value": {
-    "seconds": 0.16399274952709675,
+    "seconds": 0.1756772492080927,
     "index_requests": 0,
     "index_bytes": 0,
     "data_requests": 1,
@@ -155,7 +155,7 @@
    },
    "problems": [],
    "everything": {
-    "seconds": 49.07090033404529,
+    "seconds": 48.90428141690791,
     "index_requests": 0,
     "index_bytes": 0,
     "data_requests": 2880,

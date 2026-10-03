@@ -294,7 +294,8 @@ def measure(fmt: Format, url: str, ctx: dict, server: Server, probe: dict, full:
 
     t0 = time.perf_counter()
     store, zarr_format = fmt.open(url, ctx)
-    ds = xr.open_zarr(store, consolidated=False, zarr_format=zarr_format)
+    # xarray's default: use consolidated metadata if the store has it, else list the store
+    ds = xr.open_zarr(store, zarr_format=zarr_format)
     row["open"] = {"seconds": time.perf_counter() - t0, **server.take()}
 
     t0 = time.perf_counter()

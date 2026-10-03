@@ -15,7 +15,7 @@ regenerated with `just compare-formats`.
   Icechunk (19 B), kerchunk JSON (102 B) and vzip (125 B, with one ZIP entry
   per chunk).
 - **Opening a large dataset:**
-  - kerchunk Parquet and Icechunk read a few kilobytes in 5 to 11 requests.
+  - kerchunk Parquet and Icechunk read a few kilobytes in 6 to 11 requests.
   - kerchunk JSON downloads its whole file, three times.
   - vzip's Python reader made 126 to 413 requests and fetched 18.8 MB. That is
     the worst of the four, and it comes from the reader and converter, not
@@ -60,8 +60,10 @@ regenerated with `just compare-formats`.
    request (a stand-in for an object store round trip), and logs every
    request.
 5. **Read** each format from a cold start, measuring three steps separately:
-   - **open:** `xr.open_zarr(store)`, which reads the hierarchy's metadata and
-     loads the coordinates;
+   - **open:** `xr.open_zarr(store)` with xarray's defaults, so it uses
+     consolidated metadata where the store has it and lists the store where it
+     doesn't. This step reads the hierarchy's metadata and loads the
+     coordinates;
    - **first value:** one element of `tas`;
    - **everything:** `ds.load()`, every variable in full.
 6. **Check** every value of every variable and coordinate against the source
@@ -89,21 +91,21 @@ files are the same for every format and are not shown.
 
 | format | size | objects | open | first value | everything | values |
 |---|---:|---:|---|---|---|---|
-| kerchunk JSON | 305.5 kB | 1 | 6 (6) · 916.6 kB · 1.14 s | 1 (0) · 0 · 0.15 s | 2,880 (0) · 0 · 47.35 s | identical |
-| kerchunk Parquet | 21.8 kB | 6 | 5 (5) · 8.4 kB · 0.71 s | 2 (1) · 6.8 kB · 0.34 s | 2,890 (10) · 82.0 kB · 47.58 s | identical |
-| Icechunk | 62.8 kB | 13 | 10 (10) · 8.5 kB · 1.03 s | 10 (5) · 20.1 kB · 0.34 s | 14,405 (5) · 21.3 kB · 47.91 s | identical |
-| vzip | 374.8 kB | 1 | 18 (18) · 222.6 kB · 1.37 s | 1 (0) · 0 · 0.16 s | 2,880 (0) · 0 · 49.10 s | identical |
-| vzip, paged | 375.1 kB | 1 | 22 (22) · 288.3 kB · 1.35 s | 1 (0) · 0 · 0.16 s | 2,880 (0) · 0 · 49.07 s | identical |
+| kerchunk JSON | 305.5 kB | 1 | 6 (6) · 916.6 kB · 1.15 s | 1 (0) · 0 · 0.16 s | 2,880 (0) · 0 · 47.79 s | identical |
+| kerchunk Parquet | 21.8 kB | 6 | 6 (6) · 10.0 kB · 0.71 s | 2 (1) · 6.8 kB · 0.33 s | 2,890 (10) · 82.0 kB · 47.84 s | identical |
+| Icechunk | 62.5 kB | 13 | 10 (10) · 8.6 kB · 1.02 s | 10 (5) · 19.8 kB · 0.35 s | 14,405 (5) · 21.3 kB · 48.38 s | identical |
+| vzip | 374.8 kB | 1 | 18 (18) · 222.6 kB · 1.32 s | 1 (0) · 0 · 0.17 s | 2,880 (0) · 0 · 49.34 s | identical |
+| vzip, paged | 375.1 kB | 1 | 22 (22) · 288.3 kB · 1.55 s | 1 (0) · 0 · 0.18 s | 2,880 (0) · 0 · 48.90 s | identical |
 
 **Large run:** 259,200 references; full reads skipped.
 
 | format | size | objects | open | first value | values |
 |---|---:|---:|---|---|---|
-| kerchunk JSON | 26.4 MB | 1 | 6 (6) · 79.3 MB · 1.50 s | 1 (0) · 0 · 0.25 s | identical |
-| kerchunk Parquet | 0.77 MB | 8 | 5 (5) · 14.6 kB · 0.69 s | 2 (1) · 269.0 kB · 0.38 s | identical |
-| Icechunk | 4.9 MB | 13 | 11 (11) · 11.7 kB · 1.00 s | 6 (5) · 1.66 MB · 0.37 s | identical |
-| vzip | 32.4 MB | 1 | 126 (126) · 18.8 MB · 4.23 s | 1 (0) · 0 · 0.33 s | identical |
-| vzip, paged | 32.4 MB | 1 | 413 (413) · 18.9 MB · 5.26 s | 1 (0) · 0 · 0.19 s | identical |
+| kerchunk JSON | 26.4 MB | 1 | 6 (6) · 79.28 MB · 1.50 s | 1 (0) · 0 · 0.24 s | identical |
+| kerchunk Parquet | 768.3 kB | 8 | 6 (6) · 16.2 kB · 0.65 s | 2 (1) · 269.0 kB · 0.36 s | identical |
+| Icechunk | 4.9 MB | 13 | 11 (11) · 11.7 kB · 1.01 s | 6 (5) · 1.66 MB · 0.36 s | identical |
+| vzip | 32.4 MB | 1 | 126 (126) · 18.80 MB · 4.25 s | 1 (0) · 0 · 0.19 s | identical |
+| vzip, paged | 32.4 MB | 1 | 413 (413) · 18.87 MB · 4.92 s | 1 (0) · 0 · 0.23 s | identical |
 
 The raw results, with every count, are in
 [`comparison/results/`](comparison/results/).
@@ -136,7 +138,7 @@ Per reference in the large run:
 - **kerchunk JSON** downloads the whole file. fsspec fetched it three times
   (79.3 MB for a 26.4 MB file), so opening costs grow with the number of
   references.
-- **kerchunk Parquet** reads its consolidated `.zmetadata` and nothing else.
+- **kerchunk Parquet** reads its consolidated `.zmetadata`: 6 requests, 16 kB.
 - **Icechunk** reads its own small metadata files: 11 requests, 12 kB.
 - **vzip** is the worst at scale. The causes are covered in the next section.
 
