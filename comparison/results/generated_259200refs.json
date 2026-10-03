@@ -1,0 +1,131 @@
+{
+ "run": {
+  "sources": 120,
+  "source_bytes": 313493733,
+  "n_refs": 259200,
+  "latency": 0.02,
+  "full_read": false,
+  "versions": {
+   "vzip": "0.1.0",
+   "virtualizarr": "2.7.3",
+   "kerchunk": "0.2.10",
+   "fsspec": "2026.9.0",
+   "icechunk": "2.2.2",
+   "zarr": "3.4.0",
+   "xarray": "2026.9.0"
+  },
+  "input": "generated: 120 files x 30 days, grid 90x180 in 6x6 chunks"
+ },
+ "rows": [
+  {
+   "format": "kerchunk JSON",
+   "n_refs": 259200,
+   "bytes": 26427865,
+   "objects": 1,
+   "write_seconds": 0.6310937497764826,
+   "open": {
+    "seconds": 1.5028919586911798,
+    "index_requests": 6,
+    "index_bytes": 79283595,
+    "data_requests": 0,
+    "data_bytes": 0
+   },
+   "one_value": {
+    "seconds": 0.2546795420348644,
+    "index_requests": 0,
+    "index_bytes": 0,
+    "data_requests": 1,
+    "data_bytes": 1198
+   },
+   "problems": []
+  },
+  {
+   "format": "kerchunk Parquet",
+   "n_refs": 259200,
+   "bytes": 768347,
+   "objects": 8,
+   "write_seconds": 1.0498988749459386,
+   "open": {
+    "seconds": 0.6862622918561101,
+    "index_requests": 5,
+    "index_bytes": 14588,
+    "data_requests": 0,
+    "data_bytes": 0
+   },
+   "one_value": {
+    "seconds": 0.3774024583399296,
+    "index_requests": 1,
+    "index_bytes": 268999,
+    "data_requests": 1,
+    "data_bytes": 1198
+   },
+   "problems": []
+  },
+  {
+   "format": "Icechunk",
+   "n_refs": 259200,
+   "bytes": 4902326,
+   "objects": 13,
+   "write_seconds": 0.20052633341401815,
+   "open": {
+    "seconds": 0.9972735419869423,
+    "index_requests": 11,
+    "index_bytes": 11673,
+    "data_requests": 0,
+    "data_bytes": 0
+   },
+   "one_value": {
+    "seconds": 0.36744945868849754,
+    "index_requests": 5,
+    "index_bytes": 1657884,
+    "data_requests": 1,
+    "data_bytes": 1198
+   },
+   "problems": []
+  },
+  {
+   "format": "vzip",
+   "n_refs": 259200,
+   "bytes": 32385463,
+   "objects": 1,
+   "write_seconds": 1.358813582919538,
+   "open": {
+    "seconds": 4.23387320805341,
+    "index_requests": 126,
+    "index_bytes": 18804099,
+    "data_requests": 0,
+    "data_bytes": 0
+   },
+   "one_value": {
+    "seconds": 0.33144745882600546,
+    "index_requests": 0,
+    "index_bytes": 0,
+    "data_requests": 1,
+    "data_bytes": 1198
+   },
+   "problems": []
+  },
+  {
+   "format": "vzip, paged",
+   "n_refs": 259200,
+   "bytes": 32388722,
+   "objects": 1,
+   "write_seconds": 1.4874405404552817,
+   "open": {
+    "seconds": 5.2582752499729395,
+    "index_requests": 413,
+    "index_bytes": 18872640,
+    "data_requests": 0,
+    "data_bytes": 0
+   },
+   "one_value": {
+    "seconds": 0.1867747502401471,
+    "index_requests": 0,
+    "index_bytes": 0,
+    "data_requests": 1,
+    "data_bytes": 1198
+   },
+   "problems": []
+  }
+ ]
+}
