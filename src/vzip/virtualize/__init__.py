@@ -1,14 +1,16 @@
-"""Virtualizing TIFF, NDPI, ND2 and DICOM files as OME-Zarr in vzip archives (VIRTUALIZE.md).
+"""Virtualizing image files and N5 / Zarr v2 stores in vzip archives (VIRTUALIZE.md).
 
-Each profile is a subpackage: tiff (profiles/tiff.md), ndpi (profiles/ndpi.md),
-nd2 (profiles/nd2.md) and dicom (profiles/dicom.md); common holds what they share.
+Each profile is a subpackage: tiff, ndpi, nd2, dicom, nifti, ims (file inputs)
+and n5, zarr2 (store inputs, profiles/n5.md and profiles/zarr2.md); common
+holds what they share, and store the store machinery (§1.4–§1.6).
 
     python -m vzip.virtualize <url or path> <out.vzip> [--url <source url>]
 
 Exits with status 3 if the input is rejected.
 
 The archive's source is the input URL (or, with --url, the given one, which is
-how a local file is described by the URL it will be served from).
+how a local file is described by the URL it will be served from). A URL ending
+in `/`, or a local directory, is a store input.
 """
 
 from __future__ import annotations
@@ -17,8 +19,11 @@ from vzip.virtualize import ndpi, nifti
 from vzip.virtualize.common import Output, Rejected, file_reader, http_reader
 from vzip.virtualize.dicom import is_dicom, virtualize_dicom
 from vzip.virtualize.ims import virtualize_ims
+from vzip.virtualize.n5 import virtualize_n5
 from vzip.virtualize.nd2 import is_nd2, virtualize_nd2
+from vzip.virtualize.store import StoreOutput, choose_profile, open_store
 from vzip.virtualize.tiff import virtualize_tiff
+from vzip.virtualize.zarr2 import virtualize_zarr2
 
 # The HDF5 signature, which starts Imaris IMS files (§1.2).
 HDF5 = b"\x89HDF\r\n\x1a\n"
@@ -26,11 +31,30 @@ HDF5 = b"\x89HDF\r\n\x1a\n"
 TIFF_MAGIC = (b"II*\0", b"MM\0*", b"II+\0", b"MM\0+")
 NOT_SUPPORTED = "not a TIFF, NDPI, ND2, DICOM, NIfTI or IMS file"
 
-__all__ = ["Output", "Rejected", "virtualize", "virtualize_dicom", "virtualize_ims", "virtualize_nd2", "virtualize_tiff"]
+__all__ = ["Output", "Rejected", "StoreOutput", "virtualize", "virtualize_store", "virtualize_dicom", "virtualize_ims", "virtualize_nd2", "virtualize_tiff"]
 
 
-def virtualize(location: str, url: str | None = None) -> tuple[str, Output]:
-    """(format, output) for the file at `location`, by its first bytes."""
+def virtualize_store(location: str, url: str | None = None, *,
+                     max_objects: int | None = None) -> tuple[str, StoreOutput]:
+    """(format, output) for the store at `location` (§1.4)."""
+    store = open_store(location, url, max_objects=max_objects)
+    fmt = choose_profile(store)
+    return fmt, (virtualize_n5 if fmt == "n5" else virtualize_zarr2)(store)
+
+
+def is_store(location: str) -> bool:
+    if location.startswith(("http://", "https://")):
+        return location.split("?", 1)[0].split("#", 1)[0].endswith("/")
+    import os
+
+    return os.path.isdir(location)
+
+
+def virtualize(location: str, url: str | None = None) -> tuple[str, Output | StoreOutput]:
+    """(format, output) for the file at `location`, by its first bytes, or for
+    the store at `location` (a URL ending in `/`, or a directory)."""
+    if is_store(location):
+        return virtualize_store(location, url)
     if location.startswith(("http://", "https://")):
         read, size = http_reader(location)
     else:
