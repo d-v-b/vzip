@@ -1,0 +1,12 @@
+{
+ "dimensions": [
+  6,
+  4
+ ],
+ "blockSize": [
+  3,
+  3
+ ],
+ "dataType": "int8",
+ "compressionType": "gzip"
+}

@@ -1,0 +1,12 @@
+{
+ "dimensions": [
+  3
+ ],
+ "blockSize": [
+  2
+ ],
+ "dataType": "float32",
+ "compression": {
+  "type": "raw"
+ }
+}

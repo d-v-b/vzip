@@ -1,0 +1,21 @@
+{
+ "dimensions": [
+  8,
+  6,
+  5
+ ],
+ "blockSize": [
+  4,
+  4,
+  4
+ ],
+ "dataType": "uint8",
+ "compression": {
+  "type": "blosc",
+  "cname": "lz4",
+  "clevel": 5,
+  "shuffle": 1,
+  "blocksize": 0,
+  "nthreads": 1
+ }
+}

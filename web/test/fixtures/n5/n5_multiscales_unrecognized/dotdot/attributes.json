@@ -1,0 +1,11 @@
+{
+ "multiscales": [
+  {
+   "datasets": [
+    {
+     "path": "../bad_scale/s0"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,23 @@
+{
+ "multiscales": [
+  {
+   "datasets": [
+    {
+     "path": "s0",
+     "transform": {
+      "axes": [
+       "z",
+       "y",
+       "x"
+      ],
+      "scale": [
+       0,
+       1,
+       1
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

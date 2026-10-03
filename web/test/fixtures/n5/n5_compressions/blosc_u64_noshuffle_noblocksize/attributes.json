@@ -1,0 +1,17 @@
+{
+ "dimensions": [
+  5,
+  3
+ ],
+ "blockSize": [
+  2,
+  2
+ ],
+ "dataType": "uint64",
+ "compression": {
+  "type": "blosc",
+  "cname": "zlib",
+  "clevel": 1,
+  "shuffle": 0
+ }
+}
