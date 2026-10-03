@@ -30,7 +30,9 @@ uv run pytest tests/test_comparison.py             # a tiny run, no latency
 4. **Serve** the sources and the written formats from a local HTTP server. It
    honours Range requests, waits 20 ms before answering each request (a
    stand-in for an object store round trip; `--latency`), and logs every
-   request.
+   request. The server runs in its own process and times the wait by
+   watching the clock, because macOS timer coalescing can stretch a 20 ms
+   `time.sleep` to 160 ms.
 5. **Read** each format from a cold start. Each step is measured on its own:
    - **open:** `xr.open_zarr(store)` with xarray's defaults (consolidated
      metadata if the store has it, else a listing), which reads the
