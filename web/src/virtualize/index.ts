@@ -1,6 +1,6 @@
 // Virtualizing an image file by the profile its first bytes select
 // (VIRTUALIZE.md §1.2): TIFF, NDPI, ND2, DICOM, NIfTI or IMS, or a store by
-// the profile its root keys select (§1.4): N5 or Zarr v2. Each profile is in
+// the profile its root keys select (§1.4): N5, Zarr v2 or OME-Zarr 0.4. Each profile is in
 // its own directory; store.ts holds the store machinery.
 
 import { type ByteReader, ImageError } from "./common.ts";
@@ -10,6 +10,7 @@ import { isNd2, virtualizeNd2 } from "./nd2/virtualize.ts";
 import { detectNdpi, virtualizeNdpi } from "./ndpi/virtualize.ts";
 import { detectNifti, virtualizeNifti } from "./nifti/virtualize.ts";
 import { virtualizeN5 } from "./n5/virtualize.ts";
+import { declares04, virtualizeOmeZarr } from "./ome-zarr/virtualize.ts";
 import { chooseProfile, type Store, storeArchive } from "./store.ts";
 import { virtualizeTiff } from "./tiff/virtualize.ts";
 import { virtualizeZarr2 } from "./zarr2/virtualize.ts";
@@ -52,8 +53,13 @@ export function isStoreUrl(url: string): boolean {
 /** Virtualizes a listed store by the profile its root keys select (§1.4). */
 export async function virtualizeStore(
   store: Store,
-): Promise<ArchiveDesc & { format: "n5" | "zarr2"; summary: object }> {
-  const format = chooseProfile(store);
-  const result = format === "n5" ? await virtualizeN5(store) : await virtualizeZarr2(store);
+): Promise<ArchiveDesc & { format: "n5" | "zarr2" | "ome-zarr"; summary: object }> {
+  let format: "n5" | "zarr2" | "ome-zarr" = chooseProfile(store);
+  if (format === "zarr2" && (await declares04(store))) format = "ome-zarr";
+  const result = format === "n5"
+    ? await virtualizeN5(store)
+    : format === "ome-zarr"
+    ? await virtualizeOmeZarr(store)
+    : await virtualizeZarr2(store);
   return { format, ...storeArchive(store.url, result), summary: result.summary };
 }

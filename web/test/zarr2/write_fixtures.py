@@ -4,7 +4,8 @@ order, both dimension separators, every supported data type and byte order,
 each compressor (none, zlib, gzip, zstd, blosc with each shuffle), fill
 values (numbers, "NaN", "Infinity", "-Infinity", null), 0-d arrays, missing
 and empty chunks, implicit groups, nodes inside arrays, stale consolidated
-metadata, OME-NGFF 0.4 images, and the inputs the profile rejects
+metadata, OME-NGFF attributes below a root that does not declare
+OME-NGFF 0.4 (copied unchanged), and the inputs the profile rejects
 (`zarr2_reject_*`, one per rejection rule).
 
 Documents and chunks are written here as zarr-python 2 writes them (each
@@ -173,12 +174,14 @@ def main() -> None:
     write_json(d / ".zmetadata", {"zarr_consolidated_format": 1, "metadata": {
         ".zgroup": {"zarr_format": 2}, "ghost/.zarray": {"shape": [1]}}})
 
-    # OME-NGFF 0.4.
-    d = store("zarr2_ome_04")
+    # OME-NGFF 0.4 attributes below a root that does not declare OME-NGFF 0.4
+    # (VIRTUALIZE.md §1.4): the store is read by §10, and every attribute is
+    # copied unchanged (OME-Zarr 0.4 stores are read by profiles/ome-zarr.md).
+    d = store("zarr2_ome_attrs")
     img = arr((2, 8, 10), "<u2")
     axes = [{"name": "c", "type": "channel"}, {"name": "y", "type": "space", "unit": "micrometer"},
             {"name": "x", "type": "space", "unit": "micrometer"}]
-    group(d, "", {"bioformats2raw.layout": 3})
+    group(d, "", {"note": "a plain group"})
     group(d, "0", {
         "multiscales": [{"version": "0.4", "name": "image", "axes": axes, "datasets": [
             {"path": str(i), "coordinateTransformations": [{"type": "scale", "scale": [1, 0.5 * 2**i, 0.5 * 2**i]}]}
@@ -194,12 +197,12 @@ def main() -> None:
         {"path": "0", "coordinateTransformations": [{"type": "scale", "scale": [1, 0.5, 0.5]}]}]}],
         "image-label": {"version": "0.4", "colors": [{"label-value": 1, "rgba": [255, 0, 0, 255]}]}})
     array(d, "0/labels/cells/0", arr((2, 8, 10), "<u4"), [1, 8, 8], compressor=ZSTD, sep="/")
-    # Not converted: another version, a group that already has `ome`, and mixed versions.
+    # Other versions, a group that already has `ome`, and mixed versions.
     group(d, "v03", {"multiscales": [{"version": "0.3", "axes": ["y", "x"], "datasets": [{"path": "0"}]}]})
     array(d, "v03/0", arr((3, 3), "|u1"), [3, 3])
     group(d, "has_ome", {"ome": {"version": "0.5"}, "multiscales": [{"version": "0.4", "datasets": []}]})
     group(d, "mixed", {"multiscales": [{"version": "0.4"}, {"version": "0.5"}]})
-    # Converted, but axes that give no dimension names (duplicates).
+    # Axes that are not valid OME-NGFF (duplicates).
     group(d, "dup_axes", {"multiscales": [{"version": "0.4", "axes": [{"name": "x"}, {"name": "x"}],
                                            "datasets": [{"path": "0"}]}]})
     array(d, "dup_axes/0", arr((3, 3), "|u1"), [3, 3])

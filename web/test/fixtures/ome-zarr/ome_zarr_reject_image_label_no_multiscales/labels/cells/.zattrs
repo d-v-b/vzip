@@ -1,0 +1,15 @@
+{
+  "image-label": {
+    "colors": [
+      {
+        "label-value": 1,
+        "rgba": [
+          1,
+          2,
+          3,
+          4
+        ]
+      }
+    ]
+  }
+}

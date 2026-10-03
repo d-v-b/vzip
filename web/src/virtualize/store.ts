@@ -1,6 +1,6 @@
 // Store inputs (VIRTUALIZE.md §1.4–§1.6): the listing, object reads, the
 // strict JSON reader, and the output of a store profile (one url source per
-// chunk object). Shared by the N5 (§9) and Zarr v2 (§10) profiles.
+// chunk object). Shared by the N5 (§9), Zarr v2 (§10) and OME-Zarr (§11) profiles.
 
 import { isUriReference } from "../uri.ts";
 import type { ArchiveDesc, EntryDesc } from "../writer.ts";
@@ -8,7 +8,7 @@ import type { ArchiveDesc, EntryDesc } from "../writer.ts";
 /** The store input is rejected for a reason no single store profile owns (§1.4–§1.6). */
 export class StoreError extends Error {}
 
-/** A resource limit of this implementation was exceeded: a failure, not a rejection (§1.2, §11). */
+/** A resource limit of this implementation was exceeded: a failure, not a rejection (§1.2, §12). */
 export class StoreLimitError extends Error {}
 
 /** The listing or an object could not be read: a failure (§1.4). */
@@ -21,7 +21,7 @@ const reject = (message: string): never => {
 export const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 export const MAX_DOCUMENT = 1 << 24;
 const MAX_DEPTH = 256;
-/** The browser implementation's limit on listed objects (§11). */
+/** The browser implementation's limit on listed objects (§12). */
 export const MAX_OBJECTS = 100000;
 
 const SPLIT = /^(?:([^:/?#]+):)?(?:\/\/([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/;

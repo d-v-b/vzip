@@ -1,0 +1,54 @@
+{
+  "plate": {
+    "version": "0.4",
+    "name": "plate",
+    "field_count": 2,
+    "acquisitions": [
+      {
+        "id": 0,
+        "name": "first",
+        "maximumfieldcount": 2,
+        "starttime": 1343731272000
+      },
+      {
+        "id": 1,
+        "name": "second",
+        "maximumfieldcount": 1
+      }
+    ],
+    "rows": [
+      {
+        "name": "A"
+      },
+      {
+        "name": "B"
+      },
+      {
+        "name": "A"
+      }
+    ],
+    "columns": [
+      {
+        "name": "1"
+      },
+      {
+        "name": "2"
+      }
+    ],
+    "wells": [
+      {
+        "path": "A/1",
+        "rowIndex": 0,
+        "columnIndex": 0
+      },
+      {
+        "path": "B/2",
+        "rowIndex": 1,
+        "columnIndex": 1
+      }
+    ]
+  },
+  "_creator": {
+    "name": "synthetic"
+  }
+}

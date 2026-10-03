@@ -466,3 +466,87 @@ archive is 43.7 MB with 382291 entries (its source table is 40.1 MB of URLs,
 
 **Not yet done.** No independent implementation round has read §1.4–§1.6, §9
 or §10.
+
+## Revision 13: OME-Zarr 0.4 to 0.5
+
+Revision 13 adds the OME-Zarr profile (§11, `profiles/ome-zarr.md`), a
+different use of vzip: **format migration without copying data**. The input
+is already Zarr, an OME-Zarr 0.4 hierarchy on Zarr v2 storage; the output is
+the same data as OME-Zarr 0.5 on Zarr v3. Every chunk is referenced in place,
+unchanged (the Zarr v3 `v2` chunk key encoding keeps Zarr v2's keys, and
+OME-Zarr 0.5 allows any Zarr v3 chunk key encoding); only the metadata is
+rewritten. Conformance moved from §11 to §12.
+
+**Profile choice (§1.4).** A store whose root has `.zarray` or `.zgroup` is
+read by §11 when it declares OME-NGFF 0.4, and by §10 otherwise. The test
+reads at most three documents, in order: the root's `.zattrs` (0.4
+multiscales, or a `plate` or `well` of version 0.4), and, for a
+`bioformats2raw.layout` root, the first image's (through the plate's first
+well's first field, or `OME`'s `series[0]`, or `0`).
+
+**What moved out of §10.** §10.4 (0.4 multiscales and omero moved under
+`ome`, `dimension_names` on levels, with nothing checked) is gone: §10 now
+copies every attribute unchanged, and its summary lost `images`. Its
+hierarchy reader is shared with §11, whose arrays and chunks are exactly
+§10's.
+
+**§11.** The input is checked against the OME-NGFF 0.4 requirements that
+0.5 also has (axes, datasets, coordinate transformations, scale order,
+omero, labels and image-label, plates, wells, acquisitions, bioformats2raw
+numbering and series; §11.3 lists each rule), and rejected otherwise; 0.4's
+SHOULDs are not checked. OME groups get their 0.4 members under
+`{"ome": {"version": "0.5", ...}}`, without the per-entry `version`s;
+other attributes stay outside `ome`, and nodes that are not OME are §10's.
+Image levels get `dimension_names`. A bioformats2raw collection's
+`OME/METADATA.ome.xml` is referenced whole, like a chunk.
+
+**Label levels (L7).** OME-NGFF 0.4 and 0.5 both require a label image to
+have as many levels as its image. omero-zarr, which wrote the IDR's OME-Zarr
+0.4 data, gives every label image one level more: all eight labelled IDR
+samples in the corpus have it, so the strict rule rejected every one. A
+label image with more levels than its image now keeps only the first `N`
+datasets in its 0.5 `multiscales` (each unchanged); the dropped levels'
+arrays stay in the hierarchy as plain arrays, without `dimension_names`.
+Fewer levels than the image is still rejected. The summary reports
+`droppedLabelLevels`.
+
+**Ambiguities in the OME-NGFF text**, and the reading taken:
+
+- 0.5's prose says a plate "MUST contain a version key", but its examples
+  and JSON schema have none, and `ome-zarr-models` only warns: the plate's
+  `version` is dropped like the others.
+- `omero`'s own `version` (in 0.4's example) is dropped, as 0.5's example
+  does; neither version specifies it.
+- "Ordered from largest (i.e. highest resolution) to smallest" is read as
+  scales that never decrease from one level to the next (what
+  `ome-zarr-models` checks), not as shapes.
+- The omero MUSTs (6-digit color, window min/max/start/end) are on the
+  current 0.4 page but came with 0.5.1 (PR-191); they are checked.
+- "Only integer values are supported" for labels is a comment in 0.4's
+  layout tree, a MUST in 0.5; it is checked on the kept label levels.
+- 0.4 allows one axis that is "channel or a null / custom type"; a channel
+  axis and a custom axis together are rejected (`ome-zarr-models` allows one
+  of each).
+- Transformations given by `path` (binary data in an undefined format) are
+  allowed by 0.4 but rejected as unsupported.
+
+**Tests.** 61 synthetic stores (10 accepted, 51 `ome_zarr_reject_*`, one per
+rule; 158 KB) are written by `web/test/ome-zarr/write_fixtures.py`.
+`web/test/ome-zarr/verify.py` validates every output group with
+`ome-zarr-models` 0.5 and every accepted input with 0.4 (of the rejected
+inputs, the 0.4 models reject 34 and do not cover the other 17 rules), and
+reads every array through vzip against zarr-python's Zarr v2 reader. Both
+implementations agree on all 396 synthetic inputs of every profile (145 equivalent, 251
+rejected) and on 4230 mutants of the OME-Zarr stores (seeds 0, 1 and 2). The corpus
+(`corpus_ome_zarr.txt`) has 14 IDR stores through the proxy (images, eight
+images with extra label levels, an HCS plate of 1440 fields and a
+bioformats2raw plate with OME-XML) and one py-only plate of 102114 objects:
+both implementations produce equivalent
+outputs for all 14. Every output validates with `ome-zarr-models` 0.5
+(1513 groups for the plate alone; the only warnings are 0.5's missing plate
+`version`, above), and arrays of an image, of four images' kept and dropped
+label levels, and of a field of each plate equal zarr-python's Zarr v2
+reading over HTTP. (zarr-python cannot read idr0073's `>u1` arrays as Zarr
+v2, so that image was not pixel-checked.)
+
+**Not yet done.** No independent implementation round has read §11.

@@ -6,7 +6,7 @@ Each fixture file under 256 KiB gets `count` mutants: a byte set to a random
 value near the start or end of the file (where headers, IFDs and chunk maps
 are), a byte anywhere, or a truncation.
 
-Each synthetic store (a directory under web/test/fixtures/n5 or zarr2) gets
+Each synthetic store (a directory under web/test/fixtures/n5, zarr2 or ome-zarr) gets
 `count` mutants, copied to <out dir>/<format>/<name>.m<k>/, each with one
 change: a metadata document (attributes.json, .zarray, .zgroup, .zattrs)
 mutated as bytes, or as JSON (a member's value replaced by a value of
@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 FIXTURES = Path(__file__).resolve().parents[2] / "web" / "test" / "fixtures"
-STORE_FORMATS = ("n5", "zarr2")
+STORE_FORMATS = ("n5", "zarr2", "ome-zarr")
 METADATA = ("attributes.json", ".zarray", ".zgroup", ".zattrs")
 EDGE_VALUES = [None, -1, 0, 1, 2, 2**31, 2**53, 1.5, -0.0, 1e308, True, "", "x", "NaN", "raw", "gzip", "blosc",
                "uint8", "<u2", "|b1", "F", "/", [], [1], [0, 0], {}, {"type": "raw"}, {"id": "zlib"}]

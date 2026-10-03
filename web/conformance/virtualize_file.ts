@@ -12,6 +12,7 @@ import { virtualizeImage, virtualizeStore } from "../src/virtualize/index.ts";
 import { N5Error } from "../src/virtualize/n5/virtualize.ts";
 import { StoreError } from "../src/virtualize/store.ts";
 import { Zarr2Error } from "../src/virtualize/zarr2/virtualize.ts";
+import { OmeZarrError } from "../src/virtualize/ome-zarr/virtualize.ts";
 import { NiftiError } from "../src/virtualize/nifti/virtualize.ts";
 import { ImsError } from "../src/virtualize/ims/virtualize.ts";
 import { TiffError } from "../src/virtualize/tiff/ifd.ts";
@@ -33,7 +34,7 @@ try {
   console.log(JSON.stringify(virtual.summary));
 } catch (e) {
   if (!(e instanceof TiffError || e instanceof DicomError || e instanceof NiftiError || e instanceof ImsError ||
-    e instanceof ImageError || e instanceof StoreError || e instanceof N5Error || e instanceof Zarr2Error)) {
+    e instanceof ImageError || e instanceof StoreError || e instanceof N5Error || e instanceof Zarr2Error || e instanceof OmeZarrError)) {
     console.error(e);
     process.exit(2); // a crash, not a refusal
   }

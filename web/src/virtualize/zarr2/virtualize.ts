@@ -1,7 +1,7 @@
 // The Zarr v2 profile (profiles/zarr2.md, §10): a Zarr v2 hierarchy as a
 // Zarr v3 one, each chunk a whole-object reference under its own key.
 
-import { bloscCodec, levelPath } from "../n5/virtualize.ts";
+import { bloscCodec } from "../n5/virtualize.ts";
 import {
   asInt,
   byDepth,
@@ -22,7 +22,6 @@ import {
   type Store,
   show,
   type StoreResult,
-  without,
 } from "../store.ts";
 
 export class Zarr2Error extends Error {}
@@ -74,7 +73,7 @@ function compressor(c: Json, b: number): Json | undefined {
   return reject(`compressor ${JSON.stringify(id)} is not supported`);
 }
 
-interface ArrayDoc {
+export interface ArrayDoc {
   [k: string]: Json;
   shape: number[];
   chunk_grid: { name: string; configuration: { chunk_shape: number[] } };
@@ -126,22 +125,17 @@ function array(path: string, z: Json, attrs: { [k: string]: Json }): [ArrayDoc, 
   }, sep as string];
 }
 
-/** The group attributes with 0.4 multiscales moved into `ome` (§10.4), or undefined. */
-function ome04(attrs: { [k: string]: Json }): { [k: string]: Json } | undefined {
-  const ms = attrs.multiscales;
-  if (has(attrs, "ome") || !Array.isArray(ms) || ms.length === 0) return undefined;
-  if (!ms.every((m) => isObject(m) && has(m, "version") && m.version === "0.4")) return undefined;
-  const ome: { [k: string]: Json } = {
-    version: "0.5",
-    multiscales: (ms as { [k: string]: Json }[]).map((m) => without(m, ["version"])),
-  };
-  if (has(attrs, "omero")) ome.omero = attrs.omero;
-  const out = without(attrs, ["multiscales", "omero"]);
-  out.ome = ome;
-  return out;
+/** A Zarr v2 hierarchy read by §10.1–§10.2. */
+export interface Hierarchy {
+  arrays: Map<string, ArrayDoc>;
+  seps: Map<string, string>;
+  /** Each explicit group's attributes. */
+  groups: Map<string, { [k: string]: Json }>;
+  implicit: Set<string>;
 }
 
-export async function virtualizeZarr2(store: Store): Promise<StoreResult & { summary: object }> {
+/** The nodes of a Zarr v2 store (§10.1), each document read and checked. */
+export async function readHierarchy(store: Store): Promise<Hierarchy> {
   const objects = store.objects;
   const candidates = new Map<string, string>();
   for (const key of objects.keys()) {
@@ -171,54 +165,27 @@ export async function virtualizeZarr2(store: Store): Promise<StoreResult & { sum
     return a as { [k: string]: Json };
   };
 
-  const arrays = new Map<string, ArrayDoc>();
-  const seps = new Map<string, string>();
-  const groups = new Map<string, { [k: string]: Json }>();
+  const h: Hierarchy = { arrays: new Map(), seps: new Map(), groups: new Map(), implicit };
   for (const path of [...nodes.keys()].sort(compareKeys)) {
     if (nodes.get(path) === "array") {
       const [doc, sep] = array(path || "/", await readDocument(store, join(path, ".zarray")), await attributes(path));
-      arrays.set(path, doc);
-      seps.set(path, sep);
+      h.arrays.set(path, doc);
+      h.seps.set(path, sep);
     } else {
       const g = await readDocument(store, join(path, ".zgroup"));
       if (!isObject(g) || asInt(g.zarr_format) !== 2) reject(`${join(path, ".zgroup")}: zarr_format is not 2`);
-      groups.set(path, { zarr_format: 3, node_type: "group", attributes: await attributes(path) });
+      h.groups.set(path, await attributes(path));
     }
   }
+  return h;
+}
 
-  const images: string[] = [];
-  const named = new Map<string, string[]>();
-  for (const path of [...groups.keys()].sort(compareKeys)) {
-    const converted = ome04(groups.get(path)!.attributes as { [k: string]: Json });
-    if (converted === undefined) continue;
-    groups.get(path)!.attributes = converted;
-    images.push(path);
-    for (const m of (converted.ome as { multiscales: { [k: string]: Json }[] }).multiscales) {
-      const axes = m.axes;
-      if (!Array.isArray(axes) || !axes.every((a) => isObject(a) && typeof a.name === "string")) continue;
-      const names = (axes as { name: string }[]).map((a) => a.name);
-      if (new Set(names).size !== names.length) continue;
-      const datasets = Array.isArray(m.datasets) ? m.datasets : [];
-      for (const d of datasets) {
-        if (!isObject(d) || !levelPath(d.path)) continue;
-        const target = join(path, d.path);
-        if (arrays.has(target) && arrays.get(target)!.shape.length === names.length && !named.has(target)) {
-          named.set(target, names);
-        }
-      }
-    }
-  }
-  for (const [path, names] of named) arrays.get(path)!.dimension_names = names;
-
-  const docs = new Map<string, Json>();
-  for (const path of implicit) docs.set(docKey(path), GROUP_IMPLICIT());
-  for (const [path, doc] of groups) docs.set(docKey(path), doc);
-  for (const [path, doc] of arrays) docs.set(docKey(path), doc as unknown as Json);
-
+/** Every chunk object of every array (§10.2), sizes 0 included, in key order. */
+export function chunkObjects(store: Store, h: Hierarchy): [string, number][] {
   const tests = new Map<string, (rest: string) => boolean>();
-  for (const [path, a] of arrays) {
+  for (const [path, a] of h.arrays) {
     const g = grid(a.shape, a.chunk_grid.configuration.chunk_shape);
-    const sep = seps.get(path)!;
+    const sep = h.seps.get(path)!;
     tests.set(path, (rest) => {
       if (g.length === 0) return rest === "0";
       if (sep === "." && rest.includes("/")) return false;
@@ -226,14 +193,36 @@ export async function virtualizeZarr2(store: Store): Promise<StoreResult & { sum
       return parts.length === g.length && parts.every((s, i) => canonicalIndex(s, g[i]));
     });
   }
-  const all = findChunks(objects, tests);
-  const chunks = all.filter(([, n]) => n > 0);
+  return findChunks(store.objects, tests);
+}
+
+/** The output of a hierarchy: a zarr.json per node and an entry per nonempty
+ * chunk object, plus the whole objects `extra` (§1.4). Also returns every chunk object. */
+export function hierarchyOutput(
+  store: Store,
+  h: Hierarchy,
+  groups: Map<string, { [k: string]: Json }>,
+  arrays: Map<string, Json>,
+  extra: [string, number][] = [],
+): [StoreResult, [string, number][]] {
+  const docs = new Map<string, Json>();
+  for (const path of h.implicit) docs.set(docKey(path), GROUP_IMPLICIT());
+  for (const [path, attributes] of groups) docs.set(docKey(path), { zarr_format: 3, node_type: "group", attributes });
+  for (const [path, doc] of arrays) docs.set(docKey(path), doc);
+  const all = chunkObjects(store, h);
+  const chunks = [...all, ...extra].filter(([, n]) => n > 0).sort((a, b) => compareKeys(a[0], b[0]));
+  return [{ docs, chunks }, all];
+}
+
+export async function virtualizeZarr2(store: Store): Promise<StoreResult & { summary: object }> {
+  const h = await readHierarchy(store);
+  const [result, all] = hierarchyOutput(store, h, h.groups, h.arrays as unknown as Map<string, Json>);
+  const chunks = all.filter(([, n]) => n > 0).length;
   return {
-    docs,
-    chunks,
+    ...result,
     summary: {
-      groups: groups.size + implicit.size, arrays: arrays.size, chunks: chunks.length,
-      emptyChunks: all.length - chunks.length, objects: objects.size, images, listingRequests: store.requests,
+      groups: h.groups.size + h.implicit.size, arrays: h.arrays.size, chunks,
+      emptyChunks: all.length - chunks, objects: store.objects.size, listingRequests: store.requests,
     },
   };
 }

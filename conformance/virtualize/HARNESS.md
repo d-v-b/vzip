@@ -13,8 +13,8 @@ An implementation is a command:
 virtualize <url> <out.json>
 ```
 
-- `<url>` is an `http://` URL of an image file (any profile), or of a store (N5 or
-  Zarr v2), whose URL ends in `/` (§1.4). Use it, exactly as given, as the input
+- `<url>` is an `http://` URL of an image file (any profile), or of a store (N5,
+  Zarr v2 or OME-Zarr 0.4), whose URL ends in `/` (§1.4). Use it, exactly as given, as the input
   URL `U` of the specification (§1.2).
 - On success, write the output (§1.1) to `<out.json>` as described below, and
   exit with status 0. Printing a one-line summary to stdout is optional.
@@ -83,8 +83,8 @@ compared as binary64, so `1` equals `1.0`), or equal bytes.
 
 The synthetic files in `web/test/fixtures/`, one directory per format
 (`tiff/`, `ndpi/`, `nd2/`, `dicom/`, `nifti/`, `ims/`), and the synthetic
-stores in `web/test/fixtures/n5/` and `web/test/fixtures/zarr2/` (one
-directory per store), are good first inputs. Their names say what they
+stores in `web/test/fixtures/n5/`, `web/test/fixtures/zarr2/` and
+`web/test/fixtures/ome-zarr/` (one directory per store), are good first inputs. Their names say what they
 exercise, and `unsupported_*`, `edge_reject_*` and `<profile>_reject_*`
 inputs must be rejected. To serve them the way the harness does, run:
 
@@ -109,8 +109,10 @@ include:
 - `https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/labels/gt/`
   (an N5 COSEM multiscale group, 831 objects);
 - `https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.zarr/recon-1/labels/groundtruth/crop1/ves/`
-  (a Zarr v2 OME-NGFF 0.4 multiscale group).
+  (a Zarr v2 OME-NGFF 0.4 multiscale group, read by the OME-Zarr profile);
+- `https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0072B/9512.zarr/`
+  (an OME-Zarr 0.4 plate from IDR, 24634 objects, path-style listing).
 
-`compare.py --fixtures <dir>` takes the store fixtures from `<dir>/n5/` and
-`<dir>/zarr2/` (as `mutate.py` writes them), and `--large` adds the corpus
+`compare.py --fixtures <dir>` takes the store fixtures from `<dir>/n5/`,
+`<dir>/zarr2/` and `<dir>/ome-zarr/` (as `mutate.py` writes them), and `--large` adds the corpus
 inputs marked `py-only`, which only the reference runs.
