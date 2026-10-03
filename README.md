@@ -8,7 +8,7 @@ A spec for storing two kinds of things in a Zip archive:
 
 read the [pitch](https://github.com/d-v-b/vzip/blob/main/PITCH.md), or the [spec](https://github.com/d-v-b/vzip/blob/main/SPEC.md). there are some implementations here too.
 
-[`comparison/`](comparison/README.md) stores one virtual dataset as kerchunk JSON, kerchunk Parquet, Icechunk and vzip, and compares size, requests and values over HTTP.
+[COMPARISON.md](COMPARISON.md) compares vzip with kerchunk JSON, kerchunk Parquet and Icechunk on the same virtual dataset, read over HTTP.
 
 ## demos
 
