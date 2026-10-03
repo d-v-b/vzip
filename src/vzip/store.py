@@ -286,6 +286,7 @@ class VZipStore(Store):
         self._pages: list = []  # CdIndex pages, when the archive has one
         self._page_keys: list[str] = []
         self._loaded: set[int] = set()
+        self._fetching: dict[int, asyncio.Future] = {}  # page -> the task reading it
         self._bad_pages: dict[int, str] = {}
         self._file_size = 0
 
@@ -400,26 +401,37 @@ class VZipStore(Store):
         )
 
     async def _load_pages(self, idxs: Iterable[int]) -> None:
-        todo = [i for i in idxs if i not in self._loaded]
-        if not todo:
-            return
-        datas = await asyncio.gather(*(
-            self._read(self.url, self._cd_offset + self._pages[i].offset,
-                       self._cd_offset + self._pages[i].offset + self._pages[i].length,
-                       external=False)
-            for i in todo
-        ))
-        for i, data in zip(todo, datas):
-            try:
-                parsed = parse_central_directory(data, trust_offsets=True)
-            except ValueError as e:
-                self._bad_pages[i] = str(e)
-                parsed = {}
-            for k, e in parsed.items():
-                if bisect.bisect_right(self._page_keys, k) - 1 == i:  # spec §7.2
-                    self._entries.setdefault(k, e)
-            self._loaded.add(i)
-        self._refresh_keys()
+        """Load pages `idxs`; a page another caller is already fetching is read once."""
+        todo = [i for i in dict.fromkeys(idxs) if i not in self._loaded]
+        new = [i for i in todo if i not in self._fetching]
+        if new:
+            task = asyncio.ensure_future(self._fetch_pages(new))
+            self._fetching.update(dict.fromkeys(new, task))
+        # shield: one caller being cancelled must not cancel a fetch others await
+        await asyncio.gather(*(asyncio.shield(t) for t in {self._fetching[i] for i in todo}))
+
+    async def _fetch_pages(self, idxs: list[int]) -> None:
+        try:
+            datas = await asyncio.gather(*(
+                self._read(self.url, self._cd_offset + self._pages[i].offset,
+                           self._cd_offset + self._pages[i].offset + self._pages[i].length,
+                           external=False)
+                for i in idxs
+            ))
+            for i, data in zip(idxs, datas):
+                try:
+                    parsed = parse_central_directory(data, trust_offsets=True)
+                except ValueError as e:
+                    self._bad_pages[i] = str(e)
+                    parsed = {}
+                for k, e in parsed.items():
+                    if bisect.bisect_right(self._page_keys, k) - 1 == i:  # spec §7.2
+                        self._entries.setdefault(k, e)
+                self._loaded.add(i)
+            self._refresh_keys()
+        finally:
+            for i in idxs:
+                self._fetching.pop(i, None)
 
     async def _lookup(self, key: str) -> None:
         """Make sure `key`'s central directory record is loaded, if it exists."""
@@ -704,14 +716,47 @@ class VZipStore(Store):
             i += 1
 
     async def list_dir(self, prefix: str) -> AsyncIterator[str]:
+        """The distinct next path segments of the keys under `prefix`.
+
+        Keys are sorted (spec §7.1), so after finding child `c` with keys below
+        it, the listing seeks straight past `prefix + c + "/"`: in an archive
+        with a page index it reads the pages where each child starts, not
+        every page under `prefix` as `list_prefix` must (spec §8.2).
+        """
+        await self._ensure_open()
         prefix = prefix.rstrip("/")
         prefix = prefix + "/" if prefix else ""
         seen: set[str] = set()
-        async for k in self.list_prefix(prefix):
-            child = k[len(prefix) :].split("/", 1)[0]
+        cursor = prefix
+        while (k := await self._next_key(cursor)) is not None and k.startswith(prefix):
+            child, sep, _ = k[len(prefix) :].partition("/")
             if child not in seen:
                 seen.add(child)
                 yield child
+            # "0" follows "/": the least string above every key under child/
+            cursor = prefix + child + "0" if sep else k + "\0"
+
+    async def _next_key(self, cursor: str) -> str | None:
+        """The least listed key that is at least `cursor`, loading only the pages
+        needed to find it."""
+        if not self._pages:
+            i = bisect.bisect_left(self._keys, cursor)
+            return self._keys[i] if i < len(self._keys) else None
+        while True:
+            if self.resolve and cursor.startswith(RESERVED_PREFIX):
+                cursor = RESERVED_PREFIX[:-1] + "0"  # hidden keys are never listed
+            p = max(bisect.bisect_right(self._page_keys, cursor) - 1, 0)
+            await self._load_pages([p])
+            if p in self._bad_pages:
+                raise EntryError(f"page {p} cannot be parsed: {self._bad_pages[p]}")
+            hi = self._page_keys[p + 1] if p + 1 < len(self._pages) else None
+            i = bisect.bisect_left(self._keys, cursor)
+            # pinned keys of later pages are known already; this page's own end is `hi`
+            if i < len(self._keys) and (hi is None or self._keys[i] < hi):
+                return self._keys[i]
+            if hi is None:
+                return None
+            cursor = hi
 
     # ------------------------------------------------------------ helpers
 
