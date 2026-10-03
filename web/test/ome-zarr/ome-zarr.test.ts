@@ -33,6 +33,8 @@ const CASES: [string, object, { [p: string]: [string[], string[] | null] }, { [p
   ["ome_zarr_labels", { images: 2, labels: 1, groups: 4 },
     { labels: [[], ["labels"]], "labels/cells": [[], ["image-label", "multiscales"]], "labels/unlisted": [[], null] },
     { "labels/cells/1": ["c", "y", "x"] }],
+  ["ome_zarr_labels_extra_level", { labels: 1, droppedLabelLevels: 1, arrays: 5 },
+    { "labels/cells": [[], ["image-label", "multiscales"]] }, { "labels/cells/1": ["c", "y", "x"], "labels/cells/2": null }],
   ["ome_zarr_plate", { plates: 1, wells: 2, fields: 3, images: 3, groups: 8 },
     { "": [["_creator"], ["plate"]], A: [[], null], "A/1": [[], ["well"]] }, { "A/1/1/0": ["c", "y", "x"] }],
   ["ome_zarr_well_root", { wells: 1, fields: 2 }, { "": [[], ["well"]] }, { "f1/0": ["y", "x"] }],
@@ -66,6 +68,9 @@ test("virtualizes the synthetic OME-Zarr 0.4 stores as 0.5", async () => {
   const l = await virtualize("ome_zarr_labels");
   assert.deepEqual(doc(l, "labels/zarr.json").attributes, { ome: { version: "0.5", labels: ["cells"] } });
   assert.deepEqual(doc(l, "labels/cells/zarr.json").attributes.ome["image-label"].source, { image: "../../" });
+  const x = await virtualize("ome_zarr_labels_extra_level");
+  const lm = doc(x, "labels/cells/zarr.json").attributes.ome.multiscales[0];
+  assert.deepEqual(lm.datasets.map((d: { path: string }) => d.path), ["0", "1"]);
   const b = await virtualize("ome_zarr_bioformats2raw");
   assert.deepEqual(doc(b, "OME/zarr.json").attributes, { ome: { version: "0.5", series: ["0", "1"] } });
   assert.equal(b.sources.at(-1)!.url, "https://data.test/ome-zarr/ome_zarr_bioformats2raw/OME/METADATA.ome.xml");
@@ -100,7 +105,7 @@ const REJECTIONS: [string, RegExp][] = [
   ["omero_window", /window does not have numbers/],
   ["labels_not_image", /label "missing" is not the path of an image/],
   ["image_label_no_multiscales", /image-label: the group has no multiscales/],
-  ["image_label_levels", /the label image has 3 levels, its image \/ 2/],
+  ["image_label_levels", /the label image has 1 levels, fewer than its image \/'s 2/],
   ["image_label_dtype", /label data type float32 is not an integer type/],
   ["image_label_color_duplicate", /label-values are not unique/],
   ["image_label_rgba", /rgba \[1,2,3,300\]/],

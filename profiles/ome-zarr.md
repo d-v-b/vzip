@@ -128,9 +128,10 @@ hierarchy.)
   - I7. The datasets are ordered from highest resolution to lowest (0.4:
     "from largest (i.e. highest resolution) to smallest"): along every
     axis, each dataset's scale is at least the previous dataset's.
-- I8. No array is a level (a dataset's path) of two multiscales whose axis
-  names differ (0.5 gives each level the `dimension_names` of its image,
-  §11.5, which cannot be two lists).
+- I8. No array is a level of two multiscales whose axis names differ (0.5
+  gives each level the `dimension_names` of its image, §11.5, which cannot
+  be two lists). Here a multiscale's levels are the arrays its kept datasets
+  name (all of them, except for label images, L7).
 
 The member `unit` of an axis is not read: 0.4 says an axis SHOULD have one,
 and it SHOULD be a UDUNITS-2 name. The members `name`, `type` and
@@ -165,11 +166,23 @@ has no `source.image` (0.4's default):
 
 - L6. A `source.image` that is given names an image (resolved within the
   store).
-- L7. If the source image is an image, each multiscale of `X` has as many
-  datasets as the source image's first multiscale ("the two datasets series
-  MUST have the same number of entries").
-- L8. Every level of `X` has an integer data type (`int8` to `uint64`; 0.4:
-  "only integer values are supported"; 0.5 requires it).
+- L7. If the source image is an image, let `N` be the number of datasets
+  of its first multiscale. Each multiscale of `X` has at least `N`
+  datasets; fewer rejects the input. A multiscale with more than `N` keeps
+  only its first `N` datasets, in order: the others are **dropped**.
+  (0.4 and 0.5 both say "the two datasets series MUST have the same number
+  of entries". omero-zarr, which wrote the IDR's OME-Zarr 0.4 data, gives
+  every label image one level more than its image, so that rule would
+  reject every labelled image the IDR publishes; dropping the extra levels
+  instead makes the output satisfy 0.5 without losing an array, since the
+  dropped ones stay in the hierarchy, §11.5.) When the source is not an
+  image, every dataset is kept.
+- L8. Every level of `X` that a kept dataset names has an integer data
+  type (`int8` to `uint64`; 0.4: "only integer values are supported"; 0.5
+  requires it).
+
+The checks of I1–I7 apply to every dataset, dropped or not: a dropped
+dataset is still part of a 0.4 document the input must get right.
 
 **Plates and wells** (§2.2, §3.8, §3.9). For each plate at path `P`:
 
@@ -220,7 +233,12 @@ which has, for each OME member `k` of `A`, the member `k` with `A`'s value
 changed only as follows:
 
 - `multiscales`: each multiscale without its member `version` (0.5 has no
-  per-multiscale version; the hierarchy's version is `ome.version`);
+  per-multiscale version; the hierarchy's version is `ome.version`), and,
+  for a multiscale of a label image that has dropped datasets (L7), with
+  `datasets` its first `N` elements, each unchanged (path and
+  `coordinateTransformations` as written). Nothing else of the multiscale
+  changes: its axes and its own `coordinateTransformations` apply to the
+  kept levels as before;
 - `omero`, `image-label`, `plate` and `well`: the object without its member
   `version`, if it has one (0.5 dropped these: its examples, and its JSON
   schemas, have none);
@@ -236,10 +254,13 @@ OME-NGFF 0.5 requires every level of an image to have `dimension_names`
 equal to the image's axis names (§2.1 of 0.5: "MUST be included in the
 zarr.json of the Zarr array of a multiscale level and MUST match the names
 in the axes metadata"). Each array that is a level of a multiscale (the
-array a dataset's path names, label images included) gets the member
+array a kept dataset's path names, label images included) gets the member
 `"dimension_names"`: that multiscale's axis names, in order. By I8 every
 multiscale of which it is a level gives the same names. No other array gets
-`dimension_names`. The array's attributes are unchanged.
+`dimension_names`; in particular the arrays of dropped datasets (L7) stay in
+the hierarchy as plain arrays, converted by §10 alone (nothing in 0.5 makes
+an array that is not a level carry dimension names). The array's attributes
+are unchanged.
 
 ### 11.6 Chunks and OME-XML
 
@@ -278,5 +299,6 @@ This section is informative. The profile does not check:
 This section is informative. Both implementations print a one-line JSON
 summary: `groups` (explicit and implicit), `arrays`, `chunks` (chunk
 entries), `emptyChunks` (chunk objects of size 0), `objects` (the store's
-objects), `images`, `labels` (label images), `plates`, `wells`, `fields`
+objects), `images`, `labels` (label images), `droppedLabelLevels` (the
+datasets L7 drops, over all label images), `plates`, `wells`, `fields`
 (the images wells list), `omeXml` (OME-XML entries) and `listingRequests`.

@@ -2,7 +2,7 @@
 web/test/fixtures/ome-zarr/<name>/, covering the OME-Zarr profile
 (profiles/ome-zarr.md §11): 2-D, 3-D and 5-D images with and without
 translations, omero metadata, custom axes, labels (image-label colors,
-properties and source), a plate with wells, fields and acquisitions, a well
+properties and source; a label image with an extra level), a plate with wells, fields and acquisitions, a well
 at the root, bioformats2raw collections (numbered images with a series and
 OME-XML, and a plate), F order and both separators, missing and empty
 chunks; and the inputs the profile rejects (`ome_zarr_reject_*`, one per
@@ -186,6 +186,11 @@ def main() -> None:
     labelled(d)
     group(d, "labels/unlisted")  # an intermediate group, not listed: not an OME group
 
+    # A label image with one more level than its image (as omero-zarr writes them): the extra
+    # level is dropped from the 0.5 multiscales and stays a plain array (§11.3, L7).
+    d = store("ome_zarr_labels_extra_level")
+    labelled(d, label_levels=3)
+
     # A plate: wells, fields, acquisitions, an explicit and an implicit row, F-order fields.
     d = store("ome_zarr_plate")
     plate(d, field_order="F")
@@ -302,7 +307,7 @@ def main() -> None:
     d = label_reject("labels_not_image", listed=("cells", "missing"))
     group(d, "labels/missing")
     il = {"colors": [{"label-value": 1, "rgba": [1, 2, 3, 4]}]}
-    label_reject("image_label_levels", image_label=il, label_levels=3)
+    label_reject("image_label_levels", image_label=il, label_levels=1)  # fewer levels than the image
     label_reject("image_label_dtype", image_label=il, label_dtype="<f4")
     label_reject("image_label_color_duplicate",
                  image_label={"colors": [{"label-value": 1, "rgba": [1, 2, 3, 4]}, {"label-value": 1.0}]})

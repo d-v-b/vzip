@@ -132,7 +132,7 @@ def virtualize_ome_zarr(store: Store) -> StoreOutput:
     images = {p for p in attrs if "multiscales" in attrs[p]}
 
     # §11.3 Images.
-    names: dict[str, list[str]] = {}  # level array -> axis names
+    levels: list[tuple[str, int, int, str, list[str]]] = []  # (image, multiscale, dataset, array, axis names)
     multiscales: dict[str, list[dict]] = {}
     for g in sorted(images):
         ms = attrs[g]["multiscales"]
@@ -179,8 +179,7 @@ def virtualize_ome_zarr(store: Store) -> StoreOutput:
                 if prev is not None and any(b < a for a, b in zip(prev, scale)):
                     raise Rejected(f"{wd}: the scale {scale} is smaller than the previous level's {prev}")
                 prev = scale
-                if names.setdefault(target, axis_names) != axis_names:
-                    raise Rejected(f"{target} is a level of images with axes {names[target]} and {axis_names}")
+                levels.append((g, i, j, target, axis_names))
             if "coordinateTransformations" in m:
                 _transforms(w, m["coordinateTransformations"], n)
 
@@ -202,6 +201,7 @@ def virtualize_ome_zarr(store: Store) -> StoreOutput:
 
     # §11.3 Labels.
     label_images: set[str] = set()
+    kept: dict[tuple[str, int], int] = {}  # (label image, multiscale) -> datasets kept, when fewer than all
     for g in ome_groups:
         if "labels" in attrs[g]:
             ls = attrs[g]["labels"]
@@ -247,12 +247,14 @@ def virtualize_ome_zarr(store: Store) -> StoreOutput:
             raise Rejected(f"{x}: the label's source image {rel!r} is not an image")
         if source in images:
             n = len(multiscales[source][0]["datasets"])
-            for m in multiscales[x]:
-                if len(m["datasets"]) != n:
-                    raise Rejected(f"{x}: the label image has {len(m['datasets'])} levels, its image "
-                                   f"{source or '/'} {n}")
-        for m in multiscales[x]:
-            for d in m["datasets"]:
+            for i, m in enumerate(multiscales[x]):
+                if len(m["datasets"]) < n:
+                    raise Rejected(f"{x}: the label image has {len(m['datasets'])} levels, fewer than its image "
+                                   f"{source or '/'}'s {n}")
+                if len(m["datasets"]) > n:  # L7: the levels past the image's are dropped
+                    kept[(x, i)] = n
+        for i, m in enumerate(multiscales[x]):
+            for d in m["datasets"][: kept.get((x, i), len(m["datasets"]))]:
                 level = join(x, d["path"])
                 if arrays[level]["data_type"] not in LABEL_TYPES:
                     raise Rejected(f"{level}: label data type {arrays[level]['data_type']} is not an integer type")
@@ -358,6 +360,15 @@ def virtualize_ome_zarr(store: Store) -> StoreOutput:
             if numbered != list(range(len(numbered))) or not numbered:
                 raise Rejected(f"{g or '/'}: the images are not numbered consecutively from 0")
 
+    # §11.3 I8 and §11.5: the axis names of the levels the output keeps.
+    names: dict[str, list[str]] = {}  # level array -> axis names
+    for g, i, j, target, axis_names in levels:
+        if j >= kept.get((g, i), j + 1):
+            continue
+        if names.setdefault(target, axis_names) != axis_names:
+            raise Rejected(f"{target} is a level of images with axes {names[target]} and {axis_names}")
+    dropped = sum(len(multiscales[g][i]["datasets"]) - n for (g, i), n in kept.items())
+
     # §11.4, §11.5 Output.
     groups = {}
     for path, a in attrs.items():
@@ -371,7 +382,8 @@ def virtualize_ome_zarr(store: Store) -> StoreOutput:
                 continue
             v = a[k]
             if k == "multiscales":
-                v = [{x: y for x, y in m.items() if x != "version"} for m in v]
+                v = [{x: (y[: kept[(path, i)]] if x == "datasets" and (path, i) in kept else y)
+                      for x, y in m.items() if x != "version"} for i, m in enumerate(v)]
             elif k in VERSIONED:
                 v = {x: y for x, y in v.items() if x != "version"}
             ome[k] = v
@@ -391,7 +403,7 @@ def virtualize_ome_zarr(store: Store) -> StoreOutput:
     out.summary = {
         "groups": len(attrs) + len(h.implicit), "arrays": len(arrays), "chunks": nonempty,
         "emptyChunks": len(chunks) - nonempty, "objects": len(store.objects), "images": len(images),
-        "labels": len(label_images), "plates": len(plates), "wells": len(wells),
+        "labels": len(label_images), "droppedLabelLevels": dropped, "plates": len(plates), "wells": len(wells),
         "fields": sum(len(v) for v in well_images.values()), "omeXml": sum(1 for _, n in xml if n > 0),
         "listingRequests": store.requests,
     }

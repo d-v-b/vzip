@@ -143,7 +143,7 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
   const images = new Set([...attrs.keys()].filter((p) => has(attrs.get(p)!, "multiscales")));
 
   // §11.3 Images.
-  const names = new Map<string, string[]>();
+  const levels: [string, number, number, string, string[]][] = []; // (image, multiscale, dataset, array, axis names)
   const multiscales = new Map<string, Obj[]>();
   for (const g of sorted(images)) {
     const ms = attrs.get(g)!.multiscales;
@@ -189,10 +189,7 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
           reject(`${wd}: the scale ${show(scale)} is smaller than the previous level's ${show(prev)}`);
         }
         prev = scale;
-        if (!names.has(target)) names.set(target, axisNames);
-        else if (show(names.get(target)) !== show(axisNames)) {
-          reject(`${target} is a level of images with axes ${show(names.get(target))} and ${show(axisNames)}`);
-        }
+        levels.push([g, i, j, target, axisNames]);
       });
       if (has(m, "coordinateTransformations")) transforms(w, m.coordinateTransformations, n);
     });
@@ -218,6 +215,8 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
 
   // §11.3 Labels.
   const labelImages = new Set<string>();
+  const kept = new Map<string, number>(); // `${label image}\0${multiscale}` -> datasets kept, when fewer than all
+  const keptKey = (g: string, i: number) => `${g}\0${i}`;
   for (const g of omeGroups) {
     const a = attrs.get(g)!;
     if (has(a, "labels")) {
@@ -267,13 +266,14 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
     if (rel !== undefined && (source === undefined || !images.has(source))) reject(`${x}: the label's source image ${show(rel)} is not an image`);
     if (source !== undefined && images.has(source)) {
       const n = (multiscales.get(source)![0].datasets as Json[]).length;
-      for (const m of multiscales.get(x)!) {
+      multiscales.get(x)!.forEach((m, i) => {
         const k = (m.datasets as Json[]).length;
-        if (k !== n) reject(`${x}: the label image has ${k} levels, its image ${source || "/"} ${n}`);
-      }
+        if (k < n) reject(`${x}: the label image has ${k} levels, fewer than its image ${source || "/"}'s ${n}`);
+        if (k > n) kept.set(keptKey(x, i), n); // L7: the levels past the image's are dropped
+      });
     }
-    for (const m of multiscales.get(x)!) {
-      for (const d of m.datasets as Obj[]) {
+    for (const [i, m] of multiscales.get(x)!.entries()) {
+      for (const d of (m.datasets as Obj[]).slice(0, kept.get(keptKey(x, i)))) {
         const level = join(x, d.path as string);
         const dt = arrays.get(level)!.data_type as string;
         if (!LABEL_TYPES.has(dt)) reject(`${level}: label data type ${dt} is not an integer type`);
@@ -377,6 +377,21 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
     }
   }
 
+  // §11.3 I8 and §11.5: the axis names of the levels the output keeps.
+  const names = new Map<string, string[]>();
+  for (const [g, i, j, target, axisNames] of levels) {
+    if (j >= (kept.get(keptKey(g, i)) ?? j + 1)) continue;
+    if (!names.has(target)) names.set(target, axisNames);
+    else if (show(names.get(target)) !== show(axisNames)) {
+      reject(`${target} is a level of images with axes ${show(names.get(target))} and ${show(axisNames)}`);
+    }
+  }
+  let dropped = 0;
+  for (const [k, n] of kept) {
+    const [g, i] = [k.slice(0, k.lastIndexOf("\0")), Number(k.slice(k.lastIndexOf("\0") + 1))];
+    dropped += (multiscales.get(g)![i].datasets as Json[]).length - n;
+  }
+
   // §11.4, §11.5 Output.
   const groups = new Map<string, Obj>();
   const omeSet = new Set(omeGroups);
@@ -390,7 +405,14 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
     for (const k of keys) {
       if (!has(a, k)) continue;
       let v = a[k];
-      if (k === "multiscales") v = (v as Obj[]).map((m) => without(m, ["version"]));
+      if (k === "multiscales") {
+        v = (v as Obj[]).map((m, i) => {
+          const out = without(m, ["version"]);
+          const n = kept.get(keptKey(path, i));
+          if (n !== undefined) out.datasets = (m.datasets as Json[]).slice(0, n);
+          return out;
+        });
+      }
       else if (VERSIONED.has(k)) v = without(v as Obj, ["version"]);
       ome[k] = v;
     }
@@ -415,7 +437,7 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
     ...result,
     summary: {
       groups: attrs.size + h.implicit.size, arrays: arrays.size, chunks: nonempty, emptyChunks: all.length - nonempty,
-      objects: store.objects.size, images: images.size, labels: labelImages.size, plates: plates.length,
+      objects: store.objects.size, images: images.size, labels: labelImages.size, droppedLabelLevels: dropped, plates: plates.length,
       wells: wells.size, fields, omeXml: xml.filter(([, n]) => n > 0).length, listingRequests: store.requests,
     },
   };

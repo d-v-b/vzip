@@ -37,10 +37,14 @@ CASES = {
         {"": (set(), IMAGE), "nested": (set(), IMAGE)},
         {"s0": ["angle", "y", "x"], "nested/0": ["k", "y", "x"]}),
     "ome_zarr_labels": (
-        {"images": 2, "labels": 1, "groups": 4},
+        {"images": 2, "labels": 1, "droppedLabelLevels": 0, "groups": 4},
         {"": (set(), {"multiscales", "omero"}), "labels": (set(), {"labels"}),
          "labels/cells": (set(), {"multiscales", "image-label"}), "labels/unlisted": (set(), None)},
         {"0": ["c", "y", "x"], "labels/cells/1": ["c", "y", "x"]}),
+    "ome_zarr_labels_extra_level": (
+        {"labels": 1, "droppedLabelLevels": 1, "arrays": 5},
+        {"labels/cells": (set(), {"multiscales", "image-label"})},
+        {"labels/cells/1": ["c", "y", "x"], "labels/cells/2": None}),
     "ome_zarr_plate": (
         {"plates": 1, "wells": 2, "fields": 3, "images": 3, "groups": 8},
         {"": ({"_creator"}, {"plate"}), "A": (set(), None), "A/1": (set(), {"well"}),
@@ -103,6 +107,11 @@ def test_virtualizes_the_synthetic_stores():
         "properties": [{"label-value": 1, "class": "nucleus", "area (pixels)": 12}, {"label-value": 2}],
         "source": {"image": "../../"}}
     assert out.docs["labels/zarr.json"]["attributes"] == {"ome": {"version": "0.5", "labels": ["cells"]}}
+    # L7: a label image's levels past its image's are dropped from its multiscales, transforms unchanged.
+    _, out = virtualize(str(FIXTURES / "ome_zarr_labels_extra_level"), url=URL.format("x"))
+    m = out.docs["labels/cells/zarr.json"]["attributes"]["ome"]["multiscales"][0]
+    assert [d["path"] for d in m["datasets"]] == ["0", "1"]
+    assert m["datasets"][1]["coordinateTransformations"] == [{"type": "scale", "scale": [1.0, 2.0, 2.0]}]
     _, out = virtualize(str(FIXTURES / "ome_zarr_image_3d_translation"), url=URL.format("t"))
     m = out.docs["zarr.json"]["attributes"]["ome"]["multiscales"][0]
     assert m["datasets"][2]["coordinateTransformations"] == [
@@ -143,7 +152,7 @@ def test_virtualizes_the_synthetic_stores():
     ("omero_window", "window does not have numbers"),
     ("labels_not_image", "label 'missing' is not the path of an image"),
     ("image_label_no_multiscales", "image-label: the group has no multiscales"),
-    ("image_label_levels", "the label image has 3 levels, its image / 2"),
+    ("image_label_levels", "the label image has 1 levels, fewer than its image /'s 2"),
     ("image_label_dtype", "label data type float32 is not an integer type"),
     ("image_label_color_duplicate", "label-values are not unique"),
     ("image_label_rgba", "rgba \\[1, 2, 3, 300\\]"),
