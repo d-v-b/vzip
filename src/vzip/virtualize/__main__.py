@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 
 from vzip.virtualize import Rejected, virtualize
@@ -12,7 +13,12 @@ def main(argv: list[str]) -> int:
         url = args[i + 1]
         del args[i : i + 2]
     if len(args) != 2:
-        print("usage: python -m vzip.virtualize <url or path> <out.vzip> [--url <source url>]", file=sys.stderr)
+        print("usage: python -m vzip.virtualize <url or path> <out.vzip> [--url <source url>]\n"
+              "(a URL ending in / or a directory is an N5 or Zarr v2 store; a directory needs --url)",
+              file=sys.stderr)
+        return 2
+    if url is None and os.path.isdir(args[0]):
+        print("a local directory needs --url, the store URL (ending in /) it is served from", file=sys.stderr)
         return 2
     try:
         fmt, out = virtualize(args[0], url)

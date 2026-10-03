@@ -1,0 +1,25 @@
+{
+ "dimensions": [
+  11,
+  3,
+  2
+ ],
+ "blockSize": [
+  5,
+  2,
+  2
+ ],
+ "dataType": "uint16",
+ "compression": {
+  "type": "gzip",
+  "level": -1,
+  "useZlib": false
+ },
+ "n5": "4.0.0",
+ "resolution": [
+  1.5,
+  2,
+  3
+ ],
+ "name": "root"
+}

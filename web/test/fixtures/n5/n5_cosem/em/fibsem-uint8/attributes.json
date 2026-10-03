@@ -1,0 +1,120 @@
+{
+ "axes": [
+  "x",
+  "y",
+  "z"
+ ],
+ "units": [
+  "nm",
+  "nm",
+  "nm"
+ ],
+ "n5": "2.0.0",
+ "multiscales": [
+  {
+   "datasets": [
+    {
+     "path": "s0",
+     "transform": {
+      "axes": [
+       "z",
+       "y",
+       "x"
+      ],
+      "scale": [
+       5.24,
+       4.0,
+       4.0
+      ],
+      "translate": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "units": [
+       "nm",
+       "nm",
+       "nm"
+      ]
+     }
+    },
+    {
+     "path": "s1",
+     "transform": {
+      "axes": [
+       "z",
+       "y",
+       "x"
+      ],
+      "scale": [
+       10.48,
+       8.0,
+       8.0
+      ],
+      "translate": [
+       2.62,
+       2.0,
+       2.0
+      ],
+      "units": [
+       "nm",
+       "nm",
+       "nm"
+      ]
+     }
+    },
+    {
+     "path": "s2",
+     "transform": {
+      "axes": [
+       "z",
+       "y",
+       "x"
+      ],
+      "scale": [
+       20.96,
+       16.0,
+       16.0
+      ],
+      "translate": [
+       7.86,
+       6.0,
+       6.0
+      ],
+      "units": [
+       "nm",
+       "nm",
+       "nm"
+      ]
+     }
+    }
+   ],
+   "name": "em/fibsem-uint8"
+  }
+ ],
+ "pixelResolution": {
+  "dimensions": [
+   4.0,
+   4.0,
+   5.24
+  ],
+  "unit": "nm"
+ },
+ "scales": [
+  [
+   1,
+   1,
+   1
+  ],
+  [
+   2,
+   2,
+   2
+  ],
+  [
+   4,
+   4,
+   4
+  ]
+ ]
+}

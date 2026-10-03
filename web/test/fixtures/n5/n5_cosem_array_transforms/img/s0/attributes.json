@@ -1,0 +1,34 @@
+{
+ "dimensions": [
+  12,
+  10,
+  8
+ ],
+ "blockSize": [
+  5,
+  5,
+  5
+ ],
+ "dataType": "uint8",
+ "compression": {
+  "type": "raw"
+ },
+ "transform": {
+  "axes": [
+   "x",
+   "y",
+   "z"
+  ],
+  "scale": [
+   1.0,
+   1.0,
+   3.0
+  ],
+  "units": [
+   "micrometer",
+   "micrometer",
+   "micrometer"
+  ],
+  "order": "F"
+ }
+}

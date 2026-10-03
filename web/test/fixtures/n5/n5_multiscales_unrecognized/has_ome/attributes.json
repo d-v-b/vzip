@@ -1,0 +1,13 @@
+{
+ "ome": {
+  "version": "0.5",
+  "custom": true
+ },
+ "scales": [
+  [
+   1,
+   1,
+   1
+  ]
+ ]
+}

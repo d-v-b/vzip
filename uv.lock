@@ -2069,6 +2069,11 @@ dependencies = [
     { name = "zarr" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "zarr-n5" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.3" },
@@ -2092,6 +2097,9 @@ requires-dist = [
     { name = "xarray", specifier = ">=2026.9.0" },
     { name = "zarr", specifier = ">=3.4.0" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "zarr-n5", specifier = ">=0.3.1" }]
 
 [[package]]
 name = "xarray"
@@ -2251,4 +2259,16 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ae/29/6330391bab511e2428c2409fc15f6f32e4def9b2ee5eec4e95b8300304be/zarr-3.4.0.tar.gz", hash = "sha256:b68676576a6fc42683dfcc0daeb3c0e994f71e1680696990bde056bd3acf3542", size = 829693, upload-time = "2026-09-15T20:58:38.216Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2b/6c/7c9cf79cb2122f7c94a36c0456b476515fa01c1343705d5411b3e8c1a1e9/zarr-3.4.0-py3-none-any.whl", hash = "sha256:0a5e6c9b5c4139759e612556c7fb32c8ee4e4877a46b3556244093413eb72395", size = 376931, upload-time = "2026-09-15T20:58:36.565Z" },
+]
+
+[[package]]
+name = "zarr-n5"
+version = "0.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "zarr" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8b/7e/5e2d4eaebf04837385c4889f4aec0215147563f271df5492333261aaa570/zarr_n5-0.3.1.tar.gz", hash = "sha256:804ef5647d68e584b325956b5e886bcbe8b346e3e915fab02455b005e70bd1f1", size = 11391, upload-time = "2026-06-24T17:24:03.226Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e6/1e/a73d455120612620e5b6d52e07d7483258f742f12743a7fab793fd899d56/zarr_n5-0.3.1-py3-none-any.whl", hash = "sha256:7a24b7adc6cef1498ff0884ebe092b1a40ca07312eb3489a385604ea145a9ad4", size = 16223, upload-time = "2026-06-24T17:24:02.368Z" },
 ]
