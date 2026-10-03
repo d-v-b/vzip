@@ -5,8 +5,8 @@
 
 import fs from "node:fs";
 import { openHttpFile } from "../src/http.ts";
-import { blockReader } from "../src/tiff.ts";
-import { virtualizeImage } from "../src/image.ts";
+import { blockReader } from "../src/virtualize/common.ts";
+import { virtualizeImage } from "../src/virtualize/index.ts";
 import { writeVzip } from "../src/writer.ts";
 
 const [url, out] = process.argv.slice(2);
@@ -39,7 +39,7 @@ try {
   fs.writeFileSync(out, await writeVzip(virtual));
   console.log(JSON.stringify({ format: virtual.format, requests, ms: Math.round(performance.now() - t0), ...virtual.summary }));
 } catch (e) {
-  if (!(e instanceof Error) || !/^(TiffError|Nd2Error|LVError|ImageError)$/.test(e.constructor.name)) throw e;
+  if (!(e instanceof Error) || !/^(TiffError|Nd2Error|LVError|DicomError|NiftiError|ImsError|ImageError)$/.test(e.constructor.name)) throw e;
   console.error(`rejected: ${e.constructor.name}: ${e.message}`);
   process.exitCode = 3;
 }

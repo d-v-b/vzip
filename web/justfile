@@ -27,6 +27,6 @@ test: typecheck
 serve port="8000":
     node serve.mjs {{port}}
 
-# Virtualize a TIFF or ND2 URL into the harness's JSON description (conformance/virtualize/HARNESS.md)
+# Virtualize an image file URL into the harness's JSON description (conformance/virtualize/HARNESS.md)
 virtualize url out:
     node conformance/virtualize.ts {{quote(url)}} {{quote(out)}}

@@ -1,0 +1,14 @@
+# url|name of the public NIfTI files in the corpus: nibabel's test data (MIT), SPM (GPL-2.0), dcm2niix's
+# regression data from neurolabusc's dcm_qa repositories (BSD-2-Clause) and NiiVue's demo images (BSD-2-Clause)
+https://raw.githubusercontent.com/nipy/nibabel/master/nibabel/tests/data/anatomical.nii|nibabel_anatomical
+https://raw.githubusercontent.com/nipy/nibabel/master/nibabel/tests/data/functional.nii|nibabel_functional
+https://raw.githubusercontent.com/nipy/nibabel/master/nibabel/tests/data/reoriented_anat_moved.nii|nibabel_reoriented_anat_moved
+https://raw.githubusercontent.com/nipy/nibabel/master/nibabel/tests/data/row_major.dconn.nii|nibabel_row_major_dconn
+https://raw.githubusercontent.com/niivue/niivue/main/packages/vox-loader/tests/testData/monu1.nii|niivue_monu1_rgba
+https://raw.githubusercontent.com/spm/spm/main/toolbox/OldNorm/SPECT.nii|spm_spect
+https://raw.githubusercontent.com/spm/spm/main/canonical/avg152T1.nii|spm_avg152T1
+https://raw.githubusercontent.com/spm/spm/main/toolbox/DEM/face.nii|spm_face
+https://raw.githubusercontent.com/spm/spm/main/tpm/TPM.nii|spm_tpm
+https://raw.githubusercontent.com/neurolabusc/dcm_qa_enh/master/Ref/Philips_WIP_resting_state_1001_e1.nii|dcmqa_philips_resting_state
+https://raw.githubusercontent.com/neurolabusc/dcm_qa_philips/master/Ref/DT_HIGH_32DIR_SENSE_1201.nii|dcmqa_philips_dwi
+https://raw.githubusercontent.com/neurolabusc/dcm_qa_uih/master/Ref/t1_gre_fsp_3d_sag_2_132222.nii|dcmqa_uih_t1_sag

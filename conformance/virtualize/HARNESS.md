@@ -1,6 +1,7 @@
 # Virtualization harness
 
-For [VIRTUALIZE.md](../../VIRTUALIZE.md) (profiles version 0, draft). This
+For [VIRTUALIZE.md](../../VIRTUALIZE.md) and its profiles in
+[profiles/](../../profiles/) (profiles version 0, draft). This
 document says how an implementation is run and checked. It adds no rules to
 the specification.
 
@@ -12,7 +13,7 @@ An implementation is a command:
 virtualize <url> <out.json>
 ```
 
-- `<url>` is an `http://` URL of a TIFF or ND2 file. Use it, exactly as given,
+- `<url>` is an `http://` URL of an image file (any profile). Use it, exactly as given,
   as the input URL `U` of the specification (§1.2).
 - On success, write the output (§1.1) to `<out.json>` as described below, and
   exit with status 0. Printing a one-line summary to stdout is optional.
@@ -70,16 +71,17 @@ compared as binary64, so `1` equals `1.0`), or equal bytes.
 
 ## Test inputs
 
-The synthetic files in `web/test/fixtures/` (`*.tif`, `*.nd2`) are good
-first inputs. Their names say what they exercise, and `unsupported_*` and
-`nd2_reject_*` files must be rejected. To serve them the way the harness
+The synthetic files in `web/test/fixtures/`, one directory per format
+(`tiff/`, `ndpi/`, `nd2/`, `dicom/`, `nifti/`, `ims/`), are good first
+inputs. Their names say what they exercise, and `unsupported_*`,
+`edge_reject_*` and `<profile>_reject_*` files must be rejected. To serve them the way the harness
 does, run:
 
 ```
 python conformance/virtualize/proxy.py web/test/fixtures /tmp/vzip-proxy-cache 8765
 ```
 
-Then `http://127.0.0.1:8765/f/<file name>` is a fixture. The same server also
+Then `http://127.0.0.1:8765/f/<format>/<file name>` is a fixture. The same server also
 serves remote files at `http://127.0.0.1:8765/u/<id>/<name>`, where `<id>` is
 the base64url encoding (no padding) of an `https://` URL. Public test inputs
 include:

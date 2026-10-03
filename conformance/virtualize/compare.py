@@ -1,9 +1,9 @@
-"""Compares virtualizers (VIRTUALIZE.md §1.1, §5; HARNESS.md).
+"""Compares virtualizers (VIRTUALIZE.md §1.1, §9; HARNESS.md).
 
 Every implementation runs on every input of the corpus, which the caching
 proxy (proxy.py) serves over local HTTP: the synthetic files in
-web/test/fixtures/, the 205 OME-TIFFs of IDR idr0096, and the public ND2 and TIFF files
-in corpus_nd2.txt. For each input, all implementations must either reject it
+web/test/fixtures/ (one directory per format), the 205 OME-TIFFs of IDR
+idr0096, and the public files in corpus_nd2.txt and corpus_tiff.txt. For each input, all implementations must either reject it
 (exit status 3) or produce equivalent outputs; outputs are compared with the
 reference implementation's (the first one).
 
@@ -15,7 +15,7 @@ Node). Others write HARNESS.md's JSON description; give them as
 
 Usage: uv run python conformance/virtualize/compare.py <out dir>
            [--impl name=command ...] [--no-builtin web] [--quick] [--only <substring>]
-           [--fixtures <dir>]  (only the TIFF and ND2 files in <dir>, e.g. from mutate.py)
+           [--fixtures <dir>]  (only the TIFF, NDPI and ND2 files under <dir>, e.g. from mutate.py)
 """
 
 from __future__ import annotations
@@ -148,14 +148,15 @@ def check(item: tuple[str, str], impls: dict, out_dir: Path) -> dict:
 
 
 def corpus(proxy: Proxy, fixtures: Path, quick: bool, local_only: bool) -> list[tuple[str, str]]:
-    items = [(f"fixture-{p.stem}", proxy.local(p.name))
-             for p in sorted([*fixtures.glob("*.tif"), *fixtures.glob("*.ndpi"), *fixtures.glob("*.nd2")])]
+    items = [(f"fixture-{p.stem}", proxy.local(p.relative_to(fixtures).as_posix()))
+             for p in sorted([*fixtures.rglob("*.tif"), *fixtures.rglob("*.ndpi"), *fixtures.rglob("*.nd2"), *fixtures.rglob("*.dcm"), *fixtures.rglob("*.nii"),
+                             *fixtures.rglob("*.ims")])]
     if local_only:
         return items
     listing = urllib.request.urlopen(IDR, timeout=60).read().decode()
     tiffs = sorted(set(re.findall(r'href="([^"?/][^"]*\.ome\.tiff)"', listing)))
     items += [(f"idr-{i:03d}", proxy.remote(IDR + n)) for i, n in enumerate(tiffs[:3] if quick else tiffs)]
-    for corpus_file, prefix in (("corpus_nd2.txt", "nd2-"), ("corpus_tiff.txt", "")):
+    for corpus_file, prefix in (("corpus_nd2.txt", "nd2-"), ("corpus_tiff.txt", ""), ("corpus_dicom.txt", "dicom-"), ("corpus_nifti.txt", "nifti-"), ("corpus_ims.txt", "ims-")):
         listed = [line.split("|") for line in (HERE / corpus_file).read_text().split("\n")
                   if line and not line.startswith("#")]
         items += [(f"{prefix}{name}", proxy.remote(url)) for url, name in (listed[:3] if quick else listed)]

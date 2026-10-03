@@ -14,11 +14,15 @@
 
 import { Archive, type RangeFetcher, VzipError } from "./archive.ts";
 import { HttpResolutionError, openHttpFile, readHttpRange } from "./http.ts";
-import { ImageError, virtualizeImage } from "./image.ts";
-import { LVError } from "./lv.ts";
-import { Nd2Error } from "./nd2.ts";
-import { blockReader, TiffError } from "./tiff.ts";
-import { virtualizeTiff } from "./virtualize.ts";
+import { blockReader, ImageError } from "./virtualize/common.ts";
+import { virtualizeImage } from "./virtualize/index.ts";
+import { DicomError } from "./virtualize/dicom/virtualize.ts";
+import { ImsError } from "./virtualize/ims/virtualize.ts";
+import { LVError } from "./virtualize/nd2/lv.ts";
+import { Nd2Error } from "./virtualize/nd2/virtualize.ts";
+import { NiftiError } from "./virtualize/nifti/virtualize.ts";
+import { TiffError } from "./virtualize/tiff/ifd.ts";
+import { virtualizeTiff } from "./virtualize/tiff/virtualize.ts";
 import { writeVzip } from "./writer.ts";
 
 export const ARCHIVE_KEY = "__vz__/archive.vzip";
@@ -175,6 +179,9 @@ export function makeHandler(options: HandlerOptions) {
       }
       if (e instanceof TiffError) return response(422, `TIFF: ${message}`);
       if (e instanceof Nd2Error || e instanceof LVError) return response(422, `ND2: ${message}`);
+      if (e instanceof DicomError) return response(422, `DICOM: ${message}`);
+      if (e instanceof NiftiError) return response(422, `NIfTI: ${message}`);
+      if (e instanceof ImsError) return response(422, `IMS: ${message}`);
       if (e instanceof ImageError) return response(422, message);
       if (e instanceof HttpResolutionError) return response(502, message);
       return response(500, message);

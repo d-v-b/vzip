@@ -1,0 +1,25 @@
+# url|name of the public Imaris IMS files in the corpus. Sources: the OME sample images
+# (downloads.openmicroscopy.org/images/Imaris-IMS/, CC BY 4.0) and Zenodo records (each under the
+# record's license, CC BY 4.0 or CC0). Writers include Andor Fusion, Imaris 7-10 and ImarisFileConverter;
+# croppedRetinaLz4 (LZ4) and the scene-only hCD8 file must be rejected.
+https://downloads.openmicroscopy.org/images/Imaris-IMS/davemason/Convallaria_3C_1T_confocal.ims|ome_convallaria_3c_1t
+https://downloads.openmicroscopy.org/images/Imaris-IMS/davemason/Convallaria_3C_10T_confocal.ims|ome_convallaria_3c_10t
+https://downloads.openmicroscopy.org/images/Imaris-IMS/davemason/TransFactors_2C_SRRF.ims|ome_transfactors_2c_srrf
+https://downloads.openmicroscopy.org/images/Imaris-IMS/davemason/Convallaria_3C_3T_35Z_confocal_deconvolved.ims|ome_convallaria_3c_3t_35z_deconvolved
+https://downloads.openmicroscopy.org/images/Imaris-IMS/eliana/retina_large.ims|ome_retina_large
+https://downloads.openmicroscopy.org/images/Imaris-IMS/eliana/2016-07-26_17.11.03_Sample%20Prefix_5P298C2_Protocol.ims|ome_eliana_protocol
+https://downloads.openmicroscopy.org/images/Imaris-IMS/bitplane/performance/performanceTestImage.ims|ome_bitplane_performance
+https://downloads.openmicroscopy.org/images/Imaris-IMS/bitplane/lz4/croppedRetinaLz4.ims|ome_bitplane_retina_lz4
+https://zenodo.org/api/records/14675120/files/Andor_Dragonfly_example_2Dsnap.ims/content|zenodo_dragonfly_2dsnap
+https://zenodo.org/api/records/4449687/files/HeLa_H2BmCherry_GFPtubulin_Mitotracker.ims/content|zenodo_hela_mitotracker
+https://zenodo.org/api/records/4433202/files/EM_C_596.ims/content|zenodo_ovule_em_c_596
+https://zenodo.org/api/records/18473314/files/HEK_DDX6_tracked.ims/content|zenodo_hek_ddx6_tracked
+https://zenodo.org/api/records/3843094/files/Figure%204%2BSupp%20Video%203_h_hCD8-SHG_scene.ims/content|zenodo_hcd8_shg_scene
+https://zenodo.org/api/records/17257407/files/Anna_test.ims/content|zenodo_anna_test
+https://zenodo.org/api/records/15001649/files/bfGetReaderTest.ims/content|zenodo_bfgetreadertest
+https://zenodo.org/api/records/7845413/files/data%20movie%201.ims/content|zenodo_cyanobacteria_movie
+https://zenodo.org/api/records/10937428/files/figure4_mutants_individual_11_segment1.ims/content|zenodo_polarity_mutants
+https://zenodo.org/api/records/18852087/files/02242026%20Sqh%2CmiraRFP%20x%20534%2C%202hx1m%2C%20brain%201%20symdiv%20crop.ims/content|zenodo_sqh_imaris10
+https://zenodo.org/api/records/20307858/files/Imaris_sample.ims/content|zenodo_imaris_subresolution
+https://zenodo.org/api/records/33141/files/deconv_GMRFlp_CD4tdGFP_GMR-myr-RFP_P28_culture_fast1_1-31-13.ims/content|zenodo_filopodia_deconv
+https://zenodo.org/api/records/10870403/files/IBEX_mouse_spleen.ims/content|zenodo_ibex_mouse_spleen

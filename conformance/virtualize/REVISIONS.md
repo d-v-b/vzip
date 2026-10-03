@@ -368,3 +368,63 @@ Both maintained implementations agree on all 120 synthetic files and on the
 
 **Not covered:** z positions (ND2 `dZLow`/`dZPos`, NDPI
 ZOffsetFromSlideCenter, OME `PositionZ`).
+
+## Revision 10: one document per profile
+
+Revision 10 changes no rules. VIRTUALIZE.md keeps what every profile shares
+(§1, §2) and the conformance notes (§6), and each profile is now a document
+of its own in `profiles/`: TIFF (`tiff.md`, §3), NDPI (`ndpi.md`, §4,
+formerly §3.7) and ND2 (`nd2.md`, §5, formerly §4). The conformance section
+moved from §5 to §6. Revision 9, the last single-file revision, is
+`spec_history/VIRTUALIZE.r9.md`.
+
+The implementations are organized the same way: `src/vzip/virtualize/` and
+`web/src/virtualize/` have one directory per profile (`tiff/`, `ndpi/`,
+`nd2/`) next to what they share (`common`), and the synthetic inputs are in
+`web/test/fixtures/<profile>/`, written by `web/test/<profile>/`.
+
+## Revision 11: DICOM, NIfTI and IMS
+
+Revision 11 adds three profiles; they do not come from a spec round. §1.2's
+table now chooses among six profiles from the file's first 552 bytes. It
+tests for `DICM` at byte 128 first, so DICOM files whose preamble holds a TIFF
+header (as four of pydicom's sample files do) are read as DICOM. It then
+tests the full four-byte TIFF magic, which the implementations had shortened
+to the byte-order mark. §2.2 lets a profile add one attribute member of its
+own, beside `ome`, for what OME-NGFF cannot express. Conformance moved from
+§6 to §9.
+
+| profile | inputs | rejected |
+|---|---|---|
+| DICOM (§6) | Part 10 files: native pixel data (implicit/explicit VR, either byte order), JPEG Baseline and JPEG 2000 frames over one or more fragments; multi-frame along `z`; TILED_FULL whole-slide levels | other transfer syntaxes, palette colour, native YBR, TILED_SPARSE, several focal planes or optical paths |
+| NIfTI (§7) | NIfTI-1 and NIfTI-2 single files, either byte order, up to 5 dimensions, integer, float and RGB(A) voxels; slices split into row blocks above 128 KiB; intensity scaling recorded as a `nifti` attribute | gzip, header-and-image pairs, complex types, dimensions 6–7 (CIFTI) |
+| IMS (§8) | Imaris 5.5–10 files: a hand-read HDF5 subset (superblock 0–3, object headers v1/v2, symbol-table, compact and dense groups and attributes, v1 B-tree, single-chunk and fixed-array chunk indexes, absolute soft links), uncompressed or deflate chunks | LZ4, shuffle and other filters, contiguous layouts, other chunk indexes, shared messages |
+
+**Tests.** Each profile has synthetic files in `web/test/fixtures/<profile>/`
+(43 DICOM, 64 NIfTI, 27 IMS, about 580 KB in all), checked pixel by pixel
+against pydicom, nibabel and h5py. Both maintained implementations agree on
+all 254 synthetic files of the six profiles, on mutants of the new ones
+(420 DICOM, 1920 NIfTI, 1350 IMS) and on public files: 17 DICOM (pydicom
+samples and NCI Imaging Data Commons whole-slide levels), 12 NIfTI and 21
+IMS.
+
+**Not yet done.** No independent implementation round has read the new
+profiles.
+
+**A first independent reading of IMS.** A standard-library implementation
+written from §1, §2, §8 and HARNESS.md alone agreed with both maintained
+implementations on all 27 IMS fixtures, 270 mutants and the 21 public files.
+Its notes found one real bug, in the profile and both implementations: with
+one z plane at level 0, the z axis was dropped even when chunks held several
+z planes, so a chunk's bytes did not decode to its Zarr chunk. The z axis
+now stays when any level's `cz` is more than 1 (new fixture
+`ims_2d_deep_chunks`). Three wordings were also fixed: where a v2 object
+header's optional fields start, how the time step's Δ is computed in
+binary64, and a wrong cross-reference to §2.3's centre rule.
+
+Points the notes raised that are not yet settled, for the next round: which
+fields count as lengths for the 2^53 − 1 check; whether a v2 B-tree node's
+record count is checked; whether a fractal heap direct block must lie wholly
+within the file; whether fixed-array checks apply to unallocated entries; the
+padding of v1 attribute messages; and whether a datatype or dataspace must
+lie within its declared size or only within the message.

@@ -3,7 +3,7 @@
 `imagecodecs_jpeg2k`: each chunk is one JPEG 2000 codestream (as in TIFF
 compression 33003/33005/34712 with planar-separate tiles).
 `imagecodecs_jpeg`: each chunk is one complete JPEG stream (as virtualized
-JPEG-in-TIFF tiles are, VIRTUALIZE.md §3.6).
+JPEG-in-TIFF tiles are, profiles/tiff.md §3.6).
 
 Decoding only; the encoders exist so zarr can create the array metadata.
 """
