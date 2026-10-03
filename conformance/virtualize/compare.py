@@ -2,10 +2,18 @@
 
 Every implementation runs on every input of the corpus, which the caching
 proxy (proxy.py) serves over local HTTP: the synthetic files in
-web/test/fixtures/ (one directory per format), the 205 OME-TIFFs of IDR
-idr0096, and the public files in corpus_nd2.txt and corpus_tiff.txt. For each input, all implementations must either reject it
-(exit status 3) or produce equivalent outputs; outputs are compared with the
-reference implementation's (the first one).
+web/test/fixtures/ (one directory per format), the synthetic stores in
+web/test/fixtures/n5/ and web/test/fixtures/zarr2/ (one directory per store,
+served with the S3 listing of VIRTUALIZE.md §1.5), the 205 OME-TIFFs of IDR
+idr0096, and the public files and stores in corpus_*.txt. For each input, all
+implementations must either reject it (exit status 3) or produce equivalent
+outputs; outputs are compared with the reference implementation's (the first
+one).
+
+Corpus lines are `url|name`, or `url|name|py-only` for an input larger than
+the browser implementation's limit (VIRTUALIZE.md §11): such inputs are
+skipped unless `--large` is given, and then only the reference runs on them.
+Store URLs end in `/`.
 
 Implementations are `name=command`, where the command is run as
 `command <url> <out>`. The built-in ones write vzip archives: `py` (the
@@ -15,7 +23,8 @@ Node). Others write HARNESS.md's JSON description; give them as
 
 Usage: uv run python conformance/virtualize/compare.py <out dir>
            [--impl name=command ...] [--no-builtin web] [--quick] [--only <substring>]
-           [--fixtures <dir>]  (only the TIFF, NDPI and ND2 files under <dir>, e.g. from mutate.py)
+           [--fixtures <dir>]  (only the fixture files and stores under <dir>, e.g. from mutate.py)
+           [--large]  (also the py-only corpus inputs, with the reference alone)
 """
 
 from __future__ import annotations
@@ -127,8 +136,10 @@ def run(impl: tuple[str, list[str]], url: str, out: Path) -> tuple[str, object]:
         out.unlink(missing_ok=True)
 
 
-def check(item: tuple[str, str], impls: dict, out_dir: Path) -> dict:
-    name, url = item
+def check(item: tuple, impls: dict, out_dir: Path) -> dict:
+    name, url = item[:2]
+    if len(item) > 2 and item[2] == "py-only":
+        impls = dict(list(impls.items())[:1])
     results = {n: run(impl, url, out_dir / f"{name}.{n}.out") for n, impl in impls.items()}
     ref_name = next(iter(impls))
     ref = results[ref_name]
@@ -147,19 +158,35 @@ def check(item: tuple[str, str], impls: dict, out_dir: Path) -> dict:
     return {"name": name, "url": url, "verdicts": verdicts}
 
 
-def corpus(proxy: Proxy, fixtures: Path, quick: bool, local_only: bool) -> list[tuple[str, str]]:
-    items = [(f"fixture-{p.stem}", proxy.local(p.relative_to(fixtures).as_posix()))
-             for p in sorted([*fixtures.rglob("*.tif"), *fixtures.rglob("*.ndpi"), *fixtures.rglob("*.nd2"), *fixtures.rglob("*.dcm"), *fixtures.rglob("*.nii"),
-                             *fixtures.rglob("*.ims")])]
+STORE_FORMATS = ("n5", "zarr2")
+
+
+def store_fixtures(fixtures: Path) -> list[Path]:
+    """The synthetic stores: each directory directly under <fixtures>/n5 and <fixtures>/zarr2."""
+    return sorted(d for f in STORE_FORMATS if (fixtures / f).is_dir() for d in (fixtures / f).iterdir() if d.is_dir())
+
+
+def corpus(proxy: Proxy, fixtures: Path, quick: bool, local_only: bool, large: bool = False) -> list[tuple]:
+    stores = store_fixtures(fixtures)
+    files = [p for p in sorted([*fixtures.rglob("*.tif"), *fixtures.rglob("*.ndpi"), *fixtures.rglob("*.nd2"),
+                                *fixtures.rglob("*.dcm"), *fixtures.rglob("*.nii"), *fixtures.rglob("*.ims")])
+             if not any(p.is_relative_to(s) for s in stores)]
+    items = [(f"fixture-{p.stem}", proxy.local(p.relative_to(fixtures).as_posix())) for p in files]
+    items += [(f"fixture-{s.name}", proxy.local_store(s.relative_to(fixtures).as_posix())) for s in stores]
     if local_only:
         return items
     listing = urllib.request.urlopen(IDR, timeout=60).read().decode()
     tiffs = sorted(set(re.findall(r'href="([^"?/][^"]*\.ome\.tiff)"', listing)))
     items += [(f"idr-{i:03d}", proxy.remote(IDR + n)) for i, n in enumerate(tiffs[:3] if quick else tiffs)]
-    for corpus_file, prefix in (("corpus_nd2.txt", "nd2-"), ("corpus_tiff.txt", ""), ("corpus_dicom.txt", "dicom-"), ("corpus_nifti.txt", "nifti-"), ("corpus_ims.txt", "ims-")):
+    for corpus_file, prefix in (("corpus_nd2.txt", "nd2-"), ("corpus_tiff.txt", ""), ("corpus_dicom.txt", "dicom-"),
+                                ("corpus_nifti.txt", "nifti-"), ("corpus_ims.txt", "ims-"), ("corpus_n5.txt", "n5-"),
+                                ("corpus_zarr2.txt", "zarr2-")):
         listed = [line.split("|") for line in (HERE / corpus_file).read_text().split("\n")
                   if line and not line.startswith("#")]
-        items += [(f"{prefix}{name}", proxy.remote(url)) for url, name in (listed[:3] if quick else listed)]
+        listed = [x for x in listed if large or x[2:] != ["py-only"]]
+        for url, name, *flags in (listed[:3] if quick else listed):
+            target = proxy.remote_store(url) if url.endswith("/") else proxy.remote(url)
+            items.append((f"{prefix}{name}", target, *flags))
     return items
 
 
@@ -177,7 +204,7 @@ def main(argv: list[str]) -> int:
     only = opts[opts.index("--only") + 1] if "--only" in opts else None
     fixtures = Path(opts[opts.index("--fixtures") + 1]) if "--fixtures" in opts else ROOT / "web" / "test" / "fixtures"
     proxy = Proxy(fixtures, Path("/tmp/vzip-proxy-cache"))
-    items = corpus(proxy, fixtures, "--quick" in opts, "--fixtures" in opts)
+    items = corpus(proxy, fixtures, "--quick" in opts, "--fixtures" in opts, "--large" in opts)
     if only:
         items = [c for c in items if only in c[0]]
     print(f"{len(items)} inputs, implementations: {', '.join(impls)} (reference: {next(iter(impls))})", flush=True)

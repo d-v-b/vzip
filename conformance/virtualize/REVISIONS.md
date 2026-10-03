@@ -428,3 +428,41 @@ record count is checked; whether a fractal heap direct block must lie wholly
 within the file; whether fixed-array checks apply to unallocated entries; the
 padding of v1 attribute messages; and whether a datatype or dataspace must
 lie within its declared size or only within the message.
+
+## Revision 12: store inputs, N5 and Zarr v2
+
+Revision 12 adds the first inputs that are not single files. A URL whose
+path ends in `/` (or a local directory) is a **store input** (§1.4): the
+virtualizer lists the store with S3 ListObjectsV2 (§1.5), chooses the profile
+from the root keys (`.zarray` or `.zgroup`: Zarr v2, §10; else
+`attributes.json`: N5, §9), reads only the metadata documents, and writes one
+`url` source per non-empty chunk object, in UTF-8 order of its key, each
+chunk entry `(i, 0, size)` under the object's own key. §1.1 compares source
+tables as lists, §1.2's payload rule now covers sources other than 0, and
+§1.6 fixes one strict JSON reading for both implementations (RFC 8259, no
+BOM, last duplicate member wins, binary64 numbers, integers up to 2^53 − 1,
+256 levels of nesting). Conformance moved from §9 to §11.
+
+| profile | inputs | rejected |
+|---|---|---|
+| N5 (§9) | groups (explicit and implicit) and datasets of 1–32 dimensions, unsigned and signed integers and floats; raw, gzip, zlib (`useZlib`), zstd and blosc blocks through the `n5_default` codec, dimensions not reversed; COSEM and n5-viewer multiscales as OME-NGFF 0.5 | other data types; lz4, xz, bzip2, jpeg and unknown compressions; blosc configurations that are not exactly expressible |
+| Zarr v2 (§10) | groups and arrays of 0–32 dimensions, bool, integer and float types in either byte order, C and F order, `.` and `/` separators, zlib, gzip, zstd and blosc; OME-NGFF 0.4 as 0.5 | filters; other compressors; strings, objects, structured, complex and date-time types; fill values the data type cannot hold |
+
+**Tests.** 40 synthetic N5 stores (29 rejected) and 40 Zarr v2 stores (34
+rejected), about 58 KB of objects, are checked against an independent N5
+block reader and zarr-n5, and against zarr-python's Zarr v2 reader. Both
+implementations agree on all 335 synthetic inputs of the eight profiles, on
+2800 store mutants (400 N5 + 400 Zarr v2 with seed 0, 1000 + 1000 with seed 1), and on
+12 OpenOrganelle stores (6 N5, 6 Zarr v2) through the proxy; one array of
+each format was compared pixel by pixel with an independent reader over HTTP.
+
+**Scale.** The Python reference virtualized OpenOrganelle's
+`jrc_hela-2.n5/em/fibsem-uint16/s0` (12000 × 1600 × 6368 in 64³ gzip
+blocks; 382288 blocks exist) in 328 s, almost all of it the 383 sequential
+listing requests (19 s of CPU), with a peak resident set of 460 MiB. The
+archive is 43.7 MB with 382291 entries (its source table is 40.1 MB of URLs,
+0.98 MB deflated) and opens in 1.2 s. The browser implementation fails, by
+§11's limit, on stores of more than 100000 objects.
+
+**Not yet done.** No independent implementation round has read §1.4–§1.6, §9
+or §10.

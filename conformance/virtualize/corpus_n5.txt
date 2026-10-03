@@ -1,0 +1,14 @@
+# url|name[|py-only] of the public N5 stores in the corpus (store URLs end in "/"), from
+# OpenOrganelle's public bucket janelia-cosem-datasets (CC BY 4.0), listed anonymously with S3
+# ListObjectsV2. Small levels and groups only, so the browser limit (VIRTUALIZE.md §11, 100000
+# objects) is never reached: COSEM multiscale groups (labels, with sparse blocks), and single
+# low-resolution levels (a dataset at the store root).
+https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/labels/gt/|hela2_labels_gt
+https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/labels/mito_seg/|hela2_labels_mito_seg
+https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/em/fibsem-uint16/s4/|hela2_fibsem_uint16_s4
+https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/em/fibsem-uint16/s3/|hela2_fibsem_uint16_s3
+https://janelia-cosem-datasets.s3.amazonaws.com/jrc_cos7-11/jrc_cos7-11.n5/em/fibsem-uint16/s5/|cos7_11_fibsem_uint16_s5
+https://s3.amazonaws.com/janelia-cosem-datasets/jrc_cos7-11/jrc_cos7-11.n5/em/fibsem-uint16/s4/|cos7_11_fibsem_uint16_s4_path_style
+# The full-resolution level, 12000 x 1600 x 6368 in 64^3 gzip blocks (about 470000 objects): past the
+# browser limit, so compare.py runs it only with --large, and only with the Python reference.
+https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/em/fibsem-uint16/s0/|hela2_fibsem_uint16_s0|py-only
