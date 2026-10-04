@@ -143,7 +143,7 @@ Not supported, and refused with HTTP 422: stores without a listing (a plain
 web server), N5 lz4, xz, bzip2 and jpeg blocks, Zarr v2 filters, lz4 and other
 compressors, and string, object, structured, complex and date-time types.
 A store that lists more than 100000 objects is refused with HTTP 507 (a
-limit of this implementation, VIRTUALIZE.md §11).
+limit of this implementation, [VIRTUALIZE.md §11](../VIRTUALIZE.md#11-conformance)).
 
 ## Limits
 

@@ -42,14 +42,14 @@ A virtualizer's **output** is an archive description:
 
 - a **source table**: a list of `url` sources, and
 - a set of **entries**: keys, each with either bytes or a list of ranges
-  (SPEC.md §2, §5).
+  ([SPEC.md §2](SPEC.md#2-data-model), [§5](SPEC.md#5-messages)).
 
 Two outputs are **equivalent** when they have the same source table (the
 same URLs, in the same order), the same set of keys, and for every key:
 
 - **reference entries:** the same list of ranges, in order. A range is a
   source range `(i, offset, length)` of source `i`, or a **literal** range
-  of given bytes (SPEC.md §5.2), and two ranges are the same only if both are
+  of given bytes ([SPEC.md §5.2](SPEC.md#52-range)), and two ranges are the same only if both are
   source ranges with equal sources, offsets and lengths, or both are literal
   ranges with identical bytes;
 - **JSON documents** (keys ending in `zarr.json`): equal JSON values. Objects
@@ -115,7 +115,7 @@ in the output.
 **References stay in the file.** Every range of the output MUST lie within
 the file (`offset + length ≤` the file's size), and every reference entry's
 payload MUST be at most 65519 bytes; otherwise the input is rejected. The
-payload (SPEC.md §4.3, §5) of a single range is its `Range` message: for a
+payload ([SPEC.md §4.3](SPEC.md#43-reference-entries), [§5](SPEC.md#5-messages)) of a single range is its `Range` message: for a
 source range `(i, o, n)`, `0x08 varint(i)` if `i > 0`, then `0x18 varint(o)`
 if `o > 0`, then `0x20 varint(n)` if `n > 0` (fields 1, 3 and 4); for a
 literal range of bytes `d`, `0x2A varint(len(d)) d`. The payload of several
@@ -182,7 +182,7 @@ bytes, only on its key and size.)
 `k`'s UTF-8 bytes with every byte that is not an unreserved character
 (`A`–`Z`, `a`–`z`, `0`–`9`, `-`, `.`, `_`, `~`), a sub-delim
 (`!$&'()*+,;=`), `:`, `@` or `/` written as `%` and two uppercase hex
-digits (the encoding of SPEC.md §6 for local paths). For example, the key
+digits (the encoding of [SPEC.md §6](SPEC.md#6-source-table) for local paths). For example, the key
 `a b/0.0` of the store `https://h/x/` has the URL `https://h/x/a%20b/0.0`.
 
 **Source table and chunk references.** A profile names the **chunk
