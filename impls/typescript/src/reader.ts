@@ -353,6 +353,8 @@ export class Archive {
         if (this.pinned.has(p.key)) throw archiveErr("page index is malformed: pinned key listed twice");
         if (p.key === SOURCES_KEY || p.key === INDEX_KEY) throw archiveErr("page index is malformed: pinned format entry");
         if (p.method !== 0n && p.method !== 8n) throw archiveErr("page index is malformed: pinned method not 0 or 8");
+        if (p.method !== 0n && (p.size >= 0xffffffffn || p.csize >= 0xffffffffn))
+          throw archiveErr("page index is malformed: pinned large entry is not STORED");
         if (!f.within(p.dataOffset, p.csize)) throw archiveErr("page index is malformed: pinned body outside the file");
         this.pinned.set(p.key, p);
       }

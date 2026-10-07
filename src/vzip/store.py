@@ -336,6 +336,8 @@ def _check_index(pages, pinned, cd_size: int, file_size: int) -> None:
             raise ArchiveError(f"pinned key {e.key!r} is duplicated or a format entry")
         if e.method not in (0, 8):
             raise ArchiveError(f"pinned {e.key!r} has method {e.method}")
+        if e.method != 0 and (e.size >= 0xFFFFFFFF or e.csize >= 0xFFFFFFFF):
+            raise ArchiveError(f"pinned {e.key!r} is large and not STORED (spec §7.2)")
         if e.data_offset + e.csize > file_size:
             raise ArchiveError(f"pinned {e.key!r} lies outside the file")
         seen.add(e.key)

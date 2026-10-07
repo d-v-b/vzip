@@ -354,6 +354,9 @@ impl Archive {
                     if p.method != 0 && p.method != 8 {
                         return Err(archive(format!("pinned method {} is not 0 or 8", p.method)));
                     }
+                    if p.method != 0 && (p.size >= 0xFFFF_FFFF || p.csize >= 0xFFFF_FFFF) {
+                        return Err(archive(format!("pinned large entry {:?} is not STORED", p.key)));
+                    }
                     if !Self::within(size, p.data_offset, p.csize) {
                         return Err(archive(format!("pinned body of {:?} lies outside the file", p.key)));
                     }

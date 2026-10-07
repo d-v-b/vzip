@@ -924,6 +924,10 @@ def crafted(root: Path) -> dict[str, dict]:
     case("pinned_duplicate", open="fail")(
         lambda p: page_outside(p, lambda idx: [idx.pinned.add(key="k00", data_offset=0, size=1,
                                                               csize=1, method=0) for _ in "ab"]))
+    # revision 10.1: a pinned large entry must be STORED (§7.2); no record is consulted
+    case("pinned_large_deflate", open="fail")(
+        lambda p: page_outside(p, lambda idx: idx.pinned.add(key="k00", data_offset=0,
+                                                             size=0xFFFFFFFF, csize=1, method=8)))
 
     # -- revision 9: the zip64 end records are always present (§3.2) -----------
     def end_records(path, mutate, paged=False):

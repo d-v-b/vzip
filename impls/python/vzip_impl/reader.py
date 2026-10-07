@@ -434,6 +434,8 @@ class Archive:
             if m not in (0, 8):
                 raise _arch("page index is malformed: pinned method %d" % m)
             doff, csize = p.get("data_offset", 0), p.get("csize", 0)
+            if m != 0 and (p.get("size", 0) >= 0xFFFFFFFF or csize >= 0xFFFFFFFF):
+                raise _arch("page index is malformed: pinned large entry is not STORED")
             if not self._within(doff, csize):
                 raise _arch("page index is malformed: pinned body lies outside the file")
             self.pinned[k] = Entry("bytes", m, doff, csize, p.get("size", 0))

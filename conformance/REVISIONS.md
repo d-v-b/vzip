@@ -876,3 +876,36 @@ is why it changes no reader result.
 queries (one new crafted archive), all 11 write cases from every writer pass
 the stricter validator, and cross-reads are 19892/19892. The remaining
 failures are the same four revision-8 rules as before.
+
+## Revision 10.1: pinned large entries (compatible)
+
+Format version 0, specification revision 10.1. **Status: provisional.**
+
+**What prompted it.** A review of the revision-10 text against the
+large-entry rules (§3.1 rule 7) found a path they did not cover. A large
+entry with method 8 is an entry error, detected from its central directory
+record. A pinned key never has its record consulted (§7.2): its sizes and
+method come from the `Pinned` message, and §7.2 only required `method` to be
+0 or 8. A page index pinning a large DEFLATE entry therefore opened cleanly,
+and `get` inflated the whole body, which rule 7 exists to prevent. None of
+the four readers checked it, and no crafted case covered it.
+
+| § | r10 | r10.1 |
+|---|---|---|
+| 7.2 | a pinned `method` other than 0 or 8 is malformed | also malformed: a pinned entry whose `size` or `csize` is 0xFFFFFFFF or more with a `method` other than 0 |
+| 3.2 | writers "MUST NOT include a value that fits its 32-bit field", which read against rule 7 (both sizes of a large entry are in the block) left a question for a size that fits | the block holds both sizes or neither; only an offset that fits is left out |
+| 8.6 | rule 7 violations go undetected "except a large entry with method 8" | also except a large reference entry, which §4.3 already made an entry error |
+| 9.1 | the revision-8 size rejection was removed and nothing replaced it | writers reject a large entry that would use method 8, and a source table or page index of 0xFFFFFFFF bytes or more, as rule 7 already required of them |
+
+The §7.2 change alters a reader result only for an archive that violates
+rule 7, which was never valid, so the revision is **compatible** and the
+revision 10 conformance suite applies with one addition.
+
+**Kit:** one new crafted case, `pinned_large_deflate`, which must fail to
+open. The reference reader and the three implementations gain the check.
+
+**Result:** the reference and all three implementations refuse to open the
+new case, and nothing else changes: 5173/5173 read queries, 11/11 write
+cases and 19892/19892 cross-reads each, with the same four revision-8
+failures as before (`h/dupetag`, TS `h/upperbytes`, and two query-file
+rejections in TypeScript and Python).
