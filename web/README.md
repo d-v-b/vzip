@@ -1,16 +1,19 @@
 # vzip in the browser
 
-A service worker that turns a remote TIFF, Nikon ND2 file or `.vzip` archive
-into a plain HTTP Zarr store, without a server and without copying pixel data:
+A service worker that turns a remote image file (TIFF, NDPI, ND2, DICOM,
+NIfTI or IMS), an N5, Zarr v2 or OME-Zarr 0.4 store (a URL ending in `/`), or a
+`.vzip` archive into a plain HTTP Zarr store, without a server and without
+copying pixel data:
 
 1. A page asks for `<scope>vz/image/<id>/zarr.json`, where `<id>` is the
-   base64url encoding of the file's URL.
+   base64url encoding of the file's or store's URL.
 2. The service worker reads the file's structure with a few range requests
    (7 for a 487 MB, 9-level OME-TIFF; 12 for a 4.6 GB, 525-frame ND2) and
    writes a vzip archive in memory by [VIRTUALIZE.md](../VIRTUALIZE.md): an
-   OME-NGFF 0.5 dataset whose chunks are references to the file's TIFF tiles or
-   ND2 frames. The format is detected from the file's first bytes
-   (`vz/tiff/<id>/` accepts TIFF only).
+   OME-NGFF 0.5 dataset (or, for a store, its Zarr v3 hierarchy) whose chunks
+   are references to the source's tiles, frames, strips or chunk objects. The
+   format is detected from the file's first bytes, or from the objects at a
+   store's root (`vz/tiff/<id>/` accepts TIFF only).
 3. It answers every request under that URL from the archive. Metadata comes
    from the archive; a chunk request becomes one range request to the file.
 
@@ -115,7 +118,8 @@ NIfTI (NIfTI-1 and NIfTI-2 single files):
   integer and float types, and RGB/RGBA voxels.
 - One chunk per z-slice, split into row blocks when a slice is over 128 KiB.
 - Pixel size and units as scale; an axis-aligned qform or sform as
-  translation; intensity scaling recorded beside the OME metadata.
+  translation; the whole header, and its intensity scaling, recorded under
+  `vzip_virtualized`.
 
 Not supported, and refused with HTTP 422: gzipped files (`.nii.gz`),
 header-and-image pairs, complex types, and dimensions 6 and 7 (CIFTI).

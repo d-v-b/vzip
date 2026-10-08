@@ -38,6 +38,7 @@ from zarr.abc.store import (
 )
 from zarr.core.buffer import Buffer, BufferPrototype
 
+import vzip.codecs  # noqa: F401  registers the codecs vzip archives use (JPEG, JPEG 2000, zlib, n5_default)
 from vzip.archive import (
     LFH_SIZE,
     RESERVED_PREFIX,
