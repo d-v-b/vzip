@@ -12,7 +12,11 @@ read the [pitch](https://github.com/d-v-b/vzip/blob/main/PITCH.md), or the [spec
 
 ## demos
 
-live demos are at https://d-v-b.github.io/vzip-demo/. for example, [image files to zarr](https://d-v-b.github.io/vzip-demo/image-to-zarr/) virtualizes a remote OME-TIFF or Nikon ND2 file into a vzip archive in the browser and opens it in Neuroglancer.
+live demos are at https://d-v-b.github.io/vzip-demo/. for example, [image files to zarr](https://d-v-b.github.io/vzip-demo/image-to-zarr/) virtualizes a remote TIFF (including OME-TIFF and Aperio SVS), Hamamatsu NDPI or Nikon ND2 file into a vzip archive in the browser and opens it in Neuroglancer.
+
+## virtualizing image files and stores
+
+vzip can present TIFF, NDPI, ND2, DICOM, NIfTI and Imaris files, and N5, Zarr v2 and OME-Zarr 0.4 stores, as OME-Zarr without copying their pixels. [docs/virtualize/](docs/virtualize/README.md) has a page per format: who it is for, what you get, and how to run it from Python or in the browser.
 
 ## status
 
