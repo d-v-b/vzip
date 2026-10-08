@@ -37,5 +37,6 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "ome-zarr-models>=1.8.1",
     "zarr-n5>=0.3.1",
 ]

@@ -33,7 +33,7 @@ class ListingFailed(OSError):
 
 
 class StoreLimit(OSError):
-    """An implementation's resource limit (§1.2, §11): a failure, not a rejection."""
+    """An implementation's resource limit (§1.2, §12): a failure, not a rejection."""
 
 
 # ---------------------------------------------------------------- URLs (§1.4, §1.5)

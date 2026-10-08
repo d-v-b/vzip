@@ -2,7 +2,7 @@
 // URL with the browser code, under Node, by VIRTUALIZE.md:
 //   node web/conformance/virtualize.ts <url> <out.vzip>
 // Prints a JSON summary; exits 3 (writing nothing) if the input is rejected.
-// A store over the browser limit (§11) is a failure (exit 1), not a rejection.
+// A store over the browser limit (§12) is a failure (exit 1), not a rejection.
 
 import fs from "node:fs";
 import { openHttpFile } from "../src/http.ts";
@@ -49,7 +49,7 @@ async function retryingFetch(u: string, init?: RequestInit): Promise<Response> {
   }
 }
 
-const REJECTIONS = /^(TiffError|Nd2Error|LVError|DicomError|NiftiError|ImsError|ImageError|StoreError|N5Error|Zarr2Error)$/;
+const REJECTIONS = /^(TiffError|Nd2Error|LVError|DicomError|NiftiError|ImsError|ImageError|StoreError|N5Error|Zarr2Error|OmeZarrError)$/;
 let requests = 0;
 const t0 = performance.now();
 try {

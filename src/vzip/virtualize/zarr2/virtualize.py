@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 
 from vzip.virtualize.common import Rejected
 from vzip.virtualize.n5.virtualize import blosc_codec
@@ -123,26 +124,19 @@ def array(path: str, z, attrs: dict) -> tuple[dict, str]:
     }, sep
 
 
-def level_path(p) -> bool:
-    return isinstance(p, str) and p != "" and all(s not in ("", ".", "..") for s in p.split("/"))
+@dataclass
+class Hierarchy:
+    """A Zarr v2 hierarchy read by §10.1–§10.2: each array's zarr.json and
+    separator, each explicit group's attributes, and the implicit groups."""
+
+    arrays: dict[str, dict] = field(default_factory=dict)
+    seps: dict[str, str] = field(default_factory=dict)
+    groups: dict[str, dict] = field(default_factory=dict)
+    implicit: set[str] = field(default_factory=set)
 
 
-def ome_04(attrs: dict) -> dict | None:
-    """The group attributes with 0.4 multiscales moved into `ome` (§10.4), or None."""
-    ms = attrs.get("multiscales")
-    if "ome" in attrs or not isinstance(ms, list) or not ms:
-        return None
-    if not all(isinstance(m, dict) and m.get("version") == "0.4" for m in ms):
-        return None
-    ome = {"version": "0.5", "multiscales": [{k: v for k, v in m.items() if k != "version"} for m in ms]}
-    if "omero" in attrs:
-        ome["omero"] = attrs["omero"]
-    out = {k: v for k, v in attrs.items() if k not in ("multiscales", "omero")}
-    out["ome"] = ome
-    return out
-
-
-def virtualize_zarr2(store: Store) -> StoreOutput:
+def read_hierarchy(store: Store) -> Hierarchy:
+    """The nodes of a Zarr v2 store (§10.1), each document read and checked."""
     objects = store.objects
     candidates: dict[str, str] = {}
     for key in objects:
@@ -163,58 +157,24 @@ def virtualize_zarr2(store: Store) -> StoreOutput:
             raise Rejected(f"{key} is not a JSON object")
         return a
 
-    out = StoreOutput(store.url)
-    arrays: dict[str, dict] = {}
-    seps: dict[str, str] = {}
-    groups: dict[str, dict] = {}
+    h = Hierarchy(implicit=implicit)
     for path in sorted(nodes):
         if nodes[path] == "array":
-            arrays[path], seps[path] = array(path or "/", store.document(join(path, ".zarray")), attributes(path))
+            h.arrays[path], h.seps[path] = array(path or "/", store.document(join(path, ".zarray")), attributes(path))
         else:
             g = store.document(join(path, ".zgroup"))
             if not isinstance(g, dict) or as_int(g.get("zarr_format")) != 2:
                 raise Rejected(f"{join(path, '.zgroup')}: zarr_format is not 2")
-            groups[path] = {"zarr_format": 3, "node_type": "group", "attributes": attributes(path)}
+            h.groups[path] = attributes(path)
+    return h
 
-    images = []
-    named: dict[str, list[str]] = {}
-    for path in sorted(groups):
-        converted = ome_04(groups[path]["attributes"])
-        if converted is None:
-            continue
-        groups[path]["attributes"] = converted
-        images.append(path)
-        for m in converted["ome"]["multiscales"]:
-            axes = m.get("axes")
-            if not isinstance(axes, list) or not all(isinstance(a, dict) and isinstance(a.get("name"), str)
-                                                     for a in axes):
-                continue
-            names = [a["name"] for a in axes]
-            if len(set(names)) != len(names):
-                continue
-            datasets = m.get("datasets")
-            for d in datasets if isinstance(datasets, list) else []:
-                if not isinstance(d, dict) or not level_path(d.get("path")):
-                    continue
-                target = join(path, d["path"])
-                if target in arrays and len(arrays[target]["shape"]) == len(names):
-                    named.setdefault(target, names)
-    for target, names in named.items():
-        doc = arrays[target]
-        arrays[target] = {**{k: v for k, v in doc.items() if k != "attributes"}, "dimension_names": names,
-                          "attributes": doc["attributes"]}
 
-    for path in implicit:
-        out.docs[doc_key(path)] = dict(GROUP_IMPLICIT, attributes={})
-    for path, doc in groups.items():
-        out.docs[doc_key(path)] = doc
-    for path, doc in arrays.items():
-        out.docs[doc_key(path)] = doc
-
+def chunk_objects(store: Store, h: Hierarchy) -> list[tuple[str, int]]:
+    """Every chunk object of every array (§10.2), sizes 0 included, in key order."""
     tests = {}
-    for path, a in arrays.items():
+    for path, a in h.arrays.items():
         g = grid(a["shape"], a["chunk_grid"]["configuration"]["chunk_shape"])
-        sep = seps[path]
+        sep = h.seps[path]
 
         def is_chunk(rest: str, g=g, sep=sep) -> bool:
             if not g:
@@ -225,12 +185,34 @@ def virtualize_zarr2(store: Store) -> StoreOutput:
             return len(parts) == len(g) and all(canonical_index(s, n) for s, n in zip(parts, g))
 
         tests[path] = is_chunk
-    chunks = find_chunks(objects, tests)
-    out.chunks = [(k, n) for k, n in chunks if n > 0]
+    return find_chunks(store.objects, tests)
+
+
+def hierarchy_output(store: Store, h: Hierarchy, groups: dict[str, dict], arrays: dict[str, dict],
+                     extra: list[tuple[str, int]] = ()) -> tuple[StoreOutput, list[tuple[str, int]]]:
+    """The output of a hierarchy: a zarr.json per node (explicit groups with the
+    attributes `groups` gives, arrays as `arrays` gives) and an entry per nonempty
+    chunk object, plus the whole objects `extra` (§1.4). Returns the output and
+    every chunk object."""
+    out = StoreOutput(store.url)
+    for path in h.implicit:
+        out.docs[doc_key(path)] = dict(GROUP_IMPLICIT, attributes={})
+    for path, attrs in groups.items():
+        out.docs[doc_key(path)] = {"zarr_format": 3, "node_type": "group", "attributes": attrs}
+    for path, doc in arrays.items():
+        out.docs[doc_key(path)] = doc
+    chunks = chunk_objects(store, h)
+    out.chunks = sorted([(k, n) for k, n in chunks if n > 0] + [(k, n) for k, n in extra if n > 0])
     out.check_keys()
+    return out, chunks
+
+
+def virtualize_zarr2(store: Store) -> StoreOutput:
+    h = read_hierarchy(store)
+    out, chunks = hierarchy_output(store, h, h.groups, h.arrays)
     out.summary = {
-        "groups": len(groups) + len(implicit), "arrays": len(arrays), "chunks": len(out.chunks),
-        "emptyChunks": len(chunks) - len(out.chunks), "objects": len(objects), "images": images,
+        "groups": len(h.groups) + len(h.implicit), "arrays": len(h.arrays), "chunks": len(out.chunks),
+        "emptyChunks": len(chunks) - len(out.chunks), "objects": len(store.objects),
         "listingRequests": store.requests,
     }
     return out
