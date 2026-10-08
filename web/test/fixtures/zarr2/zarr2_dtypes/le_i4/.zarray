@@ -5,8 +5,8 @@
     3
   ],
   "chunks": [
-    2,
-    2
+    5,
+    3
   ],
   "dtype": "<i4",
   "compressor": null,

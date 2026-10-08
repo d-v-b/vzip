@@ -20,18 +20,6 @@
           "path": "0",
           "coordinateTransformations": [
             {
-              "type": "scale",
-              "scale": [
-                1.0,
-                1.0
-              ]
-            }
-          ]
-        },
-        {
-          "path": "1",
-          "coordinateTransformations": [
-            {
               "type": "identity"
             }
           ]

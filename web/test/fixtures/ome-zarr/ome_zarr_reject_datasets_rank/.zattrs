@@ -17,25 +17,13 @@
       ],
       "datasets": [
         {
-          "path": "0",
+          "path": "r",
           "coordinateTransformations": [
             {
               "type": "scale",
               "scale": [
                 1.0,
                 1.0
-              ]
-            }
-          ]
-        },
-        {
-          "path": "r",
-          "coordinateTransformations": [
-            {
-              "type": "scale",
-              "scale": [
-                2.0,
-                2.0
               ]
             }
           ]

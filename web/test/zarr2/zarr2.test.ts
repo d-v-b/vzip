@@ -21,11 +21,11 @@ function doc(v: Awaited<ReturnType<typeof virtualize>>, key: string) {
 
 test("virtualizes the synthetic Zarr v2 stores", async () => {
   const cases: [string, object][] = [
-    ["zarr2_compressors", { arrays: 10, groups: 1 }],
+    ["zarr2_compressors", { arrays: 10, groups: 1, chunks: 12 }],
     ["zarr2_dtypes", { arrays: 14 }],
-    ["zarr2_fill_values", { emptyChunks: 1, chunks: 20 }],
+    ["zarr2_fill_values", { emptyChunks: 1, chunks: 10 }],
     ["zarr2_scalar_root", { arrays: 1, groups: 0, chunks: 1 }],
-    ["zarr2_hierarchy", { arrays: 5, groups: 6 }],
+    ["zarr2_hierarchy", { arrays: 5, groups: 6, chunks: 5 }],
     ["zarr2_ome_attrs", { groups: 8 }],
   ];
   for (const [name, expected] of cases) {
@@ -42,12 +42,15 @@ test("virtualizes the synthetic Zarr v2 stores", async () => {
   assert.deepEqual(doc(c, "blosc_autoshuffle_i2/zarr.json").codecs[1],
     { name: "blosc", configuration: { cname: "lz4hc", clevel: 2, shuffle: "shuffle", typesize: 2, blocksize: 0 } });
   assert.deepEqual(doc(c, "gzip_nested/zarr.json").chunk_key_encoding, { name: "v2", configuration: { separator: "/" } });
+  // Two chunks with a partial edge chunk, along the first axis in C order and along the second in F order.
+  assert.deepEqual(c.entries.filter((e) => "ranges" in e && /^(raw_c|zstd_f_nested)\//.test(e.key)).map((e) => e.key),
+    ["raw_c/0.0", "raw_c/1.0", "zstd_f_nested/0/0/0", "zstd_f_nested/0/1/0"]);
   const f = await virtualize("zarr2_fill_values");
   assert.deepEqual(["nan", "inf", "neg_inf", "null_int", "null_bool"].map((p) => doc(f, `${p}/zarr.json`).fill_value),
     ["NaN", "Infinity", "-Infinity", 0, false]);
   const h = await virtualize("zarr2_hierarchy");
   assert.deepEqual(h.entries.filter((e) => "ranges" in e).map((e) => e.key), [
-    "a/b/zero_d/0", "a/c/0/0", "a/c/0/1", "a/c/1/0", "a/c/1/1", "g/h/0", "g/h/1", "sp ace/é/x y/0.0", "sp ace/é/x y/1.0",
+    "a/b/zero_d/0", "a/c/0/0", "a/c/1/0", "g/h/0", "sp ace/é/x y/0.0",
   ]);
   // Attributes are copied unchanged, OME-NGFF 0.4 ones included (the root does not declare 0.4, §1.4).
   const o = await virtualize("zarr2_ome_attrs");

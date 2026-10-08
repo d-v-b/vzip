@@ -6,9 +6,9 @@
   2
  ],
  "blockSize": [
-  2,
-  2,
-  2,
+  3,
+  3,
+  3,
   2
  ],
  "dataType": "uint8",

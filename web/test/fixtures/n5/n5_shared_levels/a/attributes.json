@@ -1,0 +1,33 @@
+{
+ "multiscales": [
+  {
+   "datasets": [
+    {
+     "path": "b/s0",
+     "transform": {
+      "axes": [
+       "z",
+       "y",
+       "x"
+      ],
+      "scale": [
+       4.0,
+       4.0,
+       4.0
+      ],
+      "translate": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "units": [
+       "nm",
+       "nm",
+       "nm"
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

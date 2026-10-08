@@ -8,6 +8,12 @@ OME-XML, and a plate), F order and both separators, missing and empty
 chunks; and the inputs the profile rejects (`ome_zarr_reject_*`, one per
 rule of §11.3).
 
+Each array is one chunk, except level 0 of ome_zarr_image_2d (three chunks:
+present, empty and missing), so that each store is a handful of objects.
+Each rejection is the smallest store that breaks its rule and is otherwise
+valid: one level where the rule does not need two, a plate of one well and
+one field, and arrays with no chunk.
+
 Arrays and chunks are written by web/test/zarr2/write_fixtures.py's helpers,
 as zarr-python 2 writes them; documents are written here by hand.
 web/test/ome-zarr/verify.py checks every accepted store with ome-zarr-models
@@ -18,7 +24,6 @@ Usage: uv run python web/test/ome-zarr/write_fixtures.py
 
 from __future__ import annotations
 
-import copy
 import importlib.util
 import shutil
 from pathlib import Path
@@ -68,16 +73,17 @@ def multiscale(axes: str, levels: int, *, base=None, translation=None, name="ima
 
 
 def image(root: Path, path: str, axes: str, shape, levels=2, *, dtype="|u1", chunks=None, attrs=None, ms=None,
-          order="C", sep="/", compressor=None, **kw) -> None:
-    """An image group with its levels (shape halved along y and x per level)."""
+          order="C", sep="/", compressor=None, write_chunks=True, **kw) -> None:
+    """An image group with its levels (shape halved along y and x per level), each level one
+    chunk unless `chunks` is given (or none, if not `write_chunks`)."""
     m = ms or multiscale(axes, levels, **kw)
     group(root, path, {"multiscales": [m], **(attrs or {})})
     full = data(shape, dtype)
     for i in range(levels):
         sl = tuple(slice(None, None, 2**i) if a in "yx" else slice(None) for a in axes)
         level = np.ascontiguousarray(full[sl])
-        ch = chunks or [max(1, (s + 1) // 2) if a in "yx" else 1 for a, s in zip(axes, level.shape)]
-        array(root, f"{path}/{i}" if path else str(i), level, ch, order=order, sep=sep, compressor=compressor)
+        array(root, f"{path}/{i}" if path else str(i), level, chunks or list(level.shape), order=order, sep=sep,
+              compressor=compressor, write_chunks=write_chunks)
 
 
 def store(name: str) -> Path:
@@ -94,9 +100,10 @@ def omero(n: int) -> dict:
             "rdefs": {"defaultT": 0, "defaultZ": 0, "model": "color"}}
 
 
-def labelled(d: Path, *, image_label=None, label_levels=2, label_dtype="<u2", listed=("cells",)) -> None:
+def labelled(d: Path, *, image_label=None, image_levels=2, label_levels=2, label_dtype="<u2", listed=("cells",),
+             write_chunks=True) -> None:
     """An image `""` (c, y, x) with a labels group and the label image labels/cells."""
-    image(d, "", "cyx", (2, 8, 10), 2, attrs={"omero": omero(2)})
+    image(d, "", "cyx", (2, 8, 10), image_levels, attrs={"omero": omero(2)}, write_chunks=write_chunks)
     group(d, "labels", {"labels": list(listed)})
     il = image_label if image_label is not None else {
         "version": "0.4", "colors": [{"label-value": 1, "rgba": [255, 0, 0, 255]},
@@ -104,7 +111,7 @@ def labelled(d: Path, *, image_label=None, label_levels=2, label_dtype="<u2", li
         "properties": [{"label-value": 1, "class": "nucleus", "area (pixels)": 12}, {"label-value": 2}],
         "source": {"image": "../../"}}
     image(d, "labels/cells", "cyx", (1, 8, 10), label_levels, dtype=label_dtype, attrs={"image-label": il},
-          name="cells")
+          name="cells", write_chunks=write_chunks)
 
 
 def plate_doc(**over) -> dict:
@@ -119,18 +126,22 @@ def plate_doc(**over) -> dict:
 
 WELLS = {"A/1": [{"path": "0", "acquisition": 0}, {"path": "1", "acquisition": 1}],
          "B/2": [{"path": "0", "acquisition": 0}]}
+# The plate of the rejections: one well (A/1) of one field.
+WELL_A1 = {"path": "A/1", "rowIndex": 0, "columnIndex": 0}
+WELLS_SMALL = {"A/1": [{"path": "0", "acquisition": 0}]}
 
 
 def plate(d: Path, *, doc=None, wells=None, field_order="C", small=False, root=None) -> None:
     group(d, "", root or {"plate": doc or plate_doc(), "_creator": {"name": "synthetic"}})
-    group(d, "A")  # an explicit row group; row B is implicit
+    if not small:
+        group(d, "A")  # an explicit row group; row B is implicit
     for w, ims in (wells or WELLS).items():
         group(d, w, {"well": {"version": "0.4", "images": ims}})
         for im in ims:
-            if small:  # one level of one chunk
-                image(d, f"{w}/{im['path']}", "yx", (2, 2), 1)
+            if small:  # one level, with no chunk
+                image(d, f"{w}/{im['path']}", "yx", (2, 2), 1, write_chunks=False)
             else:
-                image(d, f"{w}/{im['path']}", "cyx", (2, 6, 6), 2, attrs={"omero": omero(2)}, order=field_order)
+                image(d, f"{w}/{im['path']}", "cyx", (2, 6, 6), 1, attrs={"omero": omero(2)}, order=field_order)
 
 
 def main() -> None:
@@ -140,14 +151,15 @@ def main() -> None:
 
     # ------------------------------------------------------------ accepted
 
-    # 2-D, "." separator, a missing and an empty chunk, a stray object.
+    # 2-D, "." separator, level 0 three chunks along y (present, empty, and a missing
+    # partial edge chunk), a stray object.
     d = store("ome_zarr_image_2d")
     m = multiscale("yx", 2)
     group(d, "", {"multiscales": [m], "_creator": {"name": "synthetic", "version": "1"}})
     img = data((8, 10))
-    array(d, "0", img, [4, 4], sep=".", skip={(1, 2)}, attrs={"_ARRAY_DIMENSIONS": ["y", "x"]})
-    array(d, "1", img[::2, ::2], [4, 4], sep=".")
-    put(d / "0/0.1", b"")  # an empty chunk object: no entry
+    array(d, "0", img, [3, 10], sep=".", skip={(2, 0)}, attrs={"_ARRAY_DIMENSIONS": ["y", "x"]})
+    array(d, "1", img[::2, ::2], [4, 5], sep=".")
+    put(d / "0/1.0", b"")  # an empty chunk object: no entry
     put(d / "notes.txt", b"not part of the hierarchy\n")
 
     # 3-D with translations (per level and for the multiscale), F order, zlib.
@@ -162,7 +174,6 @@ def main() -> None:
     m = multiscale("tczyx", 2, base=[0.5, 1.0, 1.5, 0.25, 0.25], type="gaussian",
                    metadata={"method": "skimage.transform.pyramid_gaussian", "version": "0.16.1"})
     image(d, "", "tczyx", (2, 3, 2, 6, 8), 2, ms=m, attrs={"omero": omero(3), "custom": [1, 2]}, dtype=">f4",
-          chunks=[1, 3, 2, 3, 4],
           sep=".")
     group(d, "extra", {"multiscales_like": True})  # not an OME group: copied unchanged
     array(d, "extra/table", data((3, 2), "<i2"), [3, 2])
@@ -174,12 +185,12 @@ def main() -> None:
     m = {"version": "0.4", "axes": axes, "datasets": [
         {"path": "s0", "coordinateTransformations": [{"type": "scale", "scale": [15.0, 1.0, 1.0]}]}]}
     group(d, "", {"multiscales": [m]})
-    array(d, "s0", data((4, 5, 6)), [2, 5, 3])
+    array(d, "s0", data((4, 5, 6)), [4, 5, 6])
     # a second image whose channel-like axis has a null type, nested under the first
     m2 = {"axes": [{"name": "k", "type": None}, {"name": "y", "type": "space"}, {"name": "x", "type": "space"}],
           "datasets": [{"path": "0", "coordinateTransformations": [{"type": "scale", "scale": [1, 1, 1]}]}]}
     group(d, "nested", {"multiscales": [m2]})  # no version: read as 0.4
-    array(d, "nested/0", data((2, 3, 3)), [1, 3, 3])
+    array(d, "nested/0", data((2, 3, 3)), [2, 3, 3])
 
     # Labels.
     d = store("ome_zarr_labels")
@@ -191,7 +202,8 @@ def main() -> None:
     d = store("ome_zarr_labels_extra_level")
     labelled(d, label_levels=3)
 
-    # A plate: wells, fields, acquisitions, an explicit and an implicit row, F-order fields.
+    # A plate: two rows and two columns, two wells, three fields (two in A/1, of two acquisitions),
+    # an explicit and an implicit row, F-order fields of one level.
     d = store("ome_zarr_plate")
     plate(d, field_order="F")
 
@@ -224,26 +236,28 @@ def main() -> None:
 
     # ------------------------------------------------------------ rejected, one per rule of §11.3
 
-    def reject(name: str, attrs_root=None, *, ms=None, shape=(4, 6), axes="yx", levels=2, setup=None):
-        """A store whose root is a 2-level image with multiscale `ms` (default valid)."""
+    def reject(name: str, attrs_root=None, *, ms=None, shape=(4, 6), axes="yx", levels=1, setup=None):
+        """A store whose root is an image of `levels` levels, with multiscale `ms` (default valid)
+        and no chunks."""
         d = store(f"ome_zarr_reject_{name}")
         m = ms if ms is not None else multiscale(axes, levels)
         group(d, "", {"multiscales": [m], **(attrs_root or {})})
         full = data(shape)
         for i in range(levels):
             sl = tuple(slice(None, None, 2**i) for _ in shape)
-            array(d, str(i), np.ascontiguousarray(full[sl]), [2] * len(shape))
+            array(d, str(i), np.ascontiguousarray(full[sl]), [2] * len(shape), write_chunks=False)
         if setup:
             setup(d)
         return d
 
     def ms_with(**over):
-        m = multiscale("yx", 2)
+        m = multiscale("yx", 1)
         m.update(over)
         return m
 
-    def ms_datasets(fn):
-        m = multiscale("yx", 2)
+    def ms_datasets(fn, levels=1):
+        """The multiscale with `fn` applied to its datasets (to the last level's)."""
+        m = multiscale("yx", levels)
         fn(m["datasets"])
         return m
 
@@ -251,40 +265,37 @@ def main() -> None:
     reject("version", ms=ms_with(version="0.4"),
            setup=lambda d: (group(d, "old", {"multiscales": [{"version": "0.3", "axes": ["y", "x"],
                                                              "datasets": [{"path": "0"}]}]}),
-                            array(d, "old/0", data((2, 2)), [2, 2])))
+                            array(d, "old/0", data((2, 2)), [2, 2], write_chunks=False)))
     reject("multiscales_empty", setup=lambda d: group(d, "g", {"multiscales": []}))
     reject("axes_count", ms=ms_with(axes=[AX["x"]]))
     reject("axes_name", ms=ms_with(axes=[AX["y"], {"name": 0, "type": "space"}]))
     reject("axes_duplicate", ms=ms_with(axes=[AX["x"], AX["x"]]))
     reject("axes_type", ms=ms_with(axes=[AX["y"], {"name": "x", "type": 3}]))
-    reject("axes_order", axes="ycx", shape=(4, 2, 6), ms=multiscale("ycx", 2))
+    reject("axes_order", axes="ycx", shape=(4, 2, 6))
+    scale4 = [{"path": "0", "coordinateTransformations": [{"type": "scale", "scale": [1, 1, 1, 1]}]}]
     reject("axes_two_others", shape=(2, 2, 4, 6),
-           ms=ms_with(axes=[AX["c"], {"name": "p", "type": "phase"}, AX["y"], AX["x"]], datasets=[
-               {"path": str(i), "coordinateTransformations": [{"type": "scale", "scale": [1, 1, 2**i, 2**i]}]}
-               for i in range(2)]))
+           ms=ms_with(axes=[AX["c"], {"name": "p", "type": "phase"}, AX["y"], AX["x"]], datasets=scale4))
     reject("axes_four_space", shape=(2, 2, 4, 6),
-           ms=ms_with(axes=[{"name": n, "type": "space"} for n in "wzyx"], datasets=[
-               {"path": str(i), "coordinateTransformations": [{"type": "scale", "scale": [1, 1, 2**i, 2**i]}]}
-               for i in range(2)]))
+           ms=ms_with(axes=[{"name": n, "type": "space"} for n in "wzyx"], datasets=scale4))
     reject("datasets_empty", ms=ms_with(datasets=[]))
-    reject("datasets_path", ms=ms_datasets(lambda ds: ds[1].update(path="../1")))
-    reject("datasets_missing", ms=ms_datasets(lambda ds: ds[1].update(path="9")))
-    reject("datasets_rank", ms=ms_datasets(lambda ds: ds[1].update(path="r")),
-           setup=lambda d: array(d, "r", data((2, 3, 3)), [2, 3, 3]))
-    reject("transforms_missing", ms=ms_datasets(lambda ds: ds[1].pop("coordinateTransformations")))
-    reject("transforms_order", ms=ms_datasets(lambda ds: ds[1].update(coordinateTransformations=[
+    reject("datasets_path", ms=ms_datasets(lambda ds: ds[-1].update(path="../1")))
+    reject("datasets_missing", ms=ms_datasets(lambda ds: ds[-1].update(path="9")))
+    reject("datasets_rank", ms=ms_datasets(lambda ds: ds[-1].update(path="r")),
+           setup=lambda d: array(d, "r", data((2, 3, 3)), [2, 3, 3], write_chunks=False))
+    reject("transforms_missing", ms=ms_datasets(lambda ds: ds[-1].pop("coordinateTransformations")))
+    reject("transforms_order", ms=ms_datasets(lambda ds: ds[-1].update(coordinateTransformations=[
         {"type": "translation", "translation": [0, 0]}, {"type": "scale", "scale": [2, 2]}])))
-    reject("transforms_path", ms=ms_datasets(lambda ds: ds[1].update(coordinateTransformations=[
+    reject("transforms_path", ms=ms_datasets(lambda ds: ds[-1].update(coordinateTransformations=[
         {"type": "scale", "path": "scales/1"}])))
-    reject("transforms_identity", ms=ms_datasets(lambda ds: ds[1].update(coordinateTransformations=[
+    reject("transforms_identity", ms=ms_datasets(lambda ds: ds[-1].update(coordinateTransformations=[
         {"type": "identity"}])))
-    reject("scale_length", ms=ms_datasets(lambda ds: ds[1].update(coordinateTransformations=[
+    reject("scale_length", ms=ms_datasets(lambda ds: ds[-1].update(coordinateTransformations=[
         {"type": "scale", "scale": [2, 2, 2]}])))
-    reject("translation_length", ms=ms_datasets(lambda ds: ds[1].update(coordinateTransformations=[
+    reject("translation_length", ms=ms_datasets(lambda ds: ds[-1].update(coordinateTransformations=[
         {"type": "scale", "scale": [2, 2]}, {"type": "translation", "translation": [1]}])))
     reject("multiscale_transforms", ms=ms_with(coordinateTransformations=[{"type": "scale", "scale": [1]}]))
-    reject("scale_order", ms=ms_datasets(lambda ds: ds[1].update(coordinateTransformations=[
-        {"type": "scale", "scale": [0.5, 2]}])))
+    reject("scale_order", levels=2, ms=ms_datasets(lambda ds: ds[-1].update(coordinateTransformations=[
+        {"type": "scale", "scale": [0.5, 2]}]), levels=2))
 
     reject("level_axes_conflict", setup=lambda d: (
         group(d, "p", {"multiscales": [{"version": "0.4", "axes": [AX["y"], AX["x"]], "datasets": [
@@ -293,21 +304,21 @@ def main() -> None:
                                                                      {"name": "b", "type": "space"}],
                                           "datasets": [{"path": "lvl", "coordinateTransformations": [
                                               {"type": "scale", "scale": [1, 1]}]}]}]}),
-        array(d, "p/q/lvl", data((2, 2)), [2, 2])))
+        array(d, "p/q/lvl", data((2, 2)), [2, 2], write_chunks=False)))
     reject("omero_color", {"omero": {**omero(1), "channels": [{**omero(1)["channels"][0], "color": "red"}]}})
     reject("omero_window", {"omero": {**omero(1), "channels": [{**omero(1)["channels"][0],
                                                                  "window": {"start": 0, "min": 0, "max": 1}}]}})
     reject("omero_channels", {"omero": {"rdefs": {"model": "color"}}})
 
-    def label_reject(name, **kw):
+    def label_reject(name, image_levels=1, label_levels=1, **kw):
         d = store(f"ome_zarr_reject_{name}")
-        labelled(d, **kw)
+        labelled(d, image_levels=image_levels, label_levels=label_levels, write_chunks=False, **kw)
         return d
 
     d = label_reject("labels_not_image", listed=("cells", "missing"))
     group(d, "labels/missing")
     il = {"colors": [{"label-value": 1, "rgba": [1, 2, 3, 4]}]}
-    label_reject("image_label_levels", image_label=il, label_levels=1)  # fewer levels than the image
+    label_reject("image_label_levels", image_label=il, image_levels=2)  # fewer levels than the image
     label_reject("image_label_dtype", image_label=il, label_dtype="<f4")
     label_reject("image_label_color_duplicate",
                  image_label={"colors": [{"label-value": 1, "rgba": [1, 2, 3, 4]}, {"label-value": 1.0}]})
@@ -316,51 +327,47 @@ def main() -> None:
     label_reject("image_label_source", image_label={**il, "source": {"image": "../../elsewhere"}})
     label_reject("image_label_version", image_label={**il, "version": "0.3"})
     d = store("ome_zarr_reject_image_label_no_multiscales")
-    image(d, "", "yx", (4, 4), 1)
+    image(d, "", "yx", (4, 4), 1, write_chunks=False)
     group(d, "labels", {"labels": []})
     group(d, "labels/cells", {"image-label": il})
 
-    def plate_reject(name, doc=None, wells=None, root=None):
+    def plate_reject(name, fields=None, root=None, **over):
+        """A plate of one well (A/1) of one field (or `fields`), with the plate document's members `over`."""
         d = store(f"ome_zarr_reject_{name}")
-        plate(d, doc=doc, wells=wells, small=True, root=root)
+        plate(d, doc=plate_doc(**{"wells": [WELL_A1], **over}), wells=fields or WELLS_SMALL, small=True, root=root)
         return d
 
-    plate_reject("plate_column_name", plate_doc(columns=[{"name": "1"}, {"name": "2-b"}]))
-    plate_reject("plate_row_duplicate", plate_doc(rows=[{"name": "A"}, {"name": "B"}, {"name": "A"}]))
-    plate_reject("plate_well_path", plate_doc(wells=[{"path": "A/1", "rowIndex": 0, "columnIndex": 0},
-                                                     {"path": "B/2", "rowIndex": 0, "columnIndex": 1}]))
-    plate_reject("plate_well_index", plate_doc(wells=[{"path": "A/1", "rowIndex": 0, "columnIndex": 0},
-                                                      {"path": "B/2", "rowIndex": 1, "columnIndex": 2}]))
-    d = plate_reject("plate_well_missing", plate_doc(wells=[
-        {"path": "A/1", "rowIndex": 0, "columnIndex": 0}, {"path": "B/2", "rowIndex": 1, "columnIndex": 1},
-        {"path": "A/2", "rowIndex": 0, "columnIndex": 1}]))
-    plate_reject("plate_acquisition_id", plate_doc(acquisitions=[{"id": 0}, {"id": -1}]))
-    plate_reject("plate_field_count", plate_doc(field_count=0))
+    def well_reject(name, images):
+        """The one-well plate, with well A/1's images replaced by `images`."""
+        d = plate_reject(name)
+        group(d, "A/1", {"well": {"version": "0.4", "images": images}})
+
+    plate_reject("plate_column_name", columns=[{"name": "1"}, {"name": "2-b"}])
+    plate_reject("plate_row_duplicate", rows=[{"name": "A"}, {"name": "B"}, {"name": "A"}])
+    plate_reject("plate_well_path", wells=[WELL_A1, {"path": "B/2", "rowIndex": 0, "columnIndex": 1}])
+    plate_reject("plate_well_index", wells=[WELL_A1, {"path": "B/2", "rowIndex": 1, "columnIndex": 2}])
+    plate_reject("plate_well_missing", wells=[WELL_A1, {"path": "A/2", "rowIndex": 0, "columnIndex": 1}])
+    plate_reject("plate_acquisition_id", acquisitions=[{"id": 0}, {"id": -1}])
+    plate_reject("plate_field_count", field_count=0)
     # a plate of version 0.3 under bioformats2raw.layout, found through its first field's 0.4 multiscales
-    plate_reject("plate_version", root={"bioformats2raw.layout": 3, "plate": plate_doc(version="0.3")})
-    plate_reject("well_image_path", wells={"A/1": [{"path": "f-0", "acquisition": 0}],
-                                           "B/2": [{"path": "0", "acquisition": 0}]})
-    d = plate_reject("well_image_missing")
-    w = copy.deepcopy(WELLS)
-    w["B/2"].append({"path": "7", "acquisition": 0})
-    group(d, "B/2", {"well": {"version": "0.4", "images": w["B/2"]}})
-    d = plate_reject("well_image_duplicate")
-    group(d, "B/2", {"well": {"version": "0.4", "images": [{"path": "0", "acquisition": 0}] * 2}})
-    d = plate_reject("well_acquisition")
-    group(d, "B/2", {"well": {"version": "0.4", "images": [{"path": "0", "acquisition": 5}]}})
-    d = plate_reject("well_acquisition_missing")
-    group(d, "B/2", {"well": {"version": "0.4", "images": [{"path": "0"}]}})
+    plate_reject("plate_version", root={"bioformats2raw.layout": 3,
+                                        "plate": plate_doc(version="0.3", wells=[WELL_A1])})
+    plate_reject("well_image_path", fields={"A/1": [{"path": "f-0", "acquisition": 0}]})
+    well_reject("well_image_missing", [{"path": "0", "acquisition": 0}, {"path": "7", "acquisition": 0}])
+    well_reject("well_image_duplicate", [{"path": "0", "acquisition": 0}] * 2)
+    well_reject("well_acquisition", [{"path": "0", "acquisition": 5}])
+    well_reject("well_acquisition_missing", [{"path": "0"}])
 
     d = store("ome_zarr_reject_bioformats2raw_layout")
     group(d, "", {"bioformats2raw.layout": 2})
-    image(d, "0", "yx", (4, 4), 1)
+    image(d, "0", "yx", (4, 4), 1, write_chunks=False)
     d = store("ome_zarr_reject_bioformats2raw_numbering")
     group(d, "", {"bioformats2raw.layout": 3})
-    image(d, "0", "yx", (4, 4), 1)
-    image(d, "2", "yx", (4, 4), 1)
+    image(d, "0", "yx", (4, 4), 1, write_chunks=False)
+    image(d, "2", "yx", (4, 4), 1, write_chunks=False)
     d = store("ome_zarr_reject_bioformats2raw_series")
     group(d, "", {"bioformats2raw.layout": 3})
-    image(d, "0", "yx", (4, 4), 1)
+    image(d, "0", "yx", (4, 4), 1, write_chunks=False)
     group(d, "OME", {"series": ["0", "1"]})
 
     total = sum(f.stat().st_size for f in OUT.rglob("*") if f.is_file())

@@ -21,13 +21,14 @@ function doc(v: Awaited<ReturnType<typeof virtualize>>, key: string) {
 
 test("virtualizes the synthetic N5 stores", async () => {
   const cases: [string, object][] = [
-    ["n5_compressions", { arrays: 8, groups: 1, images: [] }],
-    ["n5_root_dataset", { arrays: 1, groups: 0 }],
-    ["n5_hierarchy", { arrays: 3, groups: 6, chunks: 9, emptyChunks: 1 }],
+    ["n5_compressions", { arrays: 8, groups: 1, images: [], chunks: 10 }],
+    ["n5_root_dataset", { arrays: 1, groups: 0, chunks: 1 }],
+    ["n5_hierarchy", { arrays: 3, groups: 6, chunks: 3, emptyChunks: 1 }],
     ["n5_cosem", { images: [{ path: "em/fibsem-uint8", convention: "cosem" }] }],
     ["n5_viewer_scales", { images: [{ path: "setup0/timepoint0", convention: "n5-viewer" }] }],
     ["n5_viewer_downsampling", { images: [{ path: "g", convention: "n5-viewer" }] }],
     ["n5_multiscales_unrecognized", { images: [], arrays: 4 }],
+    ["n5_shared_levels", { images: [{ path: "a", convention: "cosem" }] }],
   ];
   for (const [name, expected] of cases) {
     const v = await virtualize(name);
@@ -45,7 +46,7 @@ test("virtualizes the synthetic N5 stores", async () => {
   // The array: dimensions not reversed, n5_default with the full transpose and big-endian bytes.
   const c = await virtualize("n5_compressions");
   const zlib = doc(c, "zlib_f64/zarr.json");
-  assert.deepEqual([zlib.shape, zlib.chunk_grid.configuration.chunk_shape], [[6, 6], [4, 4]]);
+  assert.deepEqual([zlib.shape, zlib.chunk_grid.configuration.chunk_shape], [[6, 6], [6, 6]]);
   assert.deepEqual(zlib.codecs, [{ name: "n5_default", configuration: { codecs: [
     { name: "transpose", configuration: { order: [1, 0] } },
     { name: "bytes", configuration: { endian: "big" } },
@@ -64,8 +65,14 @@ test("virtualizes the synthetic N5 stores", async () => {
   ]);
   assert.deepEqual(doc(cosem, "em/fibsem-uint8/s2/zarr.json").dimension_names, ["x", "y", "z"]);
   // Implicit groups, and nodes inside datasets that are not nodes.
+  // Block keys follow the grid in N5 dimension order.
+  assert.deepEqual(c.entries.filter((e) => "ranges" in e && /^(raw_u16|gzip_i32_padded)\//.test(e.key)).map((e) => e.key),
+    ["gzip_i32_padded/0/0/0", "gzip_i32_padded/1/0/0", "raw_u16/0/0", "raw_u16/0/1"]);
   const h = await virtualize("n5_hierarchy");
   assert.deepEqual(doc(h, "a/zarr.json"), { zarr_format: 3, node_type: "group", attributes: {} });
+  // The missing block (1/0) and the empty one (2/0) have no entry.
+  assert.deepEqual(h.entries.filter((e) => "ranges" in e && e.key.startsWith("a/b/sparse/")).map((e) => e.key),
+    ["a/b/sparse/0/0"]);
   assert.ok(!h.entries.some((e) => e.key === "a/b/sparse/0/zarr.json" || e.key.startsWith("docs/")));
 });
 

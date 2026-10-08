@@ -3,12 +3,7 @@
     "version": "0.4",
     "images": [
       {
-        "path": "0",
-        "acquisition": 0
-      },
-      {
-        "path": "1",
-        "acquisition": 1
+        "path": "0"
       }
     ]
   }

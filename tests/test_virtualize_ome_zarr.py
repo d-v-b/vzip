@@ -21,7 +21,7 @@ IMAGE = {"multiscales"}
 #         {array path: dimension_names, or None for none})
 CASES = {
     "ome_zarr_image_2d": (
-        {"images": 1, "chunks": 6, "emptyChunks": 1},
+        {"images": 1, "chunks": 2, "emptyChunks": 1},
         {"": ({"_creator"}, IMAGE)},
         {"0": ["y", "x"], "1": ["y", "x"]}),
     "ome_zarr_image_3d_translation": (
@@ -99,6 +99,9 @@ def test_virtualizes_the_synthetic_stores():
             strip = {"attributes", "dimension_names"}
             assert {a: b for a, b in out.docs[k].items() if a not in strip} == \
                 {a: b for a, b in doc.items() if a not in strip}, (name, k)
+    # Level 0's empty chunk (1.0) and missing one (2.0) have no entry.
+    _, out = virtualize(str(FIXTURES / "ome_zarr_image_2d"), url=URL.format("i"))
+    assert [k for k, _ in out.chunks] == ["0/0.0", "1/0.0"]
     # The OME members, moved under `ome` without their own `version`, are otherwise unchanged.
     _, out = virtualize(str(FIXTURES / "ome_zarr_labels"), url=URL.format("l"))
     ome = out.docs["labels/cells/zarr.json"]["attributes"]["ome"]
@@ -168,7 +171,7 @@ def test_virtualizes_the_synthetic_stores():
     ("plate_field_count", "field_count 0 is not a positive integer"),
     ("plate_version", "plate: version '0.3' is not 0.4"),
     ("well_image_path", "image path 'f-0' is not alphanumeric"),
-    ("well_image_missing", "B/2/7 is not an image"),
+    ("well_image_missing", "A/1/7 is not an image"),
     ("well_image_duplicate", "image paths are not unique"),
     ("well_acquisition", "acquisition 5 is not one of the plate's"),
     ("well_acquisition_missing", "an image has no acquisition, and the plate has several"),

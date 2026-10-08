@@ -4,8 +4,8 @@
   9
  ],
  "blockSize": [
-  4,
-  4
+  13,
+  9
  ],
  "dataType": "uint16",
  "compression": {

@@ -37,20 +37,6 @@
               ]
             }
           ]
-        },
-        {
-          "path": "1",
-          "coordinateTransformations": [
-            {
-              "type": "scale",
-              "scale": [
-                1,
-                1,
-                2,
-                2
-              ]
-            }
-          ]
         }
       ]
     }

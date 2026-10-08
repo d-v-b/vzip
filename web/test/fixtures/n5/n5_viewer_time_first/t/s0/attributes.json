@@ -6,10 +6,10 @@
   6
  ],
  "blockSize": [
-  1,
+  2,
   4,
-  4,
-  4
+  6,
+  6
  ],
  "dataType": "float32",
  "compression": {

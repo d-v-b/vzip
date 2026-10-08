@@ -8,6 +8,12 @@ metadata, OME-NGFF attributes below a root that does not declare
 OME-NGFF 0.4 (copied unchanged), and the inputs the profile rejects
 (`zarr2_reject_*`, one per rejection rule).
 
+Most arrays are one chunk, so that each store is a handful of objects; only
+the arrays that test the chunk grid have two or three chunks (a partial edge
+chunk, a missing chunk, an empty chunk, each separator, F order). Each
+rejection is the smallest store that breaks its rule: one `.zarray` at the
+root, with no chunk.
+
 Documents and chunks are written here as zarr-python 2 writes them (each
 chunk the full chunk shape, padded with the fill value, in the array's
 order, then compressed with numcodecs); web/test/zarr2/verify.py reads them
@@ -46,7 +52,8 @@ def codec(compressor: dict | None):
 
 
 def array(root: Path, path: str, data: np.ndarray, chunks: list[int], *, compressor=None, order="C", sep=None,
-          fill=0, skip=frozenset(), attrs=None, dtype: str | None = None, zarray_extra=None) -> None:
+          fill=0, skip=frozenset(), attrs=None, dtype: str | None = None, zarray_extra=None,
+          write_chunks: bool = True) -> None:
     d = root / path if path else root
     doc = {"zarr_format": 2, "shape": list(data.shape), "chunks": chunks, "dtype": dtype or data.dtype.str,
            "compressor": compressor, "fill_value": fill, "order": order, "filters": None}
@@ -56,6 +63,8 @@ def array(root: Path, path: str, data: np.ndarray, chunks: list[int], *, compres
     write_json(d / ".zarray", doc)
     if attrs is not None:
         write_json(d / ".zattrs", attrs)
+    if not write_chunks:
+        return
     c = codec(compressor)
     if data.ndim == 0:
         put(d / "0", c.encode(data.tobytes()) if c else data.tobytes())
@@ -112,19 +121,22 @@ def main() -> None:
         shutil.rmtree(OUT)
     OUT.mkdir(parents=True)
 
-    # Compressors, orders and separators.
+    # Compressors, orders and separators. Two arrays have a grid of two chunks with a
+    # partial edge chunk: raw_c (C order, "." separator, along the first axis) and
+    # zstd_f_nested (F order, "/" separator, along the second axis); the others are one
+    # chunk, padded where the chunk shape is larger than the shape.
     d = store("zarr2_compressors")
     group(d, "", {"title": "compressors"})
-    array(d, "raw_c", arr((7, 5), "<i2"), [3, 2])
-    array(d, "zlib_f", arr((6, 5, 4), "<u2"), [4, 2, 3], compressor=ZLIB, order="F")
-    array(d, "gzip_nested", arr((9, 4), "<f4"), [4, 3], compressor=GZIP, sep="/")
-    array(d, "zstd_f_nested", arr((5, 5, 3), "<f8"), [2, 4, 2], compressor=ZSTD, order="F", sep="/")
-    array(d, "blosc_shuffle", arr((10, 6), "<i4"), [4, 4], compressor=blosc())
-    array(d, "blosc_bitshuffle", arr((6, 6), "<u8"), [4, 4], compressor=blosc("zstd", 3, 2))
-    array(d, "blosc_noshuffle", arr((6, 3), "<i8"), [4, 2], compressor=blosc("zlib", 1, 0, 256))
-    array(d, "blosc_autoshuffle_u1", arr((9, 9), "|u1"), [4, 4], compressor=blosc("blosclz", 9, -1))
-    array(d, "blosc_autoshuffle_i2", arr((5, 9), "<i2"), [4, 4], compressor=blosc("lz4hc", 2, -1))
-    array(d, "f_order_1d", arr((11,), "<u4"), [4], compressor=ZLIB, order="F")
+    array(d, "raw_c", arr((7, 5), "<i2"), [4, 5])
+    array(d, "zlib_f", arr((6, 5, 4), "<u2"), [6, 6, 4], compressor=ZLIB, order="F")
+    array(d, "gzip_nested", arr((9, 4), "<f4"), [9, 4], compressor=GZIP, sep="/")
+    array(d, "zstd_f_nested", arr((5, 5, 3), "<f8"), [5, 3, 4], compressor=ZSTD, order="F", sep="/")
+    array(d, "blosc_shuffle", arr((10, 6), "<i4"), [10, 6], compressor=blosc())
+    array(d, "blosc_bitshuffle", arr((6, 6), "<u8"), [6, 6], compressor=blosc("zstd", 3, 2))
+    array(d, "blosc_noshuffle", arr((6, 3), "<i8"), [6, 4], compressor=blosc("zlib", 1, 0, 256))
+    array(d, "blosc_autoshuffle_u1", arr((9, 9), "|u1"), [9, 9], compressor=blosc("blosclz", 9, -1))
+    array(d, "blosc_autoshuffle_i2", arr((5, 9), "<i2"), [5, 9], compressor=blosc("lz4hc", 2, -1))
+    array(d, "f_order_1d", arr((11,), "<u4"), [12], compressor=ZLIB, order="F")
 
     # Data types and byte orders.
     d = store("zarr2_dtypes")
@@ -132,23 +144,25 @@ def main() -> None:
     for dt in ("|b1", "|i1", "|u1", ">i2", "<u2", ">u4", "<i4", ">i8", "<u8", "<f2", ">f2", ">f4",
                "<f4", ">f8"):
         name = dt.replace("<", "le_").replace(">", "be_").replace("|", "na_")
-        array(d, name, arr((5, 3), dt), [2, 2], dtype=dt, fill=False if dt.endswith("b1") else 0)
+        array(d, name, arr((5, 3), dt), [5, 3], dtype=dt, fill=False if dt.endswith("b1") else 0)
 
-    # Fill values, missing and empty chunks.
+    # Fill values, missing and empty chunks: each array is two chunks along the first
+    # axis, the first missing (read as the fill value) and the second a partial edge
+    # chunk, padded with the fill value.
     d = store("zarr2_fill_values")
     group(d, "")
-    sparse = {(0, 1), (1, 0)}
-    array(d, "nan", arr((6, 6), "<f4"), [3, 3], fill="NaN", skip=sparse)
-    array(d, "inf", arr((6, 6), "<f8"), [3, 3], fill="Infinity", skip=sparse, compressor=ZLIB)
-    array(d, "neg_inf", arr((6, 6), ">f4"), [3, 3], fill="-Infinity", skip=sparse)
-    array(d, "null_int", arr((6, 6), "<i2"), [3, 3], fill=None, skip=sparse)
-    array(d, "null_bool", arr((6, 6), "|b1"), [3, 3], fill=None, skip=sparse)
-    array(d, "true_bool", arr((6, 6), "|b1"), [3, 3], fill=True, skip=sparse)
-    array(d, "neg_i1", arr((6, 6), "|i1"), [3, 3], fill=-5, skip=sparse)
-    array(d, "float_fill", arr((6, 6), "<f8"), [3, 3], fill=0.5, skip=sparse)
-    array(d, "float_as_int_fill", arr((6, 6), "<u2"), [3, 3], fill=7.0, skip=sparse)
-    array(d, "f2_max", arr((4, 4), "<f2"), [3, 3], fill=65504, skip={(1, 1)})
-    put(d / "nan/1.1", b"")  # an empty chunk: no entry
+    sparse = {(0, 0)}
+    array(d, "nan", arr((5, 6), "<f4"), [3, 6], fill="NaN", skip=sparse)
+    array(d, "inf", arr((5, 6), "<f8"), [3, 6], fill="Infinity", skip=sparse, compressor=ZLIB)
+    array(d, "neg_inf", arr((5, 6), ">f4"), [3, 6], fill="-Infinity", skip=sparse)
+    array(d, "null_int", arr((5, 6), "<i2"), [3, 6], fill=None, skip=sparse)
+    array(d, "null_bool", arr((5, 6), "|b1"), [3, 6], fill=None, skip=sparse)
+    array(d, "true_bool", arr((5, 6), "|b1"), [3, 6], fill=True, skip=sparse)
+    array(d, "neg_i1", arr((5, 6), "|i1"), [3, 6], fill=-5, skip=sparse)
+    array(d, "float_fill", arr((5, 6), "<f8"), [3, 6], fill=0.5, skip=sparse)
+    array(d, "float_as_int_fill", arr((5, 6), "<u2"), [3, 6], fill=7.0, skip=sparse)
+    array(d, "f2_max", arr((3, 4), "<f2"), [2, 4], fill=65504, skip=sparse)
+    put(d / "nan/0.0", b"")  # an empty chunk: no entry
 
     # 0-d arrays, a root array, extra objects.
     d = store("zarr2_scalar_root")
@@ -157,18 +171,18 @@ def main() -> None:
     d = store("zarr2_hierarchy")
     group(d, "", {"root": True})
     array(d, "a/b/zero_d", np.array(7, dtype="<i4"), [])  # a/ and a/b/ are implicit groups
-    array(d, "a/c", arr((4, 4), "<u2"), [2, 2], sep="/", attrs={"_ARRAY_DIMENSIONS": ["y", "x"]})
+    array(d, "a/c", arr((4, 4), "<u2"), [2, 4], sep="/", attrs={"_ARRAY_DIMENSIONS": ["y", "x"]})
     group(d, "a/c/inside")  # inside an array: not a node
     put(d / "a/c/0/9", b"x")  # outside the grid
     put(d / "a/c/00/1", b"x")  # leading zero
     put(d / "a/c/0.0", b"x")  # the other separator
     group(d, "g", {"empty": {}})
-    array(d, "g/h", arr((3,), "<f4"), [2])
+    array(d, "g/h", arr((3,), "<f4"), [4])
     put(d / "g/h/0.0", b"x")  # too many indices for a 1-d array
     put(d / "notes/README.md", b"not part of the hierarchy\n")
     write_json(d / "orphan/.zattrs", {"no": "node"})  # .zattrs without .zarray or .zgroup
     group(d, "sp ace/é")
-    array(d, "sp ace/é/x y", arr((2, 2), "|u1"), [1, 2])
+    array(d, "sp ace/é/x y", arr((2, 2), "|u1"), [2, 2])
     array(d, "empty_shape", np.zeros((0, 3), "<i2"), [2, 2])
     # Stale consolidated metadata: never read.
     write_json(d / ".zmetadata", {"zarr_consolidated_format": 1, "metadata": {
@@ -191,12 +205,12 @@ def main() -> None:
                   "rdefs": {"model": "color"}},
         "other": "kept"})
     for i in range(2):
-        array(d, f"0/{i}", img[:, :: 2**i, :: 2**i], [1, 4, 4], compressor=blosc(), sep="/")
+        array(d, f"0/{i}", img[:, :: 2**i, :: 2**i], [2, 8, 10], compressor=blosc(), sep="/")
     group(d, "0/labels", {"labels": ["cells"]})
     group(d, "0/labels/cells", {"multiscales": [{"version": "0.4", "axes": axes, "datasets": [
         {"path": "0", "coordinateTransformations": [{"type": "scale", "scale": [1, 0.5, 0.5]}]}]}],
         "image-label": {"version": "0.4", "colors": [{"label-value": 1, "rgba": [255, 0, 0, 255]}]}})
-    array(d, "0/labels/cells/0", arr((2, 8, 10), "<u4"), [1, 8, 8], compressor=ZSTD, sep="/")
+    array(d, "0/labels/cells/0", arr((2, 8, 10), "<u4"), [2, 8, 10], compressor=ZSTD, sep="/")
     # Other versions, a group that already has `ome`, and mixed versions.
     group(d, "v03", {"multiscales": [{"version": "0.3", "axes": ["y", "x"], "datasets": [{"path": "0"}]}]})
     array(d, "v03/0", arr((3, 3), "|u1"), [3, 3])
@@ -207,19 +221,17 @@ def main() -> None:
                                            "datasets": [{"path": "0"}]}]})
     array(d, "dup_axes/0", arr((3, 3), "|u1"), [3, 3])
 
-    # Rejections, one per rule.
+    # Rejections, one per rule: an array at the root, with no chunk.
     def reject(name: str, **kw):
         d = store(f"zarr2_reject_{name}")
-        group(d, "")
         doc = {"zarr_format": 2, "shape": [4, 4], "chunks": [2, 2], "dtype": "<u2", "compressor": None,
                "fill_value": 0, "order": "C", "filters": None}
         raw = kw.pop("raw", None)
         doc.update(kw)
         if raw is not None:
-            put(d / "x/.zarray", raw)
+            put(d / ".zarray", raw)
         else:
-            write_json(d / "x/.zarray", {k: v for k, v in doc.items() if v != "DROP"})
-        put(d / "x/0.0", bytes(8))
+            write_json(d / ".zarray", {k: v for k, v in doc.items() if v != "DROP"})
 
     reject("filters", filters=[{"id": "delta", "dtype": "<u2"}])
     reject("compressor_lz4", compressor={"id": "lz4", "acceleration": 1})
@@ -255,16 +267,15 @@ def main() -> None:
                                            b'"compressor": null, "fill_value": 0, "order": "C", "filters": null, '
                                            b'"order": "K"}')
     d = store("zarr2_reject_zarray_and_zgroup")
+    array(d, "", arr((2, 2), "|u1"), [2, 2], write_chunks=False)
     group(d, "")
-    array(d, "x", arr((2, 2), "|u1"), [2, 2])
-    group(d, "x")
-    d = store("zarr2_reject_zattrs_not_object")
+    d = store("zarr2_reject_zattrs_not_object")  # below the root, so that the message names the node
     group(d, "")
-    array(d, "x", arr((2, 2), "|u1"), [2, 2], attrs=["not", "an", "object"])
+    array(d, "x", arr((2, 2), "|u1"), [2, 2], attrs=["not", "an", "object"], write_chunks=False)
     d = store("zarr2_reject_zgroup_format")
     write_json(d / ".zgroup", {"zarr_format": "2"})
     d = store("zarr2_reject_no_root_metadata")
-    array(d, "x", arr((2, 2), "|u1"), [2, 2])
+    array(d, "x", arr((2, 2), "|u1"), [2, 2], write_chunks=False)
 
     total = sum(f.stat().st_size for f in OUT.rglob("*") if f.is_file())
     print(f"{sum(1 for _ in OUT.iterdir())} stores, {total} bytes")

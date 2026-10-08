@@ -4,8 +4,8 @@
   4
  ],
  "blockSize": [
-  3,
-  3
+  5,
+  4
  ],
  "dataType": "int8",
  "compression": {

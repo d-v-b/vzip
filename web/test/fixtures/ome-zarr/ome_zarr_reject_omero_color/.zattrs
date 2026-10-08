@@ -27,18 +27,6 @@
               ]
             }
           ]
-        },
-        {
-          "path": "1",
-          "coordinateTransformations": [
-            {
-              "type": "scale",
-              "scale": [
-                2.0,
-                2.0
-              ]
-            }
-          ]
         }
       ]
     }
