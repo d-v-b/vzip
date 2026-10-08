@@ -13,7 +13,7 @@
 // `id` is the base64url encoding of the URL. Used by the service worker
 // (sw.ts); kept free of service worker APIs so it can run under Node.
 
-import { Archive, type RangeFetcher, VzipError } from "./archive.ts";
+import { Archive, type RangeFetcher, type ReadOptions, VzipError } from "./archive.ts";
 import { HttpResolutionError, openHttpFile, readHttpRange } from "./http.ts";
 import { blockReader, ImageError } from "./virtualize/common.ts";
 import { isStoreUrl, virtualizeImage, virtualizeStore } from "./virtualize/index.ts";
@@ -57,6 +57,8 @@ export interface HandlerOptions {
   fetchStore?: (url: string, init?: RequestInit) => Promise<Response>;
   fetchRange?: RangeFetcher;
   fetchArchive?: (url: string) => Promise<Uint8Array>;
+  /** Read planning of the archives it opens (experimental, see archive.ts). */
+  readOptions?: ReadOptions;
 }
 
 interface Opened {
@@ -103,6 +105,7 @@ export function makeHandler(options: HandlerOptions) {
       if (!r.ok) throw new HttpResolutionError(`${url}: HTTP ${r.status}`);
       return new Uint8Array(await r.arrayBuffer());
     },
+    readOptions = {},
   } = options;
   const opened = new Map<string, Promise<Opened>>();
 
@@ -115,7 +118,7 @@ export function makeHandler(options: HandlerOptions) {
         const trimmed = base.endsWith("/") ? base.slice(0, -1) : base;
         const stem = decodeURIComponent(trimmed.slice(trimmed.lastIndexOf("/") + 1)) || "archive";
         if (kind === "archive") {
-          return { archive: await Archive.open(await fetchArchive(url), url, fetchRange), filename: stem };
+          return { archive: await Archive.open(await fetchArchive(url), url, fetchRange, readOptions), filename: stem };
         }
         let virtual;
         if (kind === "image" && isStoreUrl(url)) {
@@ -129,7 +132,7 @@ export function makeHandler(options: HandlerOptions) {
         }
         const bytes = await writeVzip(virtual);
         return {
-          archive: await Archive.open(bytes, url, fetchRange),
+          archive: await Archive.open(bytes, url, fetchRange, readOptions),
           filename: `${stem.replace(/\.(ome\.tiff?|tiff?|nd2|n5|zarr)$/i, "")}.vzip`,
         };
       })();
