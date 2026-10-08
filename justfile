@@ -28,7 +28,7 @@ conformance out="conformance/results/latest": impls::build
         --impl rust=impls/rust/vzip --impl typescript=impls/typescript/vzip --impl python=impls/python/vzip
 
 # Regenerate the synthetic files in web/test/fixtures/<format> (all but NDPI, which needs the network)
-fixtures: fixtures-tiff fixtures-nd2 fixtures-dicom fixtures-nifti fixtures-ims fixtures-n5 fixtures-zarr2
+fixtures: fixtures-tiff fixtures-nd2 fixtures-dicom fixtures-nifti fixtures-ims fixtures-n5 fixtures-zarr2 fixtures-ome-zarr
 
 # Regenerate the synthetic TIFFs (including JPEG-tiled, SVS-like ones)
 fixtures-tiff:
@@ -64,8 +64,12 @@ fixtures-n5:
 fixtures-zarr2:
     uv run python web/test/zarr2/write_fixtures.py
 
+# Regenerate the synthetic OME-Zarr 0.4 stores (one directory each)
+fixtures-ome-zarr:
+    uv run python web/test/ome-zarr/write_fixtures.py
+
 # Check the browser virtualizer's pixels for every format
-verify: verify-tiff verify-ndpi verify-nd2 verify-dicom verify-nifti verify-ims verify-n5 verify-zarr2
+verify: verify-tiff verify-ndpi verify-nd2 verify-dicom verify-nifti verify-ims verify-n5 verify-zarr2 verify-ome-zarr
 
 # Check the browser virtualizer's TIFF pixels against tifffile
 verify-tiff:
@@ -99,6 +103,10 @@ verify-n5:
 verify-zarr2:
     uv run python web/test/zarr2/verify.py
 
+# Check the browser virtualizer's OME-Zarr 0.5 output against ome-zarr-models and zarr-python's Zarr v2 reader
+verify-ome-zarr:
+    uv run python web/test/ome-zarr/verify.py
+
 # Store one virtual dataset as kerchunk JSON, kerchunk Parquet, Icechunk and vzip, and read each over HTTP (see comparison/README.md)
 compare-formats *args:
     uv run python comparison/compare.py {{args}}
@@ -114,8 +122,8 @@ compare-mutants count="10" seed="0" *args:
     uv run python conformance/virtualize/compare.py conformance/results/mutants-out \
         --fixtures conformance/results/mutants {{args}}
 
-# Virtualize an image file (TIFF, NDPI, ND2, DICOM, NIfTI or IMS; a URL or a path), or an N5 or
-# Zarr v2 store (a URL ending in "/"), into a vzip archive
+# Virtualize an image file (TIFF, NDPI, ND2, DICOM, NIfTI or IMS; a URL or a path), or an N5,
+# Zarr v2 or OME-Zarr 0.4 store (a URL ending in "/"), into a vzip archive
 virtualize src out:
     uv run python -m vzip.virtualize {{quote(src)}} {{quote(out)}}
 

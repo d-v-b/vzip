@@ -1,13 +1,14 @@
 # Virtualizing image files and stores as OME-Zarr in vzip
 
-Profiles version: 0 (**draft**) · Revision: 12
+Profiles version: 0 (**draft**) · Revision: 13
 
 ## 1. Introduction
 
 A **virtualizer** reads the structure of an image file (TIFF, Hamamatsu NDPI,
 Nikon ND2, DICOM, NIfTI or Imaris IMS) or of a chunked array store (N5 or
-Zarr v2), and writes a vzip archive ([SPEC.md](SPEC.md)) that presents the
-pixels as an OME-Zarr dataset, or for a store as a Zarr v3 hierarchy. The
+Zarr v2, including OME-Zarr 0.4), and writes a vzip archive ([SPEC.md](SPEC.md))
+that presents the pixels as an OME-Zarr dataset, or for a store as a Zarr v3
+hierarchy (for an OME-Zarr 0.4 store, an OME-Zarr 0.5 one). The
 pixels stay where they are: each Zarr chunk is a reference to byte ranges of
 the file, or to a whole object of the store. This document specifies, for
 each supported input format (a **profile**), exactly which archive a
@@ -28,9 +29,10 @@ is a document of its own, numbered as a section of this one:
 | 8 | [IMS](profiles/ims.md) | Imaris IMS files (HDF5) |
 | 9 | [N5](profiles/n5.md) | N5 containers (store input), default-mode blocks |
 | 10 | [Zarr v2](profiles/zarr2.md) | Zarr v2 hierarchies (store input) |
+| 11 | [OME-Zarr](profiles/ome-zarr.md) | OME-Zarr 0.4 hierarchies on Zarr v2 (store input), migrated to OME-Zarr 0.5 |
 
-§3–§8 read a single file (a **file input**); §9 and §10 read a store of many
-objects (a **store input**, §1.4). §11 is informative: the implementations
+§3–§8 read a single file (a **file input**); §9–§11 read a store of many
+objects (a **store input**, §1.4). §12 is informative: the implementations
 and how they are compared.
 
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be
@@ -101,7 +103,7 @@ that is truncated or inconsistent, a value of the wrong type or out of range,
 an offset or length above 2^53 − 1. Being unable to read the input (a
 network error) is not a rejection; the virtualizer fails instead. An
 implementation MAY also fail, rather than reject, when an input exceeds a
-resource limit that it states (§11); a failure is not an output, so it does
+resource limit that it states (§12); a failure is not an output, so it does
 not affect equivalence.
 
 **Structure only.** The output MUST NOT depend on the file's pixel data.
@@ -166,9 +168,45 @@ decide, by the first row that matches:
 
 | root keys | |
 |---|---|
-| `.zarray` or `.zgroup` | Zarr v2 profile (§10) |
+| `.zarray` or `.zgroup` | OME-Zarr profile (§11) if the store declares OME-NGFF 0.4 (below), else Zarr v2 profile (§10) |
 | `attributes.json` | N5 profile (§9) |
 | anything else, including an empty store | rejected |
+
+**Declaring OME-NGFF 0.4.** The test reads at most three documents, by
+§1.6, in this order; a document that §1.6 rejects rejects the input. In
+it, a **relative path** is a string of one or more segments separated by
+`/`, none of them empty, `.` or `..`; the **attributes** of a path `p` are
+read only if the store has both objects `p/.zgroup` and `p/.zattrs`
+(`.zgroup` and `.zattrs` for the root), and are then the document
+`p/.zattrs` if it is an object (otherwise there are none). A set of
+attributes `A` **declares 0.4 multiscales** if its member `multiscales` is
+an array with an element that is an object whose member `version` is the
+string `"0.4"`.
+
+1. If the store has an object `.zarray`, or the root has no attributes, the
+   store does not declare OME-NGFF 0.4. Otherwise let `A` be the root's
+   attributes.
+2. The store declares OME-NGFF 0.4 if `A` declares 0.4 multiscales, or `A`'s
+   member `plate` or `well` is an object whose member `version` is the
+   string `"0.4"`.
+3. Otherwise, if `A` has no member `bioformats2raw.layout`, it does not.
+   If it has one, the **first image** `q` is found:
+   - if `A` has a member `plate`: if `plate` is an object whose member
+     `wells` is a nonempty array whose first element is an object whose
+     member `path` is a relative path `w`, and the attributes of `w` have a
+     member `well` that is an object whose member `images` is a nonempty
+     array whose first element is an object whose member `path` is a
+     relative path `f`, then `q` is `w/f`; otherwise there is none;
+   - otherwise `q` is the first element of the member `series` of the
+     attributes of `OME`, if that is a nonempty array whose first element
+     is a relative path, and `0` if not.
+
+   The store declares OME-NGFF 0.4 if there is a `q` and its attributes
+   declare 0.4 multiscales.
+
+(These are the forms OME-NGFF 0.4 gives an image, a plate, a well and a
+bioformats2raw collection at the root. A 0.4 group below a root that does
+not declare 0.4 is read by §10, with its attributes unchanged.)
 
 **Reading an object.** A virtualizer reads an object whole: the bytes
 `[0, size)` of the object's URL (below), with HTTP range requests, or from
@@ -186,7 +224,8 @@ digits (the encoding of [SPEC.md §6](SPEC.md#6-source-table) for local paths). 
 `a b/0.0` of the store `https://h/x/` has the URL `https://h/x/a%20b/0.0`.
 
 **Source table and chunk references.** A profile names the **chunk
-objects** of each array: objects whose keys are chunk keys of the array.
+objects** of each array: objects whose keys are chunk keys of the array,
+and the other objects it references whole (§11.6, the only one that does).
 Of these, an object of size 0 is not used: it has no entry (so the chunk
 reads as the fill value) and no source. Every other chunk object `k` gives
 one entry, whose key is `k` itself, referencing the whole object. The
@@ -331,9 +370,9 @@ them as such).
 
 ## 2. Common output
 
-§2.1 and §2.2 apply to the file profiles (§3–§8). The store profiles (§9,
-§10) keep the store's own arrays and attributes, and define their documents
-themselves; they use §2.3's units.
+§2.1 and §2.2 apply to the file profiles (§3–§8). The store profiles
+(§9–§11) keep the store's own arrays and attributes, and define their
+documents themselves; §9 uses §2.3's units.
 
 ### 2.1 Arrays
 
@@ -449,7 +488,7 @@ name. A position given for the centre of an image of level-0 size
 `W0 × H0` with x and y scales `sx`, `sy` becomes the translation
 `x = cx − W0 × sx / 2`, `y = cy − H0 × sy / 2` (products first).
 
-## 3–10. Profiles
+## 3–11. Profiles
 
 Each profile is a separate document:
 
@@ -460,9 +499,10 @@ Each profile is a separate document:
 - §7, the NIfTI profile: [profiles/nifti.md](profiles/nifti.md);
 - §8, the IMS profile: [profiles/ims.md](profiles/ims.md);
 - §9, the N5 profile: [profiles/n5.md](profiles/n5.md);
-- §10, the Zarr v2 profile: [profiles/zarr2.md](profiles/zarr2.md).
+- §10, the Zarr v2 profile: [profiles/zarr2.md](profiles/zarr2.md);
+- §11, the OME-Zarr profile: [profiles/ome-zarr.md](profiles/ome-zarr.md).
 
-## 11. Conformance
+## 12. Conformance
 
 This section is informative. There are two maintained implementations:
 - the Python reference, `python -m vzip.virtualize <url> <out.vzip>`
@@ -471,9 +511,10 @@ This section is informative. There are two maintained implementations:
   `web/conformance/virtualize.ts`.
 
 Both are organized by profile: `tiff/`, `ndpi/`, `nd2/`, `dicom/`, `nifti/`,
-`ims/`, `n5/` and `zarr2/`, next to the parts they share (`common`, and
-`store` for store inputs: the listing, the object reader and the JSON
-reader of §1.4–§1.6).
+`ims/`, `n5/`, `zarr2/` and `ome_zarr/` (`ome-zarr/` in the browser one),
+next to the parts they share (`common`, and `store` for store inputs: the
+listing, the object reader and the JSON reader of §1.4–§1.6). The OME-Zarr
+profile reuses the Zarr v2 profile's hierarchy reader.
 
 **Resource limit.** The browser implementation fails (it does not reject)
 a store whose listing has more than 100000 objects (counting every listed
@@ -493,14 +534,15 @@ compares their outputs by §1.1 (`conformance/virtualize/HARNESS.md`
 describes the command an implementation provides). The corpus has:
 - the synthetic files in `web/test/fixtures/<profile>/`, including inputs
   each profile rejects, and the synthetic stores in
-  `web/test/fixtures/n5/` and `web/test/fixtures/zarr2/` (one directory
-  each);
+  `web/test/fixtures/n5/`, `web/test/fixtures/zarr2/` and
+  `web/test/fixtures/ome-zarr/` (one directory each);
 - the 205 OME-TIFFs of IDR idr0096;
 - public files and stores of every profile, listed in
   `conformance/virtualize/corpus_*.txt`: TIFF, SVS and NDPI
   (`corpus_tiff.txt`), ND2, DICOM (including whole-slide levels from the NCI
-  Imaging Data Commons), NIfTI, IMS, and N5 and Zarr v2 stores from
-  OpenOrganelle (`corpus_n5.txt`, `corpus_zarr2.txt`).
+  Imaging Data Commons), NIfTI, IMS, N5 and Zarr v2 stores from
+  OpenOrganelle (`corpus_n5.txt`, `corpus_zarr2.txt`), and OME-Zarr 0.4
+  images, label images and plates from the IDR (`corpus_ome_zarr.txt`).
 
 The harness's proxy (`conformance/virtualize/proxy.py`) serves the synthetic
 stores, and forwards remote ones, with the listing operation of §1.5.
@@ -510,9 +552,11 @@ Pixel correctness is checked separately, against independent readers, by
 the synthetic files' known pixels (and `experiments/verify_nd2_vzip.py`
 against the `nd2` package on public files), DICOM against pydicom, NIfTI
 against nibabel, IMS against h5py, N5 against an independent block reader in
-the script (and `zarr-n5`), and Zarr v2 against zarr-python's own Zarr v2
-reader.
+the script (and `zarr-n5`), Zarr v2 against zarr-python's own Zarr v2
+reader, and OME-Zarr against zarr-python's Zarr v2 reader and the
+`ome-zarr-models` package (every output group validated as OME-Zarr 0.5,
+every accepted input as 0.4).
 
-The DICOM, NIfTI and IMS profiles (revision 11) and the N5 and Zarr v2
-profiles (revision 12) have not yet been through an independent
-implementation round.
+The DICOM, NIfTI and IMS profiles (revision 11), the N5 and Zarr v2
+profiles (revision 12) and the OME-Zarr profile (revision 13) have not yet
+been through an independent implementation round.

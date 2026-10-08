@@ -1,9 +1,9 @@
-"""Compares virtualizers (VIRTUALIZE.md §1.1, §9; HARNESS.md).
+"""Compares virtualizers (VIRTUALIZE.md §1.1, §12; HARNESS.md).
 
 Every implementation runs on every input of the corpus, which the caching
 proxy (proxy.py) serves over local HTTP: the synthetic files in
 web/test/fixtures/ (one directory per format), the synthetic stores in
-web/test/fixtures/n5/ and web/test/fixtures/zarr2/ (one directory per store,
+web/test/fixtures/n5/, zarr2/ and ome-zarr/ (one directory per store,
 served with the S3 listing of VIRTUALIZE.md §1.5), the 205 OME-TIFFs of IDR
 idr0096, and the public files and stores in corpus_*.txt. For each input, all
 implementations must either reject it (exit status 3) or produce equivalent
@@ -11,7 +11,7 @@ outputs; outputs are compared with the reference implementation's (the first
 one).
 
 Corpus lines are `url|name`, or `url|name|py-only` for an input larger than
-the browser implementation's limit (VIRTUALIZE.md §11): such inputs are
+the browser implementation's limit (VIRTUALIZE.md §12): such inputs are
 skipped unless `--large` is given, and then only the reference runs on them.
 Store URLs end in `/`.
 
@@ -158,11 +158,11 @@ def check(item: tuple, impls: dict, out_dir: Path) -> dict:
     return {"name": name, "url": url, "verdicts": verdicts}
 
 
-STORE_FORMATS = ("n5", "zarr2")
+STORE_FORMATS = ("n5", "zarr2", "ome-zarr")
 
 
 def store_fixtures(fixtures: Path) -> list[Path]:
-    """The synthetic stores: each directory directly under <fixtures>/n5 and <fixtures>/zarr2."""
+    """The synthetic stores: each directory directly under <fixtures>/n5, zarr2 and ome-zarr."""
     return sorted(d for f in STORE_FORMATS if (fixtures / f).is_dir() for d in (fixtures / f).iterdir() if d.is_dir())
 
 
@@ -180,7 +180,7 @@ def corpus(proxy: Proxy, fixtures: Path, quick: bool, local_only: bool, large: b
     items += [(f"idr-{i:03d}", proxy.remote(IDR + n)) for i, n in enumerate(tiffs[:3] if quick else tiffs)]
     for corpus_file, prefix in (("corpus_nd2.txt", "nd2-"), ("corpus_tiff.txt", ""), ("corpus_dicom.txt", "dicom-"),
                                 ("corpus_nifti.txt", "nifti-"), ("corpus_ims.txt", "ims-"), ("corpus_n5.txt", "n5-"),
-                                ("corpus_zarr2.txt", "zarr2-")):
+                                ("corpus_zarr2.txt", "zarr2-"), ("corpus_ome_zarr.txt", "ome-zarr-")):
         listed = [line.split("|") for line in (HERE / corpus_file).read_text().split("\n")
                   if line and not line.startswith("#")]
         listed = [x for x in listed if large or x[2:] != ["py-only"]]
