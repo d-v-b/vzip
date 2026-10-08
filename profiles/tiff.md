@@ -1,6 +1,6 @@
 # Virtualizing TIFF files
 
-The TIFF profile of [VIRTUALIZE.md](../VIRTUALIZE.md) (revision 10), numbered
+The TIFF profile of [VIRTUALIZE.md](../VIRTUALIZE.md) (revision 14), numbered
 as its §3. §1 and §2 are in VIRTUALIZE.md and apply here.
 
 ## 3. TIFF profile
@@ -317,13 +317,16 @@ One image at the archive root (§2.2), with one array per level at path
   `<level>/c/<coords>` with one range `(0, TileOffsets[k], n)` (for JPEG,
   see below); coords are
   `t`, `c` (the plane's channel, or the sample `s`, or 0 when interleaved),
-  `z` (each only when present), then the tile row and column.
+  `z` (each only when present), then the tile row and column. The
+  references are listed (for §1.2's order of first use) level by level,
+  within a level by `t`, then `c`, then `z`, and within a plane by `k`.
 - **JPEG tiles.** A JPEG-in-TIFF tile is a JPEG stream that may omit its
   tables (which are in the IFD's JPEGTables) and the colour transform (which
   is given by PhotometricInterpretation). Each tile's reference makes it a
   complete stream: the ranges `[P, (0, TileOffsets[k] + 2, n − 2)]`, where
   `n` MUST be more than 2 (the tile's first 2 bytes, its SOI marker, are
-  dropped), and `P` is the literal range of
+  dropped), and `P` is a range of the data source (§1.2) that holds the
+  shared byte string
   - `FF D8` (SOI);
   - for 3 samples, the Adobe marker `FF EE 00 0E 41 64 6F 62 65 00 64 00 00
     00 00 T`, with transform `T` = 0 for PhotometricInterpretation 2 (the
@@ -332,6 +335,8 @@ One image at the archive root (§2.2), with one array per level at path
     JPEGTables MUST then be at least 4 bytes long, start with `FF D8` and
     end with `FF D9`.
 
-  `P` depends only on the IFD, so every tile of an IFD has the same `P`.
+  These bytes depend only on the IFD, so every tile of an IFD has the same
+  `P`, and IFDs with the same bytes (as several levels of a slide often
+  have) share one data source.
 - **OME-XML:** if present, the entry `OME/METADATA.ome.xml` holds `D`, the
   ImageDescription's bytes up to the first NUL, unchanged.

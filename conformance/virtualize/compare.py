@@ -47,7 +47,7 @@ HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 from proxy import Proxy  # noqa: E402
 
-from vzip.pb import Concat, Range, decode_source_table  # noqa: E402
+from vzip.pb import Concat, Range, Source, decode_source_table  # noqa: E402
 
 IDR = "https://ftp.ebi.ac.uk/pub/databases/IDR/idr0096-tratwal-marrowquant/20210609-ftp-ome-tiffs/"
 BUILTIN = {
@@ -59,7 +59,7 @@ BUILTIN = {
 def from_vzip(path: Path) -> dict:
     """An archive's output (§1.1)."""
     z = zipfile.ZipFile(path)
-    sources = [s.url for s in decode_source_table(z.read("__vz__/sources"))]
+    sources = [_source(s) for s in decode_source_table(z.read("__vz__/sources"))]
     entries = {}
     for info in z.infolist():
         if info.filename.startswith("__vz__/"):
@@ -79,6 +79,15 @@ def from_vzip(path: Path) -> dict:
         else:
             entries[info.filename] = ("bytes", hashlib.sha256(z.read(info)).hexdigest())
     return {"sources": sources, "entries": entries}
+
+
+def _source(s: Source) -> str | dict:
+    """A source as compared: its URL, or {"data": base64} for a data source."""
+    if s.url is not None:
+        return s.url
+    if s.data is not None:
+        return {"data": base64.b64encode(s.data).decode()}
+    return {"key": s.key}
 
 
 def _range(r: Range) -> list:

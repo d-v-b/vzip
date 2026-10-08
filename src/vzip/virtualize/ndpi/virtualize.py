@@ -3,8 +3,9 @@
 Hamamatsu NDPI is a little-endian classic TIFF with 64-bit offsets (an 8-byte
 first-IFD offset, 8-byte next-IFD offsets, and a high word per entry after
 each IFD), whose pyramid levels are single JPEG strips with restart markers.
-Each chunk is a JPEG stream rebuilt from the strip's header, a literal frame
-header for the chunk's size, and `a × b` restart intervals of the strip.
+Each chunk is a JPEG stream rebuilt from the strip's header (held in data
+sources, since every chunk shares it), a literal frame header for the chunk's
+size, and `a × b` restart intervals of the strip.
 """
 
 from __future__ import annotations
@@ -244,10 +245,13 @@ def _intervals(out: Output, li: int, read: Reader, tags: dict, starts: list, s0:
     a = min(q, max(1, CHUNK // (interval * mw)))
     sof = bytearray(header[sof_start:sof_end])
 
+    # The header around SOF0 is the same in every chunk: data sources (§4).
+    before, after = out.shared(header[:sof_start]), out.shared(header[sof_end:])
+
     def chunks(b: int):
         sof[5:7] = struct.pack(">H", b * mh)
         sof[7:9] = struct.pack(">H", a * interval * mw)
-        head = [(s0, sof_start), bytes(sof), (s0 + sof_end, starts[0] - sof_end)]
+        head = [before, bytes(sof), after]
         for u in range(math.ceil(r / b)):
             for v in range(math.ceil(q / a)):
                 ranges = list(head)

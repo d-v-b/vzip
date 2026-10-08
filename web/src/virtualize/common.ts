@@ -1,6 +1,8 @@
 // What every profile of VIRTUALIZE.md shares: reading the input through range
 // reads, rejecting it, and sizing reference payloads.
 
+import type { Range, Source } from "../protobuf.ts";
+
 /** The input is rejected for a reason no single profile owns (§1.2). */
 export class ImageError extends Error {}
 
@@ -57,17 +59,53 @@ function varintSize(v: number): number {
   return n;
 }
 
-function rangeSize(r: [number, number] | Uint8Array): number {
+/** A range of an output: [offset, length] of source 0, [source, offset,
+ * length] of any source, or literal bytes. */
+export type Part = [number, number] | [number, number, number] | Uint8Array;
+
+function rangeSize(r: Part): number {
   if (r instanceof Uint8Array) return 1 + varintSize(r.length) + r.length;
-  const [offset, length] = r;
-  return (offset ? 1 + varintSize(offset) : 0) + (length ? 1 + varintSize(length) : 0);
+  const [source, offset, length] = r.length === 3 ? r : [0, ...r];
+  return [source, offset, length].reduce((n, v) => n + (v ? 1 + varintSize(v) : 0), 0);
 }
 
-/** The encoded size of a reference to `ranges`: [offset, length] pairs or literal bytes (§1.2). */
-export function payloadSize(ranges: ([number, number] | Uint8Array)[]): number {
+/** The encoded size of a reference to `ranges` (§1.2). */
+export function payloadSize(ranges: Part[]): number {
   if (ranges.length === 1) return rangeSize(ranges[0]);
   return ranges.reduce((n, range) => {
     const r = rangeSize(range);
     return n + 1 + varintSize(r) + r;
   }, 0);
+}
+
+/** The data sources of a file input's output (§1.2): byte strings shared by
+ * many references, numbered from 1 (after the url source 0) in order of
+ * first use. */
+export class DataSources {
+  readonly sources: Uint8Array[] = [];
+  private readonly index = new Map<string, number>();
+
+  /** A range of all of `value`, adding it as a source the first time it is used. */
+  range(value: Uint8Array): [number, number, number] {
+    const key = Array.from(value, (b) => String.fromCharCode(b)).join("");
+    let i = this.index.get(key);
+    if (i === undefined) {
+      this.sources.push(value.slice());
+      i = this.sources.length;
+      this.index.set(key, i);
+    }
+    return [i, 0, value.length];
+  }
+
+  /** The output's source table: `url`, then the data sources. */
+  table(url: string): Source[] {
+    return [{ url }, ...this.sources.map((data) => ({ data }))];
+  }
+}
+
+/** A Part as an archive Range. */
+export function toRange(p: Part): Range {
+  if (p instanceof Uint8Array) return { data: p };
+  const [source, offset, length] = p.length === 3 ? p : [0, ...p];
+  return { source, offset: BigInt(offset), length: BigInt(length) };
 }

@@ -1,6 +1,6 @@
 # Virtualizing NDPI files
 
-The NDPI profile of [VIRTUALIZE.md](../VIRTUALIZE.md) (revision 10), numbered
+The NDPI profile of [VIRTUALIZE.md](../VIRTUALIZE.md) (revision 14), numbered
 as its §4. It builds on the TIFF profile (§3,
 [tiff.md](tiff.md)). §1 and §2 are in VIRTUALIZE.md and apply here.
 
@@ -85,10 +85,12 @@ number from 1 to `min(r, floor(1024 / mh))` (at least 1) for which every
 chunk's payload is at most 65519 bytes (§1.2). Chunk `(u, v)` (row `u`,
 column `v`) is the JPEG stream:
 
-1. the header up to its SOF0 segment (a range of the file);
+1. the header up to its SOF0 segment, a shared byte string (§1.2): a range
+   of the data source that holds it;
 2. a literal SOF0 segment: the header's, with its height set to `b × mh` and
    its width to `a × R × mw`;
-3. the rest of the header after the SOF0 segment (a range of the file);
+3. the rest of the header after the SOF0 segment, a shared byte string: a
+   range of the data source that holds it;
 4. for `y` from 0 to `b − 1` and, within it, `x` from 0 to `a − 1`: the
    interval at row `min(u × b + y, r − 1)` and column `min(v × a + x, q − 1)`
    (a range of the file), followed, except after the last, by the literal
@@ -99,4 +101,17 @@ column `v`) is the JPEG stream:
 Clamping repeats the last row or column of intervals in the chunks at the
 image's bottom and right edges; those pixels lie outside the array and are
 not read. (Every interval decodes on its own after a restart marker.)
-Chunk keys are `<level>/c/0/<u>/<v>`.
+Chunk keys are `<level>/c/0/<u>/<v>`. The references are listed (for
+§1.2's order of first use) level by level, and within a level by `u`, then
+`v`.
+
+**Data sources.** Pieces 1 and 3 are the same in every chunk of a level,
+and are held once, in data sources, so that reading a chunk reads only its
+intervals from the file. They sit at the start of the strip, far from most
+intervals, so as ranges of the file they would cost a reader a separate
+request per chunk. By §1.2's order of first use, the first McuStarts level's
+pieces 1 and 3 are sources 1 and 2; a later level adds a source only for a
+piece whose bytes differ from every earlier one. (In CMU-1.ndpi every level
+shares piece 1, its quantization and Huffman tables, and piece 3, DRI and
+SOS, differs by its restart interval.) Both are JPEG markers and tables, not
+pixel data (§1.2, **Structure only**).

@@ -68,7 +68,8 @@ TIFF:
 - Compression: none, DEFLATE (`zlib`), zstd, JPEG 2000 (`imagecodecs_jpeg2k`),
   and JPEG (`imagecodecs_jpeg`), without a predictor. JPEG tiles that keep
   their tables in `JPEGTables`, as in Aperio SVS, become complete JPEG streams
-  through references that prepend the tables and a colour marker.
+  through references that prepend the tables and a colour marker, held once
+  in the archive as a `data` source.
 
 Not supported, and refused with HTTP 422: images in strips, LZW, old-style
 JPEG, predictors, and multi-file OME-TIFF.
@@ -77,7 +78,8 @@ Hamamatsu NDPI:
 
 - Pyramids of single JPEG strips, including in files over 4 GB: each level's
   strip is cut at its restart markers into chunks of about 1024 × 1024 pixels, each a JPEG stream rebuilt
-  from byte ranges of the file.
+  from byte ranges of the file and the strip's header, held once in the
+  archive as `data` sources.
 
 Not supported, and refused with HTTP 422: NDPI focal planes.
 

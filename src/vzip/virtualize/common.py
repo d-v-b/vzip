@@ -17,26 +17,50 @@ class Rejected(Exception):
     """The input is not accepted by the profile (VIRTUALIZE.md §1.2)."""
 
 
+# A range of an output: (offset, length) of source 0, (source, offset, length)
+# of any source, or literal bytes.
+Part = tuple[int, int] | tuple[int, int, int] | bytes
+
+
 @dataclass
 class Output:
-    """A virtualizer's output: one url source and the entries (§1.1)."""
+    """A virtualizer's output: the url source 0, the data sources after it,
+    and the entries (§1.1, §1.2)."""
 
     url: str
     bytes_entries: dict[str, bytes] = field(default_factory=dict)
-    # Each range is (offset, length) of the source, or literal bytes.
-    refs: dict[str, list[tuple[int, int] | bytes]] = field(default_factory=dict)
+    refs: dict[str, list[Part]] = field(default_factory=dict)
     summary: dict = field(default_factory=dict)
+    # The data sources 1, 2, ... in order of first use (§1.2), and their indexes.
+    data: dict[bytes, int] = field(default_factory=dict)
 
     def json(self, key: str, value) -> None:
         self.bytes_entries[key] = json.dumps(value, indent=2).encode()
+
+    def shared(self, value: bytes) -> tuple[int, int, int]:
+        """A range of all of `value`, as a data source (§1.2): the source is
+        added to the table the first time `value` is used."""
+        value = bytes(value)
+        i = self.data.setdefault(value, len(self.data) + 1)
+        return (i, 0, len(value))
 
     def write(self, out_path: str) -> None:
         with open(out_path, "wb") as fh:
             w = VZipWriter(fh, page_size=1 << 16)
             src = w.source(Source(url=self.url))
+            for value, i in self.data.items():
+                if w.blob(value) != i:
+                    raise AssertionError("data sources out of order")
+
+            def rng(r: Part) -> Range:
+                if isinstance(r, bytes):
+                    return Range(data=r)
+                if len(r) == 3:
+                    return Range(source=r[0], offset=r[1], length=r[2])
+                return Range(source=src, offset=r[0], length=r[1])
+
             for key in sorted(self.refs):
-                w.add_ranges(key, [Range(data=r) if isinstance(r, bytes) else Range(source=src, offset=r[0], length=r[1])
-                                   for r in self.refs[key]])
+                w.add_ranges(key, [rng(r) for r in self.refs[key]])
             for key in sorted(self.bytes_entries):
                 w.add_bytes(key, self.bytes_entries[key], compress=not key.endswith("zarr.json"),
                             late=key.endswith("zarr.json"))
@@ -50,14 +74,14 @@ def _varint_size(v: int) -> int:
     return max(1, (v.bit_length() + 6) // 7)
 
 
-def _range_size(r: tuple[int, int] | bytes) -> int:
+def _range_size(r: Part) -> int:
     if isinstance(r, bytes):
         return 1 + _varint_size(len(r)) + len(r)
-    offset, length = r
-    return (1 + _varint_size(offset) if offset else 0) + (1 + _varint_size(length) if length else 0)
+    source, offset, length = r if len(r) == 3 else (0, *r)
+    return sum(1 + _varint_size(v) for v in (source, offset, length) if v)
 
 
-def payload_size(ranges: list[tuple[int, int] | bytes]) -> int:
+def payload_size(ranges: list[Part]) -> int:
     """The encoded size of a reference to `ranges` (§1.2)."""
     if len(ranges) == 1:
         return _range_size(ranges[0])

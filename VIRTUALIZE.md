@@ -1,6 +1,6 @@
 # Virtualizing image files and stores as OME-Zarr in vzip
 
-Profiles version: 0 (**draft**) · Revision: 13
+Profiles version: 0 (**draft**) · Revision: 14
 
 ## 1. Introduction
 
@@ -42,12 +42,14 @@ interpreted as described in RFC 2119.
 
 A virtualizer's **output** is an archive description:
 
-- a **source table**: a list of `url` sources, and
+- a **source table**: a list of `url` sources and `data` sources (SPEC.md
+  §6), and
 - a set of **entries**: keys, each with either bytes or a list of ranges
   ([SPEC.md §2](SPEC.md#2-data-model), [§5](SPEC.md#5-messages)).
 
 Two outputs are **equivalent** when they have the same source table (the
-same URLs, in the same order), the same set of keys, and for every key:
+same sources in the same order: `url` sources with the same URLs, `data`
+sources with identical bytes), the same set of keys, and for every key:
 
 - **reference entries:** the same list of ranges, in order. A range is a
   source range `(i, offset, length)` of source `i`, or a **literal** range
@@ -74,9 +76,20 @@ file. (An implementation MAY also accept a local file or directory, with `U`
 the URL it will be served from: a directory is a store input, listed as
 §1.5 says.)
 
-For a file input, the output's source table is exactly one `url` source
-whose value is `U` as given, without pins. Every reference in the output is
-a range of source 0.
+For a file input, the output's source table is source 0, a `url` source
+whose value is `U` as given, without pins, followed by the output's **data
+sources**, if its profile defines any. A data source is a `data` source
+([SPEC.md §6](SPEC.md#6-source-table)) holding a byte string that a profile names as **shared**: one
+that many references would otherwise each read from the file, or each carry
+as a literal, such as a JPEG header. The data sources are the distinct
+shared byte strings of the output, numbered from 1 **in order of first
+use**: in the order in which the profile lists the references, and within a
+reference in order of its ranges, the first range that uses a byte string
+not yet in the table adds it as the next source. A range that uses a shared
+byte string `d` in data source `i` is `(i, 0, len(d))`, the whole source.
+Every other range of a reference is a range of source 0 or a literal range.
+The TIFF (§3, JPEG tiles) and NDPI (§4) profiles define shared byte strings;
+the others define none, so their table is source 0 alone.
 
 **Choosing the profile.** The file's first bytes decide, by the first row
 of this table that matches. `H` is the file's first `min(552, size)` bytes;
@@ -107,15 +120,22 @@ resource limit that it states (§12); a failure is not an output, so it does
 not affect equivalence.
 
 **Structure only.** The output MUST NOT depend on the file's pixel data.
-(Reading blocks that happen to include pixel bytes is fine.)
+(Reading blocks that happen to include pixel bytes is fine.) Coding
+parameters are structure, not pixel data, and an output may copy them: the
+data sources and literals of the TIFF and NDPI profiles hold JPEG markers
+and tables (quantization and Huffman tables, frame and scan headers, restart
+intervals), which describe how the pixels are coded but encode none of them.
+Entropy-coded data, from which pixels are decoded, is only ever referenced
+as ranges of source 0.
 
 **Evaluation order.** Whether an input is rejected never depends on the
 order in which a virtualizer reads or checks things: each profile lists what
 is checked, and every listed check applies whether or not its value ends up
 in the output.
 
-**References stay in the file.** Every range of the output MUST lie within
-the file (`offset + length ≤` the file's size), and every reference entry's
+**References stay in the file.** Every range of source 0 MUST lie within
+the file (`offset + length ≤` the file's size; a range of a data source is
+the whole source), and every reference entry's
 payload MUST be at most 65519 bytes; otherwise the input is rejected. The
 payload ([SPEC.md §4.3](SPEC.md#43-reference-entries), [§5](SPEC.md#5-messages)) of a single range is its `Range` message: for a
 source range `(i, o, n)`, `0x08 varint(i)` if `i > 0`, then `0x18 varint(o)`
@@ -233,7 +253,8 @@ source table is one `url` source per such entry, without pins: the URL of
 its object. The sources are in ascending order of their entries' keys,
 compared as UTF-8 byte strings (which is the order of Unicode code points),
 and the entry with key `k` at position `i` of that order has the single
-range `(i, 0, size)`. No other entry is a reference.
+range `(i, 0, size)`. No other entry is a reference, and a store input's
+output has no data sources (§1.2).
 
 These rules replace §1.2's **References stay in the file**: each range
 lies within its object by construction, and its payload is far below 65519
@@ -558,5 +579,8 @@ reader, and OME-Zarr against zarr-python's Zarr v2 reader and the
 every accepted input as 0.4).
 
 The DICOM, NIfTI and IMS profiles (revision 11), the N5 and Zarr v2
-profiles (revision 12) and the OME-Zarr profile (revision 13) have not yet
-been through an independent implementation round.
+profiles (revision 12), the OME-Zarr profile (revision 13) and the data
+sources of the TIFF and NDPI profiles (revision 14) have not yet been
+through an independent implementation round; the round implementations in
+`impls/virtualize/` still write JPEG headers as literals and ranges of the
+file.
