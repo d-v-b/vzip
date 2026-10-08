@@ -1,6 +1,6 @@
 # Virtualizing image files and stores as OME-Zarr in vzip
 
-Profiles version: 0 (**draft**) · Revision: 14
+Profiles version: 0 (**draft**) · Revision: 16
 
 ## 1. Introduction
 
@@ -389,125 +389,30 @@ A JSON value that this document copies into the output (attributes) is
 copied as these rules read it: its numbers as binary64 values (§1.1 compares
 them as such).
 
-## 2. Common output
+## 2. The Zarr layout
 
-§2.1 and §2.2 apply to the file profiles (§3–§8). The store profiles
-(§9–§11) keep the store's own arrays and attributes, and define their
-documents themselves; §9 uses §2.3's units.
+A virtualizer's output presents its input as a Zarr hierarchy whose layout
+is specified by the input format's **convention**, in
+[conventions/](conventions/README.md): the groups and arrays and their
+metadata, the OME-NGFF metadata, and the attributes under the key
+`vzip_virtualized`, including the translation of the input's header. The
+profiles (§3–§11) specify how to read and check the input, and how each
+chunk of that layout becomes a reference to the input's bytes; for the
+layout itself they refer to the convention, which builds on what all
+conventions share ([conventions/README.md](conventions/README.md): §1 the
+conventions, §2 their attributes, §3 arrays, §4 images, §5 units, §6 source
+metadata as JSON).
 
-### 2.1 Arrays
+A virtualizer MUST produce exactly the layout the input format's convention
+specifies for the input, at the convention's version that the profile
+states, with:
 
-Every array's `zarr.json` is the JSON object:
-
-```json
-{
-  "zarr_format": 3,
-  "node_type": "array",
-  "shape": [...],
-  "data_type": "...",
-  "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [...]}},
-  "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
-  "fill_value": 0,
-  "codecs": [...],
-  "dimension_names": [...],
-  "attributes": {}
-}
-```
-
-with no other members. Chunk keys are `<array path>/c/<i0>/<i1>/...`. A chunk
-whose data the file does not contain has no entry (it reads as the fill
-value).
-
-**Axes.** An image's axes are a subsequence of `t, c, z, y, x`, in that
-order: `t` (time), `c` (channel), `z`, `y`, `x` (space). `y` and `x` are
-always present; the profile says when the others are.
-
-**Codecs.** `codecs` is built from these, in this order:
-
-1. `{"name": "transpose", "configuration": {"order": [...]}}` when a chunk's
-   bytes hold the channel axis last ("interleaved"). `order` lists the array's
-   axis indices in stored order: every axis except `c` in array order, then
-   `c`.
-2. The array-to-bytes codec, one of:
-   - `{"name": "bytes"}` (no `configuration`) for 1-byte data types;
-   - `{"name": "bytes", "configuration": {"endian": "little"}}` or
-     `"big"` for larger ones;
-   - `{"name": "imagecodecs_jpeg2k"}` for JPEG 2000 (one codestream per
-     chunk, decoding to the chunk's `[y, x]`, or, when interleaved, to
-     `[y, x, c]`, after which `transpose` applies). Decoding follows OpenJPEG,
-     as imagecodecs does: a 3-component codestream whose first component is
-     at full resolution and whose other two are subsampled holds YCbCr, and
-     decodes to RGB (as in Aperio's compression 33003);
-   - `{"name": "imagecodecs_jpeg"}` for JPEG (one complete JPEG stream, ISO/IEC
-     10918-1 with the JFIF/Adobe colour conventions, per chunk, decoding to
-     the chunk's `[y, x]` or `[y, x, c]` like JPEG 2000).
-3. A compressor, when the bytes are compressed:
-   - `{"name": "zlib", "configuration": {"level": 1}}` (zlib streams);
-   - `{"name": "zstd", "configuration": {"level": 0, "checksum": false}}`.
-
-### 2.2 Images
-
-An image is a group whose `zarr.json` is
-`{"zarr_format": 3, "node_type": "group", "attributes": {"ome": M}}`, where `M`
-is the OME-NGFF 0.5 object below. A profile MAY add one more member to
-`attributes`, named after the profile, for what the source declares about
-its pixels that OME-NGFF cannot express (the NIfTI profile's intensity
-scaling, §7); no other member is allowed:
-
-```json
-{
-  "version": "0.5",
-  "multiscales": [{
-    "name": "...",
-    "axes": [{"name": "t", "type": "time", "unit": "second"}, ...],
-    "datasets": [{"path": "0", "coordinateTransformations": [{"type": "scale", "scale": [...]}]}, ...]
-  }]
-}
-```
-
-- `name` is present only when the profile gives one.
-- Each axis has `name` and `type` (`"time"`, `"channel"` or `"space"`), and
-  `unit` only when the profile gives one.
-- `datasets` lists the pyramid levels, full resolution first, with paths
-  `"0"`, `"1"`, ...; each has a `scale` transformation, one number per axis,
-  followed by a `{"type": "translation", "translation": [...]}`
-  transformation (one number per axis) only where the profile gives one.
-- `M` has an `"omero"` member, next to `multiscales`, only where a profile
-  says so.
-
-### 2.3 Units
-
-OME-XML unit symbols map to OME-NGFF units:
-
-| symbol | unit |
-|---|---|
-| `µm` (U+00B5), `μm` (U+03BC), `um` | `micrometer` |
-| `nm` | `nanometer` |
-| `mm` | `millimeter` |
-| `cm` | `centimeter` |
-| `m` | `meter` |
-| `Å` (U+00C5), `Å` (U+212B) | `angstrom` |
-| `pm` | `picometer` |
-| `in` | `inch` |
-| `ft` | `foot` |
-| `s` | `second` |
-| `ms` | `millisecond` |
-| `min` | `minute` |
-| `h` | `hour` |
-
-Any other symbol gives no unit (the scale is still used).
-
-A **length** in one of these units converts to another by the units'
-sizes in metres: micrometer 1e-6, nanometer 1e-9, millimeter 1e-3,
-centimeter 1e-2, meter 1, angstrom 1e-10, picometer 1e-12, inch 0.0254,
-foot 0.3048. A value `v` in unit `a` is `v × (size(a) / size(b))` in unit
-`b` (the division first).
-
-**Translations.** Where a profile places an image in space (§2.2), the
-translation applies to every level, and is 0 for every axis it does not
-name. A position given for the centre of an image of level-0 size
-`W0 × H0` with x and y scales `sx`, `sy` becomes the translation
-`x = cx − W0 × sx / 2`, `y = cy − H0 × sy / 2` (products first).
+- `source.url` (conventions §2) the input URL `U` as given (§1.2): for a
+  file input the URL of source 0, for a store input the store URL (§1.4);
+- every chunk entry the convention says is present, with the reference the
+  profile specifies, and no other chunk entry;
+- the documents as JSON (`zarr.json`, compared by §1.1), and no other
+  entries than those the profile names.
 
 ## 3–11. Profiles
 
@@ -578,9 +483,17 @@ reader, and OME-Zarr against zarr-python's Zarr v2 reader and the
 `ome-zarr-models` package (every output group validated as OME-Zarr 0.5,
 every accepted input as 0.4).
 
+The conventions of [conventions §2](conventions/README.md#2-attributes) are checked by `tests/test_virtualize_conventions.py`:
+it runs every synthetic file and store through both implementations,
+validates every node that declares a convention against that convention's
+JSON Schema (`conventions/<p>/schema.json`, written by
+`conventions/generate_schemas.py`), and checks that every node with source
+metadata declares it. `just tag-conventions` creates the
+`virtualize-<p>-v<N>` tags that the convention URLs name, on `main`.
+
 The DICOM, NIfTI and IMS profiles (revision 11), the N5 and Zarr v2
 profiles (revision 12), the OME-Zarr profile (revision 13) and the data
 sources of the TIFF and NDPI profiles (revision 14) have not yet been
 through an independent implementation round; the round implementations in
 `impls/virtualize/` still write JPEG headers as literals and ranges of the
-file.
+file, and predate the conventions (revisions 15 and 16).

@@ -98,7 +98,7 @@ def jpeg(pixels: np.ndarray, photometric: str) -> bytes:
     if photometric == "RGB":
         # Stored as RGB, then made silent about it (no APP14, component ids
         # 1, 2, 3): a decoder that guesses would take it for YCbCr, so the
-        # profile's Adobe marker decides (§6.6).
+        # profile's Adobe marker decides (profiles/dicom.md §6.5).
         return _strip_adobe(imagecodecs.jpeg8_encode(pixels, level=95, colorspace="RGB", outcolorspace="RGB"))
     if photometric == "YBR_FULL_422":
         return imagecodecs.jpeg8_encode(pixels, level=95, subsampling="422")

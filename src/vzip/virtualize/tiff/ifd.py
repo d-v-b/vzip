@@ -6,6 +6,7 @@ from __future__ import annotations
 import struct
 
 from vzip.virtualize.common import Reader, Rejected
+from vzip.virtualize.tiff.tags import Entry
 
 TAGS = {256, 257, 258, 259, 262, 270, 277, 282, 283, 284, 296, 317, 322, 323, 324, 325, 330, 339, 347}
 RATIONAL_TAGS = {282, 283}
@@ -19,8 +20,9 @@ SCALARS = {256, 257, 259, 262, 277, 282, 283, 284, 296, 317, 322, 323}
 
 
 class Ifd:
-    def __init__(self, offset: int, tags: dict, types: dict) -> None:
+    def __init__(self, offset: int, tags: dict, types: dict, entries: list[Entry] | None = None) -> None:
         self.offset = offset
+        self.entries = entries or []  # every entry, for the source metadata
         self.tags = tags
         self.types = types
         self.sub: list[Ifd] = []
@@ -41,7 +43,7 @@ class Ifd:
 
 
 def read_tiff(read: Reader, size: int):
-    """(little_endian, main-chain IFDs with their SubIFDs) (§3.1)."""
+    """(little_endian, bigtiff, main-chain IFDs with their SubIFDs) (§3.1)."""
     head = read(0, min(16, size))
     if len(head) < 8:
         raise Rejected("file too short for a TIFF header")
@@ -81,10 +83,17 @@ def read_tiff(read: Reader, size: int):
         seen.add(offset)
         count = struct.unpack(e + ("Q" if big else "H"), read(offset, count_size))[0]
         body = read(offset + count_size, count * entry_size + field_size)
-        tags, types = {}, {}
+        tags, types, entries = {}, {}, []
         for i in range(count):
             at = i * entry_size
             tag, typ = struct.unpack(e + "HH", body[at : at + 4])
+            n = struct.unpack(e + ("Q" if big else "I"), body[at + 4 : at + 4 + (8 if big else 4)])[0]
+            vat = at + 4 + (8 if big else 4)
+            if typ in SIZES and n * SIZES[typ] <= field_size:
+                entries.append(Entry(tag, typ, n, inline=body[vat : vat + field_size]))
+            else:
+                where = struct.unpack(e + ("Q" if big else "I"), body[vat : vat + field_size])[0]
+                entries.append(Entry(tag, typ, n, offset=where))
             if tag not in TAGS or tag in tags:
                 continue  # unused, or a duplicate (the first is used)
             allowed = SIZES if tag == 270 else (1, 7) if tag == 347 else (5,) if tag in RATIONAL_TAGS else INTEGER_TYPES
@@ -108,7 +117,7 @@ def read_tiff(read: Reader, size: int):
                 tags[tag] = [(v[2 * i], v[2 * i + 1]) for i in range(n)]
             types[tag] = typ
         nxt = struct.unpack(e + ("Q" if big else "I"), body[count * entry_size : count * entry_size + field_size])[0]
-        return Ifd(offset, tags, types), nxt
+        return Ifd(offset, tags, types, entries), nxt
 
     ifds = []
     offset = first
@@ -121,4 +130,4 @@ def read_tiff(read: Reader, size: int):
         subs = ifd.tags.get(330)
         if isinstance(subs, list):
             ifd.sub = [read_ifd(o)[0] for o in subs]
-    return e == "<", ifds
+    return e == "<", big, ifds

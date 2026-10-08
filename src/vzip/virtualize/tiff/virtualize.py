@@ -6,19 +6,20 @@ import math
 import re
 
 from vzip.virtualize.common import (
-    LENGTHS, MAX_PAYLOAD, UNITS, Output, Reader, Rejected, array_json, centred, group_json, image_ome, payload_size,
+    LENGTHS, MAX_PAYLOAD, UNITS, Output, Reader, Rejected, array_json, centred, root_json, image_ome, payload_size,
     transpose_codec,
 )
 from vzip.virtualize.tiff.ifd import MAX_SAFE, Ifd, read_tiff
+from vzip.virtualize.tiff.tags import Translator
 
 JPEG2000 = {33003, 33004, 33005, 34712}
 MAX_PLANES = 100000
 JPEG = 7
-# The Adobe APP14 marker, with its colour transform byte last (§3.6).
+# The Adobe APP14 marker, with its color transform byte last (profiles/tiff.md §3.3).
 ADOBE = bytes.fromhex("FFEE000E41646F626500640000000000")[:-1]
 
 
-# ---- OME-XML (§3.2)
+# ---- OME-XML (conventions/tiff/README.md §3)
 
 WS = "[ \t\r\n]"
 NAME = "[A-Za-z0-9_.-]+"
@@ -44,7 +45,7 @@ def _decode(v: str) -> str:
 
 def scan(xml: str):
     """The tags of `xml` in order, as (start, end, closing, local name,
-    attributes, self-closing), and the spans of skipped sections (§3.2)."""
+    attributes, self-closing), and the spans of skipped sections (conventions/tiff/README.md §3)."""
     tags, skipped = [], []
     for m in SCAN.finditer(xml):
         if m["skip"] is not None:
@@ -63,7 +64,7 @@ def is_ome(xml: str) -> bool:
 
 def parse_ome(xml: str):
     """(image name, Pixels attributes, TiffData list, Plane attributes or None)
-    of the first image (§3.2)."""
+    of the first image (conventions/tiff/README.md §3)."""
     tags, skipped = scan(xml)
     image = next((t for t in tags if not t[2] and t[3] == "Image"), None)
     name = image[4].get("Name") if image else None
@@ -130,7 +131,7 @@ def _physical(attrs: dict, d: str):
 
 
 def _decimal(v: str | None, positive: bool = False):
-    """A decimal value (§3.2), or None."""
+    """A decimal value (conventions/tiff/README.md §3), or None."""
     if v is None or not DECIMAL.fullmatch(v):
         return None
     x = float(v)
@@ -138,7 +139,7 @@ def _decimal(v: str | None, positive: bool = False):
 
 
 def aperio_fields(description: bytes) -> dict | None:
-    """The `name = value` fields of an Aperio ImageDescription (§3.6), or None."""
+    """The `name = value` fields of an Aperio ImageDescription (conventions/tiff/README.md §4.4), or None."""
     if not description.startswith(b"Aperio"):
         return None
     try:
@@ -156,8 +157,8 @@ def aperio_fields(description: bytes) -> dict | None:
 # ---- profile
 
 def jpeg_prefix(ifd: Ifd, spp: int, photometric) -> bytes:
-    """The start of each JPEG tile's stream (§3.6), a data source: SOI, the Adobe
-    colour marker for 3 samples, and the IFD's tables."""
+    """The start of each JPEG tile's stream (profiles/tiff.md §3.3), a data source: SOI, the Adobe
+    color marker for 3 samples, and the IFD's tables."""
     out = b"\xff\xd8"
     if spp == 3:
         out += ADOBE + bytes([0 if photometric == 2 else 1])
@@ -192,7 +193,7 @@ def tiled(ifd: Ifd) -> bool:
 
 
 def check_size(ifd: Ifd) -> None:
-    """The size checks of §3.1, for planes, levels and level-scan candidates."""
+    """The size checks of conventions/tiff/README.md §2, for planes, levels and level-scan candidates."""
     if ifd.num(256) < 1 or ifd.num(257) < 1:
         raise Rejected(f"the image at {ifd.offset} is empty")
     if tiled(ifd):
@@ -218,7 +219,13 @@ def level(ifds: list[Ifd]) -> dict:
 
 
 def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
-    little, ifds = read_tiff(read, size)
+    little, big, ifds = read_tiff(read, size)
+    # The source metadata (conventions/tiff/README.md §5): every IFD's tags.
+    translate = Translator(read, size, "<" if little else ">")
+    source = {"byte_order": "little" if little else "big", "bigtiff": big, "ifds": [
+        {"tags": translate.tags(ifd.entries),
+         **({"subifds": [{"tags": translate.tags(s.entries)} for s in ifd.sub]} if 330 in ifd.tags else {})}
+        for ifd in ifds]}
     if not ifds:
         raise Rejected("no images")
     ifd0 = ifds[0]
@@ -238,7 +245,7 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
     if compression not in JPEG2000 and predictor != 1:
         raise Rejected(f"unsupported predictor {predictor}")
 
-    # §3.2, §3.3 planes, in (t, c, z) order, as main-chain IFD indices.
+    # conventions/tiff/README.md §3, §4.1: planes, in (t, c, z) order, as main-chain IFD indices.
     px = ome[1] if ome else {}
     size_z = _int(px, "SizeZ", 1, 1)
     size_t = _int(px, "SizeT", 1, 1)
@@ -289,7 +296,7 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
         raise Rejected("OME-XML planes do not match the TIFF's images")
     planes = [ifds[i] for i in plane_ifd]
 
-    # §3.4 levels.
+    # conventions/tiff/README.md §4.2: levels.
     levels = []
     if ifd0.sub:
         s = len(ifd0.sub)
@@ -313,7 +320,7 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
             if fmt(i) != fmt(ifd0):
                 raise Rejected("pyramid levels differ in sample format or compression")
 
-    # §3.5 data type and codecs.
+    # conventions/tiff/README.md §4.3: data type and codecs.
     kind = {1: "uint", 2: "int", 3: "float"}.get(sample_format)
     if kind is None or bits not in (8, 16, 32, 64) or (kind == "float" and bits < 32):
         raise Rejected(f"unsupported sample type: {bits}-bit, SampleFormat {sample_format}")
@@ -340,7 +347,7 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
     if contig:
         codecs.insert(0, transpose_codec(axes))
 
-    # §3.6 pixel size and position.
+    # conventions/tiff/README.md §4.4: pixel size and position.
     units, sizes, centre, corner = {}, {}, None, None
     if ome is not None:
         for d, a in (("Z", "z"), ("Y", "y"), ("X", "x")):
@@ -423,10 +430,9 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
         if corner is not None:
             translation = [corner.get(a, 0) for a in axes]
     name = ome[0] if ome else None
-    out.json("zarr.json", group_json(image_ome(axes, units, scales, name or None,
-                                               [translation] * len(levels) if translation else None)))
-    if xml is not None:
-        out.bytes_entries["OME/METADATA.ome.xml"] = raw
+    out.json("zarr.json", root_json(image_ome(axes, units, scales, name or None,
+                                               [translation] * len(levels) if translation else None), "tiff", url,
+                                    source))
     out.summary = {"axes": axes, "levels": [[{"t": size_t, "c": size_c, "z": size_z, "y": lv["h"], "x": lv["w"]}[a] for a in axes] for lv in levels],
                    "references": len(out.refs)}
     return out

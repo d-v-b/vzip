@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from vzip.virtualize import Rejected, virtualize
+from vzip.virtualize.common import declare
 from vzip.virtualize.store import DirStore
 from vzip.virtualize.zarr2 import virtualize_zarr2
 
@@ -77,10 +78,14 @@ def test_virtualizes_the_synthetic_stores():
         assert {**out.summary, **summary} == out.summary, name
         for path, (outer, ome) in groups.items():
             attrs = out.docs[key(path)]["attributes"]
+            # The other attributes are copied under the convention, which the root and any
+            # node with copied attributes declare (VIRTUALIZE.md conventions §2).
+            assert set(attrs.get("vzip_virtualized", {}).get("ome-zarr", {})) == outer, (name, path)
+            declared = {"zarr_conventions", "vzip_virtualized"} if path == "" or outer else set()
             if ome is None:
-                assert "ome" not in attrs and set(attrs) == outer, (name, path)
+                assert "ome" not in attrs and set(attrs) == declared, (name, path)
                 continue
-            assert set(attrs) == outer | {"ome"}, (name, path)
+            assert set(attrs) == declared | {"ome"}, (name, path)
             assert attrs["ome"]["version"] == "0.5" and set(attrs["ome"]) == ome | {"version"}, (name, path)
             for m in attrs["ome"].get("multiscales", []):
                 assert "version" not in m, (name, path)
@@ -121,7 +126,8 @@ def test_virtualizes_the_synthetic_stores():
         {"type": "scale", "scale": [2.0, 2.0, 2.0]}, {"type": "translation", "translation": [10.0, -3.5, 4.25]}]
     assert m["coordinateTransformations"][1] == {"type": "translation", "translation": [0.0, 100.0, 0.0]}
     _, out = virtualize(str(FIXTURES / "ome_zarr_bioformats2raw"), url=URL.format("b"))
-    assert out.docs["zarr.json"]["attributes"] == {"ome": {"version": "0.5", "bioformats2raw.layout": 3}}
+    assert out.docs["zarr.json"]["attributes"] == declare({"ome": {"version": "0.5", "bioformats2raw.layout": 3}},
+                                                          "ome-zarr", URL.format("b"))
     assert out.docs["OME/zarr.json"]["attributes"] == {"ome": {"version": "0.5", "series": ["0", "1"]}}
     assert out.sources[-1] == "https://data.test/ome-zarr/b/OME/METADATA.ome.xml"
 

@@ -65,7 +65,7 @@ interface ShownImage {
  *
  * When every chunk holds all channels (ND2 frames, interleaved TIFF), an
  * image is one layer whose channel axis is a Neuroglancer channel dimension
- * (`c^`): the shader composites the channels, each with a checkbox, a colour
+ * (`c^`): the shader composites the channels, each with a checkbox, a color
  * and a contrast range from the omero metadata, and there is no channel axis
  * to scroll. Otherwise (planar TIFF, one channel per chunk) each channel is a
  * layer of its own.
@@ -142,7 +142,7 @@ function neuroglancerState(
       crossSectionBackgroundColor: "#000000", ...view,
     };
   }
-  // Other multi-channel images: one layer per channel, with the colours and
+  // Other multi-channel images: one layer per channel, with the colors and
   // contrast windows from OME's omero metadata when it has them.
   if (c >= 0 && shape[c] > 1 && shape[c] <= 8) {
     const hex = (s: string) => [0, 2, 4].map((i) => (parseInt(s.slice(i, i + 2), 16) / 255).toFixed(3));

@@ -1,9 +1,9 @@
 """Writes JPEG-in-TIFF files to web/test/fixtures/tiff/ for the JPEG rule of
-profiles/tiff.md §3.5-§3.6.
+conventions/tiff/README.md §4.3 and profiles/tiff.md §3.3.
 
 - `jpeg_aperio_rgb.tif`: like Aperio SVS. The IFD's JPEGTables holds the
   quantization and Huffman tables, and each tile is an abbreviated stream
-  (no tables, no colour marker) of RGB samples with component IDs 0, 1, 2,
+  (no tables, no color marker) of RGB samples with component IDs 0, 1, 2,
   which a JPEG decoder would take for YCbCr without the Adobe marker the
   virtualizer adds. PhotometricInterpretation is RGB.
 - `jpeg_ycbcr.tif`, `jpeg_gray.tif`: written by tifffile.

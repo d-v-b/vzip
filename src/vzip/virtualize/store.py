@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 from vzip.uri import is_uri_reference
-from vzip.virtualize.common import Rejected, _retry
+from vzip.virtualize.common import Rejected, _retry, declare
 
 MAX_SAFE = 2**53 - 1
 MAX_DOCUMENT = 1 << 24
@@ -588,7 +588,7 @@ def parent_of(path: str) -> str:
 
 def classify(candidates: dict[str, str]) -> tuple[dict[str, str], set[str]]:
     """Nodes from candidates {path: kind}, kind 'array' or 'group', classified
-    from the root down (§9.1, §10.1): candidates inside an array are dropped.
+    from the root down (conventions/n5/README.md §2, conventions/zarr2/README.md §2): candidates inside an array are dropped.
     Returns ({path: kind}, implicit groups)."""
     nodes: dict[str, str] = {}
     arrays: set[str] = set()
@@ -615,7 +615,7 @@ def classify(candidates: dict[str, str]) -> tuple[dict[str, str], set[str]]:
 
 
 def canonical_index(s: str, limit: int) -> bool:
-    """Is `s` a decimal integer without leading zeros below `limit` (§9.3, §10.2)?"""
+    """Is `s` a decimal integer without leading zeros below `limit` (conventions/n5/README.md §3.1, conventions/zarr2/README.md §3)?"""
     return (s.isascii() and s.isdecimal() and (s == "0" or s[0] != "0")
             and len(s) <= 17 and int(s) < limit)
 
@@ -658,6 +658,21 @@ class StoreOutput:
     docs: dict[str, object] = field(default_factory=dict)
     chunks: list[tuple[str, int]] = field(default_factory=list)  # (key, size), sorted, size > 0
     summary: dict = field(default_factory=dict)
+
+    def declare(self, profile: str, omes: dict[str, dict] | None = None) -> None:
+        """Declares the profile's convention (conventions §2). Each document's
+        `attributes` holds, until then, the attributes copied from the source;
+        they move into the property `vzip_virtualized` (as its member named
+        after the profile), and the node's attributes are the member `ome` that
+        `omes` gives for its path, if any, and the convention's members. The
+        root always declares the convention; any other node only when it has
+        copied attributes."""
+        omes = omes or {}
+        for key, doc in self.docs.items():
+            path = key[: -len("zarr.json")].rstrip("/")
+            target = {"ome": omes[path]} if path in omes else {}
+            url = self.url if path == "" else None
+            self.docs[key] = {**doc, "attributes": declare(target, profile, url, doc["attributes"])}
 
     def check_keys(self) -> None:
         for key in [*self.docs, *(k for k, _ in self.chunks)]:

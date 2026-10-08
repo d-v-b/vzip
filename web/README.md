@@ -68,7 +68,7 @@ TIFF:
 - Compression: none, DEFLATE (`zlib`), zstd, JPEG 2000 (`imagecodecs_jpeg2k`),
   and JPEG (`imagecodecs_jpeg`), without a predictor. JPEG tiles that keep
   their tables in `JPEGTables`, as in Aperio SVS, become complete JPEG streams
-  through references that prepend the tables and a colour marker, held once
+  through references that prepend the tables and a color marker, held once
   in the archive as a `data` source.
 
 Not supported, and refused with HTTP 422: images in strips, LZW, old-style
@@ -88,7 +88,7 @@ ND2 (format version 3 and later):
 - Time (including multi-phase), stage-position and Z loops; positions become
   a bioformats2raw layout with one image per position, placed at its stage
   coordinates.
-- Channels and RGB components, with names, colours and contrast windows in
+- Channels and RGB components, with names, colors and contrast windows in
   `omero`; pixel size, Z step and time step as scales.
 - Uncompressed frames (padded rows become one range per row, dropping the
   padding) and losslessly compressed (zlib) frames.
@@ -106,7 +106,7 @@ DICOM (Part 10 files):
 - Pixel spacing as scale; window centre and width in `omero`.
 
 Not supported, and refused with HTTP 422: other transfer syntaxes (JPEG-LS,
-lossless JPEG, RLE, deflate, HTJ2K), palette colour, TILED_SPARSE slides, and
+lossless JPEG, RLE, deflate, HTJ2K), palette color, TILED_SPARSE slides, and
 slides with several focal planes or optical paths.
 
 NIfTI (NIfTI-1 and NIfTI-2 single files):
@@ -124,7 +124,7 @@ Imaris IMS (HDF5):
 
 - Files from Imaris 5.5 to 10 and its converters: every resolution level,
   time point and channel, with extents, units, time step, channel names,
-  colours and contrast ranges.
+  colors and contrast ranges.
 - Chunks as stored, uncompressed or deflate (`zlib`).
 
 Not supported, and refused with HTTP 422: LZ4 or shuffle compression (as

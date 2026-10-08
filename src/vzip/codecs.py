@@ -5,7 +5,7 @@ zarr-python does not provide.
 compression 33003/33005/34712 with planar-separate tiles).
 `imagecodecs_jpeg`: each chunk is one complete JPEG stream (as virtualized
 JPEG-in-TIFF tiles are, profiles/tiff.md §3.6).
-`zlib`: a zlib stream (RFC 1950), as Neuroglancer names it (§2.1, §9, §10).
+`zlib`: a zlib stream (RFC 1950), as Neuroglancer names it (conventions §3, §9, §10).
 `n5_default`: an N5 default-mode block, header included (zarr-extensions
 `codecs/n5_default`; profiles/n5.md).
 

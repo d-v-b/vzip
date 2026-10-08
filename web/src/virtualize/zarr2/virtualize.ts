@@ -1,12 +1,14 @@
 // The Zarr v2 profile (profiles/zarr2.md, §10): a Zarr v2 hierarchy as a
 // Zarr v3 one, each chunk a whole-object reference under its own key.
 
+import type { Profile } from "../common.ts";
 import { bloscCodec } from "../n5/virtualize.ts";
 import {
   asInt,
   byDepth,
   canonicalIndex,
   compareKeys,
+  declareNodes,
   docKey,
   findChunks,
   GROUP_IMPLICIT,
@@ -82,7 +84,7 @@ export interface ArrayDoc {
 
 const get = (o: { [k: string]: Json }, k: string): Json => (has(o, k) ? o[k] : null);
 
-/** An array's zarr.json and its dimension separator (§10.2). */
+/** An array's zarr.json and its dimension separator (conventions/zarr2/README.md §3). */
 function array(path: string, z: Json, attrs: { [k: string]: Json }): [ArrayDoc, string] {
   if (!isObject(z)) reject(`${path}/.zarray is not a JSON object`);
   const zz = z as { [k: string]: Json };
@@ -125,7 +127,7 @@ function array(path: string, z: Json, attrs: { [k: string]: Json }): [ArrayDoc, 
   }, sep as string];
 }
 
-/** A Zarr v2 hierarchy read by §10.1–§10.2. */
+/** A Zarr v2 hierarchy read by conventions/zarr2/README.md §2–§3. */
 export interface Hierarchy {
   arrays: Map<string, ArrayDoc>;
   seps: Map<string, string>;
@@ -134,7 +136,7 @@ export interface Hierarchy {
   implicit: Set<string>;
 }
 
-/** The nodes of a Zarr v2 store (§10.1), each document read and checked. */
+/** The nodes of a Zarr v2 store (conventions/zarr2/README.md §2), each document read and checked. */
 export async function readHierarchy(store: Store): Promise<Hierarchy> {
   const objects = store.objects;
   const candidates = new Map<string, string>();
@@ -180,7 +182,7 @@ export async function readHierarchy(store: Store): Promise<Hierarchy> {
   return h;
 }
 
-/** Every chunk object of every array (§10.2), sizes 0 included, in key order. */
+/** Every chunk object of every array (conventions/zarr2/README.md §3), sizes 0 included, in key order. */
 export function chunkObjects(store: Store, h: Hierarchy): [string, number][] {
   const tests = new Map<string, (rest: string) => boolean>();
   for (const [path, a] of h.arrays) {
@@ -197,18 +199,22 @@ export function chunkObjects(store: Store, h: Hierarchy): [string, number][] {
 }
 
 /** The output of a hierarchy: a zarr.json per node and an entry per nonempty
- * chunk object, plus the whole objects `extra` (§1.4). Also returns every chunk object. */
+ * chunk object, plus the whole objects `extra` (§1.4). Also returns every chunk object.
+ * The root declares `profile`'s convention (conventions §2). */
 export function hierarchyOutput(
   store: Store,
   h: Hierarchy,
   groups: Map<string, { [k: string]: Json }>,
   arrays: Map<string, Json>,
+  profile: Profile,
   extra: [string, number][] = [],
+  omes: Map<string, Json> = new Map(),
 ): [StoreResult, [string, number][]] {
   const docs = new Map<string, Json>();
   for (const path of h.implicit) docs.set(docKey(path), GROUP_IMPLICIT());
   for (const [path, attributes] of groups) docs.set(docKey(path), { zarr_format: 3, node_type: "group", attributes });
   for (const [path, doc] of arrays) docs.set(docKey(path), doc);
+  declareNodes(docs, profile, store.url, omes);
   const all = chunkObjects(store, h);
   const chunks = [...all, ...extra].filter(([, n]) => n > 0).sort((a, b) => compareKeys(a[0], b[0]));
   return [{ docs, chunks }, all];
@@ -216,7 +222,7 @@ export function hierarchyOutput(
 
 export async function virtualizeZarr2(store: Store): Promise<StoreResult & { summary: object }> {
   const h = await readHierarchy(store);
-  const [result, all] = hierarchyOutput(store, h, h.groups, h.arrays as unknown as Map<string, Json>);
+  const [result, all] = hierarchyOutput(store, h, h.groups, h.arrays as unknown as Map<string, Json>, "zarr2");
   const chunks = all.filter(([, n]) => n > 0).length;
   return {
     ...result,

@@ -11,7 +11,9 @@ Usage: uv run python web/test/tiff/verify.py [<fixture directory>]
 
 from __future__ import annotations
 
+import base64
 import json
+import math
 import subprocess
 import sys
 import tempfile
@@ -71,6 +73,68 @@ def expected_levels(path: Path) -> list[tuple[np.ndarray, str]]:
         return [(level.asarray(), series.axes) for level in series.levels]
 
 
+TYPES = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18}
+STRUCTURE = {273, 279, 288, 289, 324, 325, 330, 513, 514, 34665, 34853, 40965, 65426, 65432}
+
+
+def as_json(tag):
+    """tifffile's value of a tag, as conventions/tiff/README.md §5 writes it."""
+    v = tag.value
+    if tag.dtype in (1, 7):
+        b = v if isinstance(v, bytes) else bytes(v if isinstance(v, tuple) else [v])
+        return base64.b64encode(b).decode()
+    if tag.dtype == 2:
+        return v
+    flat = list(v) if isinstance(v, (tuple, list)) else [v]
+    if tag.dtype in (5, 10):
+        return [[int(flat[2 * i]), int(flat[2 * i + 1])] for i in range(len(flat) // 2)]
+
+    def number(x):
+        if isinstance(x, float) and not math.isfinite(x):
+            return "NaN" if math.isnan(x) else "Infinity" if x > 0 else "-Infinity"
+        return float(x) if tag.dtype in (11, 12) else int(x)
+    return [number(x) for x in flat]
+
+
+def tag_problems(path: Path, source: dict) -> list[str]:
+    """Every tag of every IFD and SubIFD against tifffile's."""
+    problems = []
+
+    def compare(where, ifd, page):
+        theirs = {}
+        for t in page.tags:
+            theirs.setdefault(t.code, t)
+        # A field type TIFF does not define is recorded by type and count only;
+        # tifffile drops such tags.
+        unknown = {int(k) for k, v in ifd["tags"].items() if v["type"] not in TYPES}
+        problems.extend(f"{where} tag {k}: unknown type has a value" for k in unknown if "value" in ifd["tags"][str(k)])
+        if set(map(int, ifd["tags"])) - unknown != set(theirs):
+            problems.append(f"{where}: tags {sorted(map(int, ifd['tags']))} vs {sorted(theirs)}")
+            return
+        for code, t in theirs.items():
+            ours = ifd["tags"][str(code)]
+            if (ours["type"], ours["count"]) != (int(t.dtype), t.count):
+                problems.append(f"{where} tag {code}: type/count {ours['type']}/{ours['count']}")
+            elif code in STRUCTURE:
+                if "value" in ours:
+                    problems.append(f"{where} tag {code}: structure tag has a value")
+            elif t.dtype == 2:
+                if t.value not in (ours.get("value"), ours.get("value", "").split("\0")[0]):
+                    problems.append(f"{where} tag {code}: {ours.get('value')!r:.60} vs {t.value!r:.60}")
+            elif ours.get("value") != as_json(t):
+                problems.append(f"{where} tag {code}: {str(ours.get('value')):.60} vs {str(as_json(t)):.60}")
+
+    with tifffile.TiffFile(path) as tf:
+        if len(source["ifds"]) != len(tf.pages):
+            return [f"{len(source['ifds'])} IFDs, tifffile has {len(tf.pages)}"]
+        for i, (ifd, page) in enumerate(zip(source["ifds"], tf.pages)):
+            compare(f"IFD {i}", ifd, page)
+            subs = page.pages if 330 in page.tags else []
+            for j, sub in enumerate(ifd.get("subifds", [])):
+                compare(f"IFD {i} SubIFD {j}", sub, subs[j])
+    return problems
+
+
 def main(fixtures: Path = HERE.parent / "fixtures" / "tiff") -> int:
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
@@ -78,6 +142,13 @@ def main(fixtures: Path = HERE.parent / "fixtures" / "tiff") -> int:
             out = Path(tmp) / (tiff.stem + ".vzip")
             p = subprocess.run(CLI + [str(tiff), str(out), tiff.resolve().as_uri()],
                                capture_output=True, text=True)
+            if p.returncode == 0:
+                prop = zarr.open_group(VZipStore(str(out)), mode="r", zarr_format=3).attrs["vzip_virtualized"]
+                source = prop["ndpi" if tiff.suffix == ".ndpi" else "tiff"]
+                tags = tag_problems(tiff, source)
+                failures += bool(tags)
+                if tags:
+                    print(f"{tiff.name:42s} TAGS: {tags[:5]}")
             if tiff.name.startswith("edge_") and not tiff.name.startswith("edge_reject"):
                 continue  # compared between implementations by conformance/virtualize/compare.py
             if tiff.name.startswith(("unsupported", "edge_reject")):

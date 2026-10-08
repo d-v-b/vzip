@@ -49,8 +49,12 @@ test("virtualizes the synthetic OME-Zarr 0.4 stores as 0.5", async () => {
     const v = await virtualize(name);
     assert.equal(v.format, "ome-zarr", name);
     assert.deepEqual({ ...v.summary, ...summary }, v.summary, name);
-    for (const [path, [outer, ome]] of Object.entries(groups)) {
+    for (const [path, [own, ome]] of Object.entries(groups)) {
       const attrs = doc(v, key(path)).attributes;
+      // The other attributes are copied under the convention, which the root and any node
+      // with copied attributes declare (VIRTUALIZE.md conventions §2).
+      assert.deepEqual(Object.keys(attrs.vzip_virtualized?.["ome-zarr"] ?? {}).sort(), [...own].sort(), `${name} ${path}`);
+      const outer = path === "" || own.length > 0 ? ["zarr_conventions", "vzip_virtualized"] : [];
       if (ome === null) {
         assert.deepEqual(Object.keys(attrs).sort(), outer.sort(), `${name} ${path}`);
         continue;

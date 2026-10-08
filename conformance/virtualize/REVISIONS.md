@@ -610,3 +610,104 @@ whose axis names differ used to keep the first group's names, so the second
 image's `ome` axes contradicted its arrays' `dimension_names` (not valid
 OME-Zarr 0.5). Now the later group is not recognized and stays plain (new
 fixture `n5_shared_levels`).
+
+## Revision 15: a Zarr convention per profile
+
+Revision 15 changes every profile's output, at the root node only; it does
+not come from a spec round.
+
+**The problem.** An output said nothing about how it was made: a reader of
+a virtualized hierarchy could not tell which profile, in which revision,
+produced it, or from which file or store, without the archive's source
+table (which a store input spreads over one source per chunk).
+
+**The rule (§2.4).** Each profile is a Zarr convention
+([zarr-conventions-spec](https://github.com/zarr-conventions/zarr-conventions-spec))
+with a fixed UUID, a version (all 1 now) and a JSON Schema,
+`profiles/<p>.schema.json`. The root node of every output (the image group,
+ND2's bioformats2raw collection, or a store's root group or array) appends
+the profile's Convention Metadata Object to `zarr_conventions` and gets the
+property `vzip_virtualized`: `{"profile", "version", "source": {"url"}}`,
+with the input URL `U` as given. It holds no pins (store inputs reference
+many objects), no time and nothing about the implementation, so outputs
+stay equivalent (§1.1). The NIfTI profile's scaling moves from its own
+`nifti` member into the property, so §2.2 no longer allows a profile-named
+member. A store root that already declares a vzip virtualization
+convention, has `vzip_virtualized`, or has a `zarr_conventions` that is not
+an array is rejected (new fixtures `zarr2_conventions` and
+`zarr2_reject_conventions_*`).
+
+**Versions and tags.** A profile's version increases when a revision changes
+its output for some input; a revision that does not leaves it. The
+convention URLs name the tag `virtualize-<p>-v<N>` (`spec_url` the profile's
+document, `schema_url` its schema). After a revision that changes a
+version is merged, run `just tag-conventions` on `main`: it refuses to run
+on any other branch, creates the missing `virtualize-<p>-v<N>` tags at HEAD
+for the current versions (keeping existing ones), and prints the push
+command. Revision 15 creates all nine `virtualize-<p>-v1` tags.
+
+**Results.** Only root documents changed; references and pixels did not. Both
+implementations agree on all 401 synthetic inputs (147 equivalent, 254
+rejected, `compare.py --fixtures web/test/fixtures`). The new
+`tests/test_virtualize_conventions.py` runs every fixture through both
+implementations and validates the root of each of the 147 accepted outputs
+against its profile's schema (no other node declares a convention). All nine
+`web/test/<profile>/verify.py` pass, and ome-zarr-models 0.5 accepts the
+OME-Zarr roots with the extra attributes next to `ome`.
+
+## Revision 16: the conventions specify the Zarr layout and the source's metadata
+
+This revision did not come from a spec round.
+
+**The problem.** Revision 15's conventions only recorded where an output
+came from. Two goals ask for more. First, a virtualized hierarchy should
+lose as little of the source's scientific information as possible: a
+reader who needs what the ND2 or DICOM header says should find it in the
+hierarchy. Second, making the hierarchy should be repeatable, so the
+translation of that information must be specified exactly.
+
+**The split.** Each format's convention, `conventions/<p>/README.md`, now
+specifies the whole Zarr view. That is the hierarchy, each array's
+metadata, the OME-NGFF metadata, and what each chunk holds in terms of the
+source. It also specifies the source metadata: the translation of the
+source's header into JSON, under `vzip_virtualized.<p>` on the node it
+belongs to. `conventions/README.md` holds what the conventions share,
+moved from VIRTUALIZE.md §2.1–§2.4, plus a new §6 on how source values
+become JSON. VIRTUALIZE.md §2 now only states the obligation to produce the
+convention's layout. The profiles keep how the input is read, which inputs
+are rejected, and how each chunk references the input's bytes. Where a
+convention says "the input is rejected", a source that fails has no layout
+under it, and the profile rejects it.
+
+**Source metadata.**
+
+| format | source metadata |
+|---|---|
+| TIFF, NDPI | every tag of every IFD and SubIFD, by tag number, with its type, count and value; offsets and byte counts by type and count only. This replaces revision 15's inlined OME-XML, which is tag 270. |
+| ND2 | every chunk of the chunk map but the frames: lite-variant chunks decoded, others in base64 (such as the frame times in `CustomData\|AcqTimesCache!`) |
+| DICOM | the File Meta Information and the dataset up to Pixel Data in the DICOM JSON Model (PS3.18 §F.2); implicit-VR elements as `UN` |
+| NIfTI | every header field, the extensions, and the derived scaling |
+| IMS | the attributes of the root group, of each `DataSetInfo` group, and of each channel group |
+| N5 | each node's `attributes.json`, whole (revision 15 dropped the dataset members and `n5`) |
+| Zarr v2, OME-Zarr | each node's `.zattrs` (for an OME group, without its OME members) |
+
+Every file format bounds its translation with a 64 MiB budget, taken in
+document order. The source metadata never rejects an input: what cannot be
+read is recorded as absent or `null`, as each convention says. The
+conventions stay at version 1: no version had been tagged.
+
+**Results.**
+- **Implementations:** both agree on all 398 synthetic inputs (147
+  equivalent, 251 rejected) and on the public corpora of every format.
+- **Independent readers:** the verifiers now compare the source metadata
+  with independent readers:
+  - TIFF and NDPI tags with tifffile;
+  - ND2 chunks with the `nd2` package;
+  - DICOM with pydicom's DICOM JSON Model, which matches exactly for
+    explicit VR;
+  - NIfTI with nibabel;
+  - IMS attributes with h5py.
+
+  All nine report 0 failures.
+- **Size:** the root `zarr.json` of CMU-1.svs is 210 KB, most of it the ICC
+  profiles of its six IFDs.

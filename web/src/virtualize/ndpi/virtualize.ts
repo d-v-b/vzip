@@ -7,11 +7,15 @@
 // data sources, since every chunk shares it), a literal frame header for the
 // chunk's size, and a × b restart intervals.
 
-import { type ByteReader, DataSources, MAX_PAYLOAD, type Part, payloadSize, toRange } from "../common.ts";
+import { type ByteReader, DataSources, declare, MAX_PAYLOAD, type Part, payloadSize, toRange } from "../common.ts";
 import { TiffError } from "../tiff/ifd.ts";
+import { type Entry, STRUCTURE, Translator } from "../tiff/tags.ts";
 import type { ArchiveDesc, EntryDesc } from "../../writer.ts";
 
 const MAX_IFDS = 100000;
+// Besides TIFF's, McuStarts and McuStartsHighBytes locate the strips' restart
+// markers (conventions/ndpi/README.md §5).
+const NDPI_STRUCTURE = new Set([...STRUCTURE, 65426, 65432]);
 const CHUNK = 1024; // target chunk size in pixels
 const SIZES: Record<number, number> = {
   1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4, 16: 8, 17: 8, 18: 8,
@@ -53,9 +57,13 @@ export async function detectNdpi(read: ByteReader, size: number): Promise<number
 type Values = number[] | [number, number][];
 
 /** The main chain's IFDs, as tag → values (§4). */
-async function readIfds(read: ByteReader, first: number): Promise<Map<number, Values>[]> {
+async function readIfds(
+  read: ByteReader,
+  first: number,
+): Promise<{ ifds: Map<number, Values>[]; entries: Entry[][] }> {
   const seen = new Set<number>();
   const ifds: Map<number, Values>[] = [];
+  const entries: Entry[][] = [];
   for (let offset = first; offset !== 0;) {
     if (offset < 16) reject(`IFD offset ${offset} is not in the file`);
     if (seen.has(offset)) reject(`IFD offset ${offset} read twice`);
@@ -65,8 +73,22 @@ async function readIfds(read: ByteReader, first: number): Promise<Map<number, Va
     const body = await read(offset + 2, 12 * n + 8 + 4 * n);
     const b = view(body);
     const tags = new Map<number, Values>();
+    const mine: Entry[] = [];
     for (let i = 0; i < n; i++) {
       const tag = b.getUint16(12 * i, true);
+      {
+        const type = b.getUint16(12 * i + 2, true);
+        const count = b.getUint32(12 * i + 4, true);
+        const where = b.getUint32(12 * i + 8, true) + b.getUint32(12 * n + 8 + 4 * i, true) * 2 ** 32;
+        if (SIZES[type] !== undefined && count * SIZES[type] <= 4) {
+          mine.push({
+            tag, type, count: BigInt(count), inline: body.slice(12 * i + 8, 12 * i + 12),
+            value: count === 1 && (type === 4 || type === 13) ? [where] : undefined,
+          });
+        } else {
+          mine.push({ tag, type, count: BigInt(count), offset: where });
+        }
+      }
       if (!(tag in TAGS) || tags.has(tag)) continue; // unused, or a duplicate (the first is used)
       const type = b.getUint16(12 * i + 2, true);
       const count = b.getUint32(12 * i + 4, true);
@@ -90,10 +112,11 @@ async function readIfds(read: ByteReader, first: number): Promise<Map<number, Va
       tags.set(tag, values);
     }
     ifds.push(tags);
+    entries.push(mine);
     offset = u64(b, 12 * n);
   }
   if (ifds.length === 0) reject("no images");
-  return ifds;
+  return { ifds, entries };
 }
 
 function decode(bytes: Uint8Array, type: number, count: number): Values {
@@ -167,7 +190,11 @@ export async function virtualizeNdpi(
   size: number,
   first: number,
 ): Promise<ArchiveDesc & { summary: object }> {
-  const ifds = await readIfds(read, first);
+  const { ifds, entries: ifdEntries } = await readIfds(read, first);
+  // The source metadata (conventions/ndpi/README.md §5): every IFD's tags.
+  const translate = new Translator(read, size, true, NDPI_STRUCTURE);
+  const sourceIfds = [];
+  for (const e of ifdEntries) sourceIfds.push({ tags: await translate.tags(e) });
   const levels: { mag: number; w: number; h: number; tags: Map<number, Values> }[] = [];
   for (const tags of ifds) {
     const mag = one(tags, 65421, "Magnification");
@@ -188,7 +215,7 @@ export async function virtualizeNdpi(
   }
   if (levels.length === 0) reject("no NDPI levels");
 
-  // Scale (§4).
+  // Scale (conventions/ndpi/README.md §4).
   const base = levels[0];
   const perUnit = ({ 3: 10000, 2: 25400 } as Record<number, number>)[one(base.tags, 296, "ResolutionUnit", 2)];
   const physical = (tag: number) => {
@@ -235,7 +262,7 @@ export async function virtualizeNdpi(
     });
   }
   const unit = (p: number | undefined) => (p === undefined ? {} : { unit: "micrometer" });
-  // Position (§4): the image's centre, from the slide's centre in nm.
+  // Position (conventions/ndpi/README.md §4): the image's centre, from the slide's centre in nm.
   const offsetX = (base.tags.get(65422) as number[] | undefined)?.[0];
   const offsetY = (base.tags.get(65423) as number[] | undefined)?.[0];
   if (px !== undefined && py !== undefined && offsetX !== undefined && offsetY !== undefined) {
@@ -246,7 +273,7 @@ export async function virtualizeNdpi(
     key: "zarr.json",
     bytes: json({
       zarr_format: 3, node_type: "group",
-      attributes: {
+      attributes: declare({
         ome: {
           version: "0.5",
           multiscales: [{
@@ -254,7 +281,7 @@ export async function virtualizeNdpi(
             datasets,
           }],
         },
-      },
+      }, "ndpi", url, { ifds: sourceIfds }),
     }),
   });
   return {

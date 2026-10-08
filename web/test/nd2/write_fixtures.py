@@ -22,7 +22,7 @@ MAGIC = 0x0ABECEDA
 NAME_PAD = 4072  # NIS-Elements pads chunk names so that headers are 4 KiB
 
 
-# ---- lite variant (profiles/nd2.md §5.2)
+# ---- lite variant (conventions/nd2/README.md §2.2)
 
 def _name(name: str) -> bytes:
     return bytes([len(name) + 1]) + (name + "\0").encode("utf-16le")
@@ -348,7 +348,7 @@ def edges() -> None:
 
 
 def revision3() -> None:
-    """The typed-member and loop-kind rules of revision 3 (§5.2, §5.3)."""
+    """The typed-member and loop-kind rules of revision 3 (conventions/nd2/README.md §2.2, §3)."""
     h, w = 3, 4
 
     def frames(f: Nd2, n: int) -> dict:
@@ -411,7 +411,7 @@ def revision3() -> None:
 
 
 def revision4() -> None:
-    """Whole-tree checks, validity lists everywhere, and nesting (§5.2, §5.3)."""
+    """Whole-tree checks, validity lists everywhere, and nesting (conventions/nd2/README.md §2.2, §3)."""
     h, w = 3, 4
 
     def write_case(name: str, exp: bytes | None = None, attrs: bytes | None = None, accept: bool = False) -> None:
@@ -447,7 +447,7 @@ def revision4() -> None:
     # A z step that overflows rejects, even on a node the flattening skips.
     write_case("nd2_reject_z_step_overflow", experiment(node(1, {"uiCount": 0}, [
         node(4, {"uiCount": 2, "dZStep": 0.0, "dZLow": -1e308, "dZHigh": 1e308})])))
-    # A single image's stage position, from the picture metadata (§5.6).
+    # A single image's stage position, from the picture metadata (conventions/nd2/README.md §4.3).
     f = Nd2()
     f.chunk("ImageAttributesLV!", attributes(w, h, 1, 16, sequence=1))
     f.chunk("ImageMetadataSeqLV|0!", level("SLxPictureMetadata", [
@@ -462,7 +462,7 @@ def revision4() -> None:
 
 
 def revision6() -> None:
-    """Stage positions become translations (§5.6)."""
+    """Stage positions become translations (conventions/nd2/README.md §4.3)."""
     h, w = 3, 4
 
     def case(name: str, points: list[dict], camera: tuple | None, valid: bytes | None = None) -> None:

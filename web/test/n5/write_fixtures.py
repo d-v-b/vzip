@@ -250,7 +250,7 @@ def main() -> None:
     dataset(d, "t/s0", vol, [2, 4, 6, 6], {"type": "zstd"})
     dataset(d, "t/s1", vol[:, ::2, ::2, ::2], [2, 4, 6, 6], {"type": "zstd"})
 
-    # Two recognized groups sharing levels with different axis names (§9.5): the
+    # Two recognized groups sharing levels with different axis names (conventions/n5/README.md §4): the
     # group whose path comes first (COSEM `a`, axes x, y, z) keeps its image; `a/b`
     # (n5-viewer, axes c, y, x) is left plain, since an array has one set of
     # dimension names.

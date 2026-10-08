@@ -3,6 +3,7 @@
 // data is never read.
 
 import type { ByteReader } from "../common.ts";
+import type { Entry } from "./tags.ts";
 
 export class TiffError extends Error {}
 
@@ -49,6 +50,8 @@ export interface Ifd {
   /** Field type of each tag. */
   types: Map<number, number>;
   subIfds: Ifd[];
+  /** Every entry, for the source metadata. */
+  entries: Entry[];
 }
 
 export interface Tiff {
@@ -144,9 +147,24 @@ export async function readTiff(read: ByteReader, fileSize: number): Promise<Tiff
     const tags = new Map<number, number[] | Uint8Array>();
     const types = new Map<number, number>();
     const pending: Promise<void>[] = [];
+    const entries: Entry[] = [];
     for (let i = 0; i < count; i++) {
       const at = i * entrySize;
       const tag = view.getUint16(at, le);
+      {
+        const type = view.getUint16(at + 2, le);
+        const n = bigTiff ? view.getBigUint64(at + 4, le) : BigInt(view.getUint32(at + 4, le));
+        const valueAt = at + 4 + fieldSize;
+        const size = TYPE_SIZE[type];
+        if (size !== undefined && BigInt(size) * n <= BigInt(fieldSize)) {
+          entries.push({ tag, type, count: n, inline: body.slice(valueAt, valueAt + fieldSize) });
+        } else {
+          const where = bigTiff ? view.getBigUint64(valueAt, le) : BigInt(view.getUint32(valueAt, le));
+          entries.push({
+            tag, type, count: n, offset: where <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(where) : undefined,
+          });
+        }
+      }
       if (!WANTED.has(tag) || types.has(tag)) continue; // unused, or a duplicate (the first is used)
       const type = view.getUint16(at + 2, le);
       const n = bigTiff ? u64(view, at + 4, le) : view.getUint32(at + 4, le);
@@ -177,7 +195,7 @@ export async function readTiff(read: ByteReader, fileSize: number): Promise<Tiff
     // is used (the main chain), not for SubIFDs.
     const nextAt = count * entrySize;
     const next = bigTiff ? Number(view.getBigUint64(nextAt, le)) : view.getUint32(nextAt, le);
-    return { ifd: { offset, tags, types, subIfds: [] }, next };
+    return { ifd: { offset, tags, types, subIfds: [], entries }, next };
   }
 
   const ifds: Ifd[] = [];

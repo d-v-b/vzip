@@ -7,14 +7,15 @@ import re
 import struct
 
 from vzip.virtualize.common import (
-    MAX_PAYLOAD, Output, Reader, Rejected, array_json, group_json, image_ome, payload_size, transpose_codec,
+    MAX_PAYLOAD, Output, Reader, Rejected, array_json, root_json, image_ome, payload_size, transpose_codec,
 )
+from vzip.virtualize.dicom.source import source_json
 from vzip.virtualize.dicom.dataset import (
     EXPLICIT_LE, IMPLICIT_LE, ITEM, PIXEL_DATA, UNDEFINED, Dataset, Element, Encoding, Walker, tag_name,
 )
 
 MAX_SAFE = 2**53 - 1
-# Transfer syntaxes (§6.2): the dataset's encoding, and the codec of
+# Transfer syntaxes (conventions/dicom/README.md §2.1): the dataset's encoding, and the codec of
 # encapsulated frames (None for native pixel data).
 SYNTAXES: dict[bytes, tuple[Encoding, str | None]] = {
     b"1.2.840.10008.1.2": (IMPLICIT_LE, None),
@@ -25,13 +26,13 @@ SYNTAXES: dict[bytes, tuple[Encoding, str | None]] = {
     b"1.2.840.10008.1.2.4.91": (EXPLICIT_LE, "jpeg2k"),
 }
 WHOLE_SLIDE = b"1.2.840.10008.5.1.4.1.1.77.1.6"
-# Photometric interpretations by pixel data and samples per pixel (§6.5).
+# Photometric interpretations by pixel data and samples per pixel (conventions/dicom/README.md §3).
 PHOTOMETRIC = {
     (None, 1): {b"MONOCHROME1", b"MONOCHROME2"}, (None, 3): {b"RGB"},
     ("jpeg", 1): {b"MONOCHROME1", b"MONOCHROME2"}, ("jpeg", 3): {b"RGB", b"YBR_FULL", b"YBR_FULL_422"},
     ("jpeg2k", 1): {b"MONOCHROME1", b"MONOCHROME2"}, ("jpeg2k", 3): {b"RGB", b"YBR_ICT", b"YBR_RCT"},
 }
-# SOI and the Adobe APP14 marker, without its last byte, the colour transform (§6.6).
+# SOI and the Adobe APP14 marker, without its last byte, the color transform (profiles/dicom.md §6.5).
 ADOBE = bytes.fromhex("FFD8FFEE000E41646F6265006400000000")
 DECIMAL = re.compile(rb"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
 INTEGER = re.compile(rb"([+-]?)([0-9]+)")
@@ -42,10 +43,10 @@ def is_dicom(head: bytes) -> bool:
     return head[128:132] == b"DICM"
 
 
-# ---- attribute values (§6.4)
+# ---- attribute values (conventions/dicom/README.md §2.2)
 
 class Values:
-    """Reads the attributes of a dataset by their kind (§6.4)."""
+    """Reads the attributes of a dataset by their kind (conventions/dicom/README.md §2.2)."""
 
     def __init__(self, read: Reader, ds: Dataset | None) -> None:
         self.read = read
@@ -132,6 +133,7 @@ def virtualize_dicom(url: str, read: Reader, size: int) -> Output:
         raise Rejected("not a DICOM file")
     walker = Walker(read, size)
     meta, start = walker.meta()
+    dataset_start = start
     syntax = _need(Values(read, meta).string(0x00020010, "UI"), "Transfer Syntax UID")
     if syntax not in SYNTAXES:
         raise Rejected(f"unsupported transfer syntax {syntax.decode('latin-1')}")
@@ -141,7 +143,7 @@ def virtualize_dicom(url: str, read: Reader, size: int) -> Output:
     top, _ = walker.dataset(start, size, False, encoding, 0, top=True)
     pixel = top[PIXEL_DATA]
 
-    # §6.4: the Pixel Measures item of the Shared Functional Groups, if any.
+    # conventions/dicom/README.md §2.2: the Pixel Measures item of the Shared Functional Groups, if any.
     measures = None
     shared = top.get(0x52009229)
     if shared is not None and shared.items:
@@ -171,7 +173,7 @@ def virtualize_dicom(url: str, read: Reader, size: int) -> Output:
         in_item, at_top = m.decimals(tag), v.decimals(tag)
         fg[tag] = in_item if in_item is not None else at_top
 
-    # §6.5
+    # conventions/dicom/README.md §3
     spp = _need(spp, "Samples per Pixel")
     photometric = _need(photometric, "Photometric Interpretation")
     rows, columns = _need(rows, "Rows"), _need(columns, "Columns")
@@ -217,7 +219,7 @@ def virtualize_dicom(url: str, read: Reader, size: int) -> Output:
     else:
         width_px, height_px, across = columns, rows, 1
 
-    # §6.6: each frame's ranges, and the samples' when planar.
+    # profiles/dicom.md §6.5: each frame's ranges, and the samples' when planar.
     planar_native = codec is None and spp == 3 and planar == 1
     frame_size = rows * columns * spp * (bits_allocated // 8)
     frame_ranges: list[list[tuple[int, int] | bytes]] = []
@@ -280,7 +282,7 @@ def virtualize_dicom(url: str, read: Reader, size: int) -> Output:
                 ranges = [ADOBE + bytes([0 if photometric == b"RGB" else 1]), (o + 2, length - 2)] + ranges[1:]
             frame_ranges.append(ranges)
 
-    # §6.7
+    # conventions/dicom/README.md §4; profiles/dicom.md §6.6: the chunk references
     axes = (["c"] if spp == 3 else []) + (["z"] if not whole_slide and n > 1 else []) + ["y", "x"]
     shape = {"c": 3, "z": n, "y": height_px, "x": width_px}
     chunk_shape = {"c": 1 if planar_native else 3, "z": 1, "y": rows, "x": columns}
@@ -324,7 +326,8 @@ def virtualize_dicom(url: str, read: Reader, size: int) -> Output:
     ome["omero"] = {"channels": channels}
 
     out = Output(url)
-    out.json("zarr.json", group_json(ome))
+    # The source metadata (conventions/dicom/README.md §5).
+    out.json("zarr.json", root_json(ome, "dicom", url, source_json(read, size, dataset_start, encoding)))
     out.json("0/zarr.json", array_json([shape[a] for a in axes], data_type, [chunk_shape[a] for a in axes],
                                        codecs, axes))
     for f, ranges in enumerate(frame_ranges):

@@ -6,6 +6,7 @@ import {
   byDepth,
   canonicalIndex,
   compareKeys,
+  declareNodes,
   docKey,
   findChunks,
   GROUP_IMPLICIT,
@@ -33,11 +34,10 @@ const reject = (message: string): never => {
 const DATA_TYPES: Record<string, number> = {
   uint8: 1, int8: 1, uint16: 2, int16: 2, uint32: 4, int32: 4, float32: 4, uint64: 8, int64: 8, float64: 8,
 };
-const ARRAY_KEYS = ["dimensions", "blockSize", "dataType", "compression", "compressionType", "n5"];
 const BLOSC_NAMES = ["blosclz", "lz4", "lz4hc", "snappy", "zlib", "zstd"];
 const MAX_BLOCK = 2 ** 31 - 1;
 
-// §2.3's units, and the unit names they map to.
+// conventions §5's units, and the unit names they map to.
 const UNITS: Record<string, string> = {
   "µm": "micrometer", "μm": "micrometer", um: "micrometer", nm: "nanometer", mm: "millimeter", cm: "centimeter",
   m: "meter", "Å": "angstrom", "Å": "angstrom", pm: "picometer", in: "inch", ft: "foot", s: "second",
@@ -45,7 +45,7 @@ const UNITS: Record<string, string> = {
 };
 const UNIT_NAMES = new Set(Object.values(UNITS));
 
-/** The Zarr v3 blosc codec of an n5-blosc or numcodecs Blosc configuration (§9.2, §10.3). */
+/** The Zarr v3 blosc codec of an n5-blosc or numcodecs Blosc configuration (conventions/n5/README.md §3, conventions/zarr2/README.md §3.1). */
 export function bloscCodec(
   c: { [k: string]: Json },
   typesize: number,
@@ -87,7 +87,7 @@ interface ArrayDoc {
   attributes: { [k: string]: Json };
 }
 
-/** A dataset's zarr.json (§9.2). */
+/** A dataset's zarr.json (conventions/n5/README.md §3). */
 function dataset(path: string, doc: { [k: string]: Json }): ArrayDoc {
   const dims = doc.dimensions;
   const block = doc.blockSize;
@@ -128,11 +128,11 @@ function dataset(path: string, doc: { [k: string]: Json }): ArrayDoc {
     chunk_key_encoding: { name: "v2", configuration: { separator: "/" } },
     fill_value: 0,
     codecs: [{ name: "n5_default", configuration: { codecs: inner } }],
-    attributes: without(doc, ARRAY_KEYS),
+    attributes: { ...doc }, // the whole document, as source metadata (conventions/n5/README.md §5)
   };
 }
 
-// ---------------------------------------------------------------- multiscales (§9.5)
+// ---------------------------------------------------------------- multiscales (conventions/n5/README.md §4)
 
 const AXIS_TYPES: Record<string, string> = { x: "space", y: "space", z: "space", t: "time", c: "channel" };
 
@@ -312,7 +312,7 @@ export async function virtualizeN5(store: Store): Promise<StoreResult & { summar
     if (key === "attributes.json") candidates.push("");
     else if (key.endsWith("/attributes.json")) candidates.push(key.slice(0, -"/attributes.json".length));
   }
-  // §9.1: classify from the root down; a candidate's kind needs its document.
+  // conventions/n5/README.md §2: classify from the root down; a candidate's kind needs its document.
   const docs = new Map<string, { [k: string]: Json }>();
   const datasets = new Set<string>();
   const groupPaths: string[] = [];
@@ -332,10 +332,11 @@ export async function virtualizeN5(store: Store): Promise<StoreResult & { summar
 
   const groups = new Map<string, { [k: string]: Json }>();
   for (const path of groupPaths) {
-    groups.set(path, { zarr_format: 3, node_type: "group", attributes: without(docs.get(path)!, ["n5"]) });
+    groups.set(path, { zarr_format: 3, node_type: "group", attributes: { ...docs.get(path)! } });
   }
   const images: Json[] = [];
   const named = new Map<string, string[]>();
+  const omes = new Map<string, Json>();
   const order = [...groups.keys()].sort(compareKeys);
   for (const g of order) {
     const attrs = docs.get(g)!;
@@ -348,9 +349,9 @@ export async function virtualizeN5(store: Store): Promise<StoreResult & { summar
     }
     if (found === undefined) continue;
     const [ome, levels, axes] = found;
-    // A level of an earlier image with other axis names (§9.5).
+    // A level of an earlier image with other axis names (conventions/n5/README.md §4).
     if (levels.some((lv) => named.has(lv) && JSON.stringify(named.get(lv)) !== JSON.stringify(axes))) continue;
-    (groups.get(g)!.attributes as { [k: string]: Json }).ome = ome;
+    omes.set(g, ome);
     images.push({ path: g, convention });
     for (const lv of levels) if (!named.has(lv)) named.set(lv, axes.slice());
   }
@@ -360,6 +361,7 @@ export async function virtualizeN5(store: Store): Promise<StoreResult & { summar
   for (const path of implicit) out.set(docKey(path), GROUP_IMPLICIT());
   for (const [path, doc] of groups) out.set(docKey(path), doc);
   for (const [path, doc] of arrays) out.set(docKey(path), doc as unknown as Json);
+  declareNodes(out, "n5", store.url, omes);
 
   const tests = new Map<string, (rest: string) => boolean>();
   for (const [path, a] of arrays) {

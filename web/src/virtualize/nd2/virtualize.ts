@@ -1,7 +1,8 @@
 // Virtualizing a Nikon ND2 file (format version 3+) by the ND2 profile
 // (profiles/nd2.md, §5): the frames become Zarr chunks that reference the file.
 
-import { type ByteReader, MAX_PAYLOAD, payloadSize } from "../common.ts";
+import { type ByteReader, declare, jsonText, MAX_PAYLOAD, payloadSize } from "../common.ts";
+import { chunksJson } from "./source.ts";
 import { decodeLV, type LV, type LVObject, type Scalar } from "./lv.ts";
 import type { Range } from "../../protobuf.ts";
 import type { ArchiveDesc, EntryDesc } from "../../writer.ts";
@@ -42,7 +43,7 @@ async function header(read: ByteReader, offset: number): Promise<Header> {
   return { nameLength, dataLength, name };
 }
 
-// ---- typed member access (§5.2)
+// ---- typed member access (conventions/nd2/README.md §2.2)
 
 const REQUIRED = Symbol("required");
 type Fallback<T> = T | typeof REQUIRED;
@@ -56,7 +57,7 @@ function missing<T>(what: string, fallback: Fallback<T>): T {
 function number<T = number>(v: LV | undefined, what: string, fallback: Fallback<T> = REQUIRED): number | T {
   if (v === undefined) return missing(what, fallback);
   if (!isScalar(v) || v.type < 2 || v.type > 6) return reject(`${what} is not a number`);
-  const x = v.value as number;
+  const x = Number(v.value); // a bigint rounds to the nearest binary64
   if (!Number.isFinite(x)) reject(`${what} is not finite`);
   return x;
 }
@@ -80,7 +81,7 @@ function color(v: LV | undefined, what: string, fallback: number): number {
 function flag(v: LV | undefined, what: string, fallback: Fallback<boolean> = REQUIRED): boolean {
   if (v === undefined) return missing(what, fallback);
   if (!isScalar(v) || v.type < 1 || v.type > 5) return reject(`${what} is not a flag`);
-  return v.value !== 0 && v.value !== false;
+  return v.value !== 0 && v.value !== 0n && v.value !== false;
 }
 
 function string(v: LV | undefined, what: string, fallback: string): string {
@@ -109,13 +110,13 @@ function members(v: LV | undefined, what: string): LV[] {
   return reject(`${what} is not an object or a list`);
 }
 
-/** The members of `items` that are valid by the validity list `flags` (§5.3). */
+/** The members of `items` that are valid by the validity list `flags` (conventions/nd2/README.md §3). */
 function valid<T>(items: T[], flags: LV | undefined, what: string): T[] {
   const f = list(flags, what)?.map((x) => flag(x, `${what} entry`));
   return f === undefined ? items : items.filter((_, i) => i < f.length && f[i]);
 }
 
-// ---- experiment (§5.3)
+// ---- experiment (conventions/nd2/README.md §3)
 
 interface Loop {
   kind: "t" | "p" | "z";
@@ -182,7 +183,7 @@ function nodeLoop(node: LVObject): Omit<Loop, "depth"> | "spectral" | undefined 
   return count ? loop : undefined;
 }
 
-/** Flattens the experiment tree into loops (§5.3). */
+/** Flattens the experiment tree into loops (conventions/nd2/README.md §3). */
 export function flattenExperiment(root: LV | undefined): Loop[] {
   const loops: Loop[] = [];
   const visit = (node: LVObject, depth: number) => {
@@ -264,6 +265,8 @@ export async function virtualizeNd2(
     chunks.set(name, Number(dv(mapData).getBigUint64(end + 1, true)));
     pos = end + 17;
   }
+  // The source metadata (conventions/nd2/README.md §5).
+  const source = { signature: jsonText(await read(48, 64)), chunks: await chunksJson(read, fileSize, chunks) };
   const chunk = async (name: string) => {
     const offset = chunks.get(name);
     if (offset === undefined) return undefined;
@@ -271,7 +274,7 @@ export async function virtualizeNd2(
     return decodeLV(await read(offset + 16 + h.nameLength, h.dataLength));
   };
 
-  // §5.3: attributes.
+  // conventions/nd2/README.md §3: attributes.
   const attributes = await chunk("ImageAttributesLV!");
   if (attributes === undefined) return reject("no ImageAttributesLV! chunk");
   const attrs = obj(attributes.get("SLxImageAttributes"), "SLxImageAttributes");
@@ -299,11 +302,11 @@ export async function virtualizeNd2(
   if (widthBytes < rowBytes) reject("uiWidthBytes is less than a row");
   if (compressed && widthBytes !== rowBytes) reject("compressed frames with padded rows are not supported");
 
-  // §5.3: experiment.
+  // conventions/nd2/README.md §3: experiment.
   const exp = await chunk("ImageMetadataLV!");
   const loops = flattenExperiment(exp?.get("SLxExperiment"));
 
-  // §5.3: picture metadata.
+  // conventions/nd2/README.md §3: picture metadata.
   const seq = await chunk("ImageMetadataSeqLV|0!");
   const picture: LVObject = (seq && obj(seq.get("SLxPictureMetadata"), "SLxPictureMetadata", null)) ??
     new Map();
@@ -312,7 +315,7 @@ export async function virtualizeNd2(
   let aspect = number(picture.get("dAspect"), "dAspect", 1);
   const [m11, m12, m21, m22] = ([["11", 1], ["12", 0], ["21", 0], ["22", 1]] as const)
     .map(([k, fallback]) => number(picture.get(`dStgLgCT${k}`), `dStgLgCT${k}`, fallback));
-  // The stage position without a position loop (§5.6).
+  // The stage position without a position loop (conventions/nd2/README.md §4.3).
   const pictureStage: [number | null, number | null] = [
     number(picture.get("dXPos"), "dXPos", null),
     number(picture.get("dYPos"), "dYPos", null),
@@ -334,7 +337,7 @@ export async function virtualizeNd2(
     });
   }
 
-  // §5.5: channels.
+  // conventions/nd2/README.md §4.2: channels.
   let labels: string[] = [];
   let colors: string[] = [];
   const counts = [...planes.values()].map((p) => p.k);
@@ -357,7 +360,7 @@ export async function virtualizeNd2(
     colors = labels.map(() => "FFFFFF");
   }
 
-  // §5.4: frames.
+  // profiles/nd2.md §5.3: frames.
   const total = loops.reduce((n, l) => n * l.count, 1);
   if (total > Number.MAX_SAFE_INTEGER) reject("more than 2^53 - 1 frames");
   const frameOffsets = new Map<number, number>();
@@ -403,7 +406,7 @@ export async function virtualizeNd2(
     };
   }
 
-  // §5.6: output.
+  // conventions/nd2/README.md §4.3: output.
   const loopOf = (kind: string) => loops.find((l) => l.kind === kind);
   const t = loopOf("t");
   const z = loopOf("z");
@@ -444,7 +447,7 @@ export async function virtualizeNd2(
   const json = (v: unknown) => utf8.encode(JSON.stringify(v, null, 2));
   const group = (attributes: unknown) => json({ zarr_format: 3, node_type: "group", attributes });
   const positions = p?.count ?? 1;
-  // §5.6 stage positions: where each position's image goes.
+  // conventions/nd2/README.md §4.3 stage positions: where each position's image goes.
   const det = m11 * m22 - m12 * m21;
   let translations: number[][] | undefined;
   const stages = p ? p.stage ?? [] : [pictureStage];
@@ -458,7 +461,7 @@ export async function virtualizeNd2(
     });
   }
   const entries: EntryDesc[] = [
-    { key: "zarr.json", bytes: group({ ome: { version: "0.5", "bioformats2raw.layout": 3 } }) },
+    { key: "zarr.json", bytes: group(declare({ ome: { version: "0.5", "bioformats2raw.layout": 3 } }, "nd2", url, source)) },
     { key: "OME/zarr.json", bytes: group({ ome: { version: "0.5", series: Array.from({ length: positions }, (_, i) => String(i)) } }) },
   ];
   const b = Number.isInteger(significant) && significant >= 1 && significant <= bpc ? significant : bpc;

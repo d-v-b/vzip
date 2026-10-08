@@ -1,26 +1,47 @@
-// Nikon's "lite variant" (LV) metadata encoding (profiles/nd2.md §5.2).
+// Nikon's "lite variant" (LV) metadata encoding (conventions/nd2/README.md §2.2).
 //
 // Objects are Maps, which keep each name at the position of its first
 // appearance (plain objects would move integer-like names first). Scalars
-// keep their record type, which decides how they may be used.
+// keep their record type, which decides how they may be used; 64-bit integers
+// are bigints, so that the source metadata has their exact values.
 
 export interface Scalar {
   type: number;
-  value: boolean | number | string;
+  value: boolean | number | bigint | string;
 }
 export type LV = Scalar | LV[] | LVObject;
 export type LVObject = Map<string, LV>;
 
 export class LVError extends Error {}
 
-async function inflate(data: Uint8Array): Promise<Uint8Array> {
+async function inflate(data: Uint8Array, limit: number): Promise<Uint8Array> {
   const stream = new Blob([data as BlobPart]).stream().pipeThrough(new DecompressionStream("deflate"));
+  const reader = stream.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
   try {
     // Fails on a truncated stream and on bytes after its end.
-    return new Uint8Array(await new Response(stream).arrayBuffer());
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.length;
+      if (size > limit) {
+        await reader.cancel();
+        throw new LVError(`compressed LV data inflates to more than ${limit} bytes`);
+      }
+      parts.push(value);
+    }
   } catch (e) {
+    if (e instanceof LVError) throw e;
     throw new LVError(`invalid zlib stream in compressed LV data: ${(e as Error).message}`);
   }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
 }
 
 class Reader {
@@ -40,7 +61,7 @@ const utf16 = new TextDecoder("utf-16le"); // replaces unpaired surrogates with 
 
 const MAX_DEPTH = 100;
 
-/** The records up to `end`, which are at `depth` (§5.2). */
+/** The records up to `end`, which are at `depth` (conventions/nd2/README.md §2.2). */
 function records(r: Reader, end: number, count: number | undefined, depth: number): [string, LV][] {
   if (depth > MAX_DEPTH) throw new LVError(`LV levels nested more than ${MAX_DEPTH} deep`);
   const out: [string, LV][] = [];
@@ -62,13 +83,11 @@ function records(r: Reader, end: number, count: number | undefined, depth: numbe
     };
     let value: LV;
     switch (type) {
-      // 64-bit integers beyond 2^53 lose precision here; they are rejected
-      // wherever an integer is needed (§5.2), so the exact value never matters.
       case 1: value = { type, value: r.bytes[take(1)] !== 0 }; break;
       case 2: value = { type, value: r.view.getInt32(take(4), true) }; break;
       case 3: value = { type, value: r.view.getUint32(take(4), true) }; break;
-      case 4: value = { type, value: Number(r.view.getBigInt64(take(8), true)) }; break;
-      case 5: case 7: value = { type, value: Number(r.view.getBigUint64(take(8), true)) }; break;
+      case 4: value = { type, value: r.view.getBigInt64(take(8), true) }; break;
+      case 5: case 7: value = { type, value: r.view.getBigUint64(take(8), true) }; break;
       case 6: value = { type, value: r.view.getFloat64(take(8), true) }; break;
       case 8: {
         const from = r.pos;
@@ -111,11 +130,11 @@ function records(r: Reader, end: number, count: number | undefined, depth: numbe
   return out;
 }
 
-/** Decodes a chunk's LV structure. */
-export async function decodeLV(data: Uint8Array): Promise<LVObject> {
+/** Decodes a chunk's LV structure; compressed data may inflate to at most `limit` bytes. */
+export async function decodeLV(data: Uint8Array, limit = Infinity): Promise<LVObject> {
   if (data.length >= 1 && data[0] === 76) {
     if (data.length < 12) throw new LVError("truncated compressed LV record");
-    const inner = await inflate(data.subarray(12));
+    const inner = await inflate(data.subarray(12), limit);
     if (inner.length >= 1 && inner[0] === 76) throw new LVError("compressed LV data inside compressed LV data");
     data = inner;
   }

@@ -1,13 +1,20 @@
 # Virtualizing Imaris IMS files
 
-The IMS profile of [VIRTUALIZE.md](../VIRTUALIZE.md) (revision 11), numbered
+The IMS profile of [VIRTUALIZE.md](../VIRTUALIZE.md) (revision 16), numbered
 as its §8. §1 and §2 are in VIRTUALIZE.md and apply here.
+
+Profile version: 1 · Convention: [conventions/ims](../conventions/ims/README.md),
+version 1. The output has the convention's layout for the input
+([VIRTUALIZE.md §2](../VIRTUALIZE.md#2-the-zarr-layout)); this profile says
+how the file is read, which inputs are rejected, and how each chunk
+references the file. "The convention §n" below is a section of
+conventions/ims/README.md.
 
 ## 8. IMS profile
 
 An Imaris file (`.ims`) is an HDF5 file holding a fixed layout of groups and
-datasets (§8.7): one chunked 3-D dataset per resolution level, time point and
-channel, with text attributes for the sizes and the metadata (§8.8). The
+datasets ([the convention §2.2](../conventions/ims/README.md#22-the-imaris-layout)): one chunked 3-D dataset per resolution level, time point and
+channel, with text attributes for the sizes and the metadata ([the convention §3](../conventions/ims/README.md#3-metadata)). The
 virtualizer reads the HDF5 structure itself, by the subset of the HDF5 file
 format (The HDF Group's *HDF5 File Format Specification*, version 3) that
 §8.1–§8.6 describe; whatever falls outside the subset rejects the input. The
@@ -23,7 +30,7 @@ groups. Imaris 10 makes the root group's `DataSet` and `DataSetInfo` soft
 links to `/Workflows/InitialImages/...`. Files written with newer HDF5
 format bounds (superblock version 3, layout versions 4 and 5) index chunks by
 fixed arrays or as a single chunk. Imaris 10 can also compress chunks with LZ4
-(filter 32004), alone or after byte shuffling (filter 2); no codec of §2.1
+(filter 32004), alone or after byte shuffling (filter 2); no codec of [conventions §3](../conventions/README.md#3-arrays)
 decodes those, so such files are rejected.
 
 ### 8.1 HDF5 structures
@@ -265,7 +272,7 @@ message (type 0x0B) (§8.2).
   bytes at 8. Version 3: with bit 5 of byte 1 clear there is no fill value;
   otherwise `s` is the 4 bytes at 2 and the value the `s` bytes at 6. Other
   versions reject. Every byte of the value MUST be 0: chunks that are not
-  allocated read as 0, as in Zarr (§2.1). (No fill value message, or no fill
+  allocated read as 0, as in Zarr ([conventions §3](../conventions/README.md#3-arrays)). (No fill value message, or no fill
   value, also reads as 0.)
 - **Filter pipeline.** Byte 0 is the version (1 or 2; others reject), byte 1
   the number of filters, and the filters start at byte 8 (version 1) or 2
@@ -367,171 +374,29 @@ attribute info message (type 0x15), if any:
   of them if there is none).
 
 Every attribute's name is read; two attributes with the same name reject the
-input. An attribute's **value** is read only where §8.7 and §8.8 read the
+input. An attribute's **value** is read only where the convention reads the
 attribute: its flag bits 0 and 1 (shared datatype or dataspace) MUST be
 clear; its datatype and dataspace (§8.5) MUST lie within the message; the
 dataspace MUST NOT be null; its element count is the product of its sizes (1
 for a scalar); and its data, the next count × datatype size bytes, MUST lie
 within the message.
 
-**Text.** Imaris writes each attribute as a 1-dimensional array of
-1-character strings. An attribute read as **text** MUST have a string
-datatype (class 3), of any size, padding and character set; any other
-datatype rejects the input. Its text is its data up to the first NUL byte
-(all of it if there is none), decoded as UTF-8 if it is valid UTF-8, and
-otherwise byte by byte as the code points U+0000 to U+00FF (ISO 8859-1).
+### 8.7 Rejection
 
-- A **decimal** is a text that, with leading and trailing whitespace (§1.3)
-  removed, matches `[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?` and
-  whose value (§1.3) is finite. Any other text is not a decimal.
-- A **list of `n` decimals** is a text that, with leading and trailing
-  whitespace removed and split at each run of whitespace, has exactly `n`
-  parts, each a decimal.
-- An **integer** is a text that, with leading and trailing whitespace
-  removed, is one or more digits.
+The input is rejected when a rule of §8.1–§8.6 fails for a structure that
+the convention's §2–§4 read, and when the convention gives it no layout:
+wherever it says that the input is rejected, or that something MUST hold
+and it does not. The source metadata (the convention §5) never rejects the
+input: what it cannot read is `null`.
 
-### 8.7 The Imaris layout
+### 8.8 Chunk references
 
-Names below are ASCII; a number in a name is in decimal without leading
-zeros. The virtualizer opens (§8.3) these groups, following each link (§8.3)
-to reach them:
-
-- The root group. Without a link `DataSet`, the file is not an Imaris file
-  and is rejected. That link leads to the group `DataSet`, which MUST have a
-  link `ResolutionLevel 0` (else the file is not an Imaris file).
-- **Levels:** `R` is the number of consecutive links `ResolutionLevel 0`,
-  `ResolutionLevel 1`, ... of `DataSet`, which MUST be at most 64 (a link
-  `ResolutionLevel 64` after 64 consecutive ones rejects the input).
-- **Time points:** `T` is the number of consecutive links `TimePoint 0`,
-  `TimePoint 1`, ... of the group `ResolutionLevel 0` (at least 1).
-- **Channels:** `C` is the number of consecutive links `Channel 0`, ... of
-  the group `ResolutionLevel 0/TimePoint 0` (at least 1).
-- `R × T × C` MUST be at most 100000.
-- For every level `r < R`, time point `t < T` and channel `c < C`, the
-  link `ResolutionLevel r` of `DataSet`, `TimePoint t` of the group it
-  leads to and `Channel c` of the group that leads to MUST exist; each group
-  is opened. Other links of these groups (beyond `T` time points or `C`
-  channels, `Histogram`, ...) are not followed. The channel group's
-  attributes are read (§8.6), and it MUST have a link `Data`, which leads to
-  the **dataset** `(r, t, c)`, read by §8.5 with its allocated chunks.
-  - The channel group's attributes `ImageSizeZ`, `ImageSizeY` and
-    `ImageSizeX`, read as text, MUST be integers from 1 to 2^53 − 1: the
-    image's size `(Z, Y, X)`. (Imaris pads the dataset to whole chunks; the
-    image is its part from the origin.)
-  - The dataset MUST have rank 3, its sizes (in order z, y, x) MUST be at
-    least `Z`, `Y` and `X`, and its filters MUST be none, or exactly one
-    with identifier 1 (deflate, whose chunks are zlib streams). Other filters
-    (shuffle 2, Fletcher32 3, LZ4 32004, ...) reject the input.
-  - Its **data type:** a datatype of class 0 (fixed-point) and size 1, 2 or 4
-    whose bit offset (2 bytes at property byte 0) is 0 and precision (2 bytes
-    at 2) is 8 × the size is `uint8`, `uint16` or `uint32`, or `int8`,
-    `int16` or `int32` if bit 3 (signed) of the bit fields is set. A
-    datatype of class 1 (floating-point) and size 4 is `float32` if its bit
-    fields have bit 6 clear, bits 4–5 (mantissa normalization) equal to 2 and
-    bits 8–15 (sign location) equal to 31, and its properties are the bit
-    offset 0 and precision 32 (2 bytes each), exponent location 23, exponent
-    size 8, mantissa location 0 and mantissa size 23 (1 byte each), and
-    exponent bias 127 (4 bytes). Any other datatype rejects the input. Bit 0
-    of the bit fields is the **byte order**: big-endian if set, else
-    little-endian.
-
-All datasets MUST have the same data type and, for data types of 2 or 4
-bytes, the same byte order. All datasets of a level `r` MUST have the same
-image size `(Zr, Yr, Xr)`, the same chunk shape `(cz, cy, cx)` and the same
-filters (both none or both deflate). Levels may differ in chunk shape and
-filters.
-
-### 8.8 Metadata
-
-If the root group has a link `DataSetInfo`, it is followed and the group
-opened. Each of that group's links `Image`, `Channel c` (for `c < C`)
-and `TimeInfo` that exists is followed, the group opened, and its
-attributes read; a missing group has no attributes. These attributes are
-read as text (§8.6) where present:
-
-- of `Image`: `ExtMin0`, `ExtMin1`, `ExtMin2`, `ExtMax0`,
-  `ExtMax1`, `ExtMax2` (each a decimal, else absent), `Unit` and
-  `Name`;
-- of `Channel c`: `Name`, `Color` (a list of 3 decimals, else absent)
-  and `ColorRange` (a list of 2 decimals, else absent);
-- of `TimeInfo`, only if `T > 1`: `TimePoint1` and `TimePoint<T>`.
-
-Other attributes, and the other groups (`Thumbnail`, `Scene`,
-`DataSetTimes`, ...), are not read.
-
-- **Extents.** For the axes `x`, `y` and `z` (`i` = 0, 1, 2): if
-  `ExtMin<i>` and `ExtMax<i>` are both present, let
-  `e = ExtMax<i> − ExtMin<i>`; if `e` is infinite the input is rejected
-  (§1.3), and if `e > 0` the axis has the **extent** `e`.
-- **Unit.** If `Unit` is absent or empty, the unit is `micrometer`, Imaris's
-  default. Otherwise it is the unit of `Unit` by
-  §2.3 (matched exactly) if that is a length unit, and there is none if not.
-- **Time step.** Imaris records the date and time of each time point, not a
-  period. A time point's text is **valid** if it is exactly `YYYY-MM-DD
-  hh:mm:ss`, optionally followed by `.` and one or more digits, with each
-  letter a digit; with month `MM` from 1 to 12, day `DD` from 1 to the
-  month's length (February has 29 days in years divisible by 4 but not by
-  100, and in years divisible by 400), `hh` at most 23 and `mm` and `ss`
-  at most 59. Its whole seconds are
-  `I = 86400 d + 3600 hh + 60 mm + ss`, where `d` is the number of days
-  from 1970-01-01 to its date in the proleptic Gregorian calendar (exact
-  integers), and its fraction `F` is the decimal `0.` followed by its
-  digits after the `.` (0 without them). If `T > 1` and `TimePoint1`
-  (`I1`, `F1`) and `TimePoint<T>` (`IT`, `FT`) are both valid, let
-  `Δ = D + (FT − F1)`, where `D = IT − I1` is the integer difference
-  computed exactly and then converted to binary64, `FT` and `F1` are the
-  fractions converted to binary64 (§1.3), and the subtraction and addition
-  are binary64 operations in that order. If
-  `Δ > 0` the **time step** is `Δ / (T − 1)` seconds, the mean interval
-  between time points. Otherwise there is no time step.
-
-### 8.9 Output
-
-One image at the archive root (§2.2), with one array per level `r` at path
-`"<r>"`.
-
-- **Axes:** `t` if `T > 1`; `c` if `C > 1`; `z` if level 0's `Z` is
-  more than 1 or some level's `cz` is more than 1 (a chunk of several z
-  planes keeps them, so that its bytes decode to its Zarr chunk); then `y`,
-  `x`. When level 0's `Z` is 1, every level's `Z` MUST be 1.
-- **Array** of level `r` (§2.1): shape `T`, `C`, `Zr`, `Yr`, `Xr`
-  and chunk shape 1, 1, `cz`, `cy`, `cx` (each only for the axes
-  present); the data type of §8.7; codecs `bytes` (with the byte order as
-  its `endian` for data types of 2 or 4 bytes), followed by `zlib` for
-  deflate.
-- **Scale** of level `r`: a spatial axis with an extent `e` has the scale
-  `e / Nr`, where `Nr` is the level's size along it (`Xr`, `Yr` or
-  `Zr`), and the unit; one without has the scale 1 and no unit. (Imaris's
-  extents span the image at every level, so a level's voxel size is the extent
-  over its size.) `t` has the scale of the time step and the unit
-  `second` if there is a time step, else the scale 1 and no unit. `c` has
-  the scale 1.
-- **Translation:** when every spatial axis present has an extent, every level
-  has the translation (§2.2) `ExtMin0` for `x`, `ExtMin1` for
-  `y`, `ExtMin2` for `z` and 0 for `t` and `c`: Imaris's extents are
-  the outer corners of the image. Otherwise there is none.
-- **Name:** `Name` of `Image`, if present and not empty.
-- **omero:** `M` has `"omero": {"channels": [...]}`, one object per
-  channel `c` (even when there is no `c` axis):
-  `{"label": ..., "color": ..., "active": true, "window": {...}}`.
-  - The label is the channel's `Name` if present and not empty, else
-    `Channel <c>`.
-  - The color: if `Color` is present and its three values are each from 0
-    to 1, the six uppercase hexadecimal digits of `floor(v × 255 + 0.5)` for
-    its red, green and blue values `v`; else `FFFFFF`.
-  - The window: for an integer data type, `{"min": lo, "max": hi,
-    "start": s, "end": e}`, where `lo` and `hi` are the smallest and
-    largest values of the data type (0 and 2^n − 1 unsigned, −2^(n−1) and
-    2^(n−1) − 1 signed, for `n` bits), and `s`, `e` are the two values of
-    `ColorRange` if it is present, else `lo` and `hi`. For `float32`,
-    `{"min": s, "max": e, "start": s, "end": e}` if `ColorRange` is
-    present, else no window.
-- **Chunks:** each allocated chunk of dataset `(r, t, c)` at coordinates
-  `(i, j, k)` that is not wholly outside the image (that is,
-  `i × cz < Zr`, `j × cy < Yr` and `k × cx < Xr`) is the entry
-  `<r>/c/<coords>` with the single range `(0, address, size)`; the coords
-  are `t`, `c`, `i` (each only when its axis is present), `j`, `k`.
-  Chunks in the padding are not output, and unallocated chunks have no entry.
-  HDF5 stores edge chunks whole, like Zarr, so a chunk's bytes decode to its
-  Zarr chunk. (A single range's payload is at most 21 bytes, within the limit
-  of §1.2.)
+Each allocated chunk of dataset `(r, t, c)` at coordinates
+`(i, j, k)` that is not wholly outside the image (that is,
+`i × cz < Zr`, `j × cy < Yr` and `k × cx < Xr`) is the entry
+`<r>/c/<coords>` with the single range `(0, address, size)`; the coords
+are `t`, `c`, `i` (each only when its axis is present), `j`, `k`.
+Chunks in the padding are not output, and unallocated chunks have no entry.
+HDF5 stores edge chunks whole, like Zarr, so a chunk's bytes decode to its
+Zarr chunk. (A single range's payload is at most 21 bytes, within the limit
+of §1.2.)

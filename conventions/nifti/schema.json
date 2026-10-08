@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-nifti-v1/conventions/nifti/schema.json",
+  "title": "vzip NIfTI convention, version 1",
+  "description": "The zarr.json of a node that declares the vzip NIfTI convention (https://github.com/d-v-b/vzip/blob/virtualize-nifti-v1/conventions/nifti/README.md)",
+  "type": "object",
+  "properties": {
+    "zarr_format": {
+      "type": "integer",
+      "const": 3
+    },
+    "node_type": {
+      "type": "string",
+      "enum": [
+        "group"
+      ]
+    },
+    "attributes": {
+      "type": "object",
+      "properties": {
+        "ome": {
+          "type": "object",
+          "description": "OME-NGFF 0.5 metadata"
+        },
+        "zarr_conventions": {
+          "type": "array",
+          "contains": {
+            "$ref": "#/$defs/conventionMetadata"
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        "vzip_virtualized": {
+          "$ref": "#/$defs/rootProperty"
+        }
+      },
+      "required": [
+        "zarr_conventions",
+        "vzip_virtualized"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "zarr_format",
+    "node_type",
+    "attributes"
+  ],
+  "$defs": {
+    "conventionMetadata": {
+      "type": "object",
+      "description": "The NIfTI convention's metadata object in zarr_conventions",
+      "properties": {
+        "uuid": {
+          "type": "string",
+          "const": "06e5809d-4d54-4b72-afd0-6bf61a7b4c85"
+        },
+        "schema_url": {
+          "type": "string",
+          "const": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-nifti-v1/conventions/nifti/schema.json"
+        },
+        "spec_url": {
+          "type": "string",
+          "const": "https://github.com/d-v-b/vzip/blob/virtualize-nifti-v1/conventions/nifti/README.md"
+        },
+        "name": {
+          "type": "string",
+          "const": "vzip_virtualized"
+        },
+        "description": {
+          "type": "string",
+          "const": "The Zarr layout of a NIfTI source virtualized by vzip, and the source's metadata"
+        }
+      },
+      "required": [
+        "uuid"
+      ],
+      "additionalProperties": false
+    },
+    "rootProperty": {
+      "type": "object",
+      "description": "The root's property: the profile and version that produced the hierarchy, its source, and the root's source metadata",
+      "properties": {
+        "profile": {
+          "type": "string",
+          "const": "nifti"
+        },
+        "version": {
+          "type": "integer",
+          "const": 1
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "The URL of the source file"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false
+        },
+        "nifti": {
+          "$ref": "#/$defs/sourceMetadata"
+        }
+      },
+      "required": [
+        "profile",
+        "version",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "sourceMetadata": {
+      "type": "object",
+      "properties": {
+        "nifti_version": {
+          "enum": [
+            1,
+            2
+          ]
+        },
+        "byte_order": {
+          "enum": [
+            "little",
+            "big"
+          ]
+        },
+        "header": {
+          "type": "object",
+          "description": "Every header field, by its NIfTI-1 or NIfTI-2 name, in the standard's order",
+          "additionalProperties": {
+            "$ref": "#/$defs/headerValue"
+          }
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ecode": {
+                "type": "integer"
+              },
+              "edata": {
+                "type": "string",
+                "contentEncoding": "base64"
+              }
+            },
+            "required": [
+              "ecode",
+              "edata"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "extensions_truncated": {
+          "const": true
+        },
+        "scaling": {
+          "type": "object",
+          "properties": {
+            "slope": {
+              "type": "number"
+            },
+            "inter": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "slope",
+            "inter"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "nifti_version",
+        "byte_order",
+        "header"
+      ],
+      "additionalProperties": false
+    },
+    "headerValue": {
+      "description": "A translated header value (conventions/README.md §6)",
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

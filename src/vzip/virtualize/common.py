@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import urllib.error
 import urllib.request
@@ -70,6 +71,37 @@ class Output:
 MAX_PAYLOAD = 65519
 
 
+MAX_SAFE = 2**53 - 1
+
+
+def json_number(v):
+    """A number as source metadata (conventions/README.md §6)."""
+    if isinstance(v, float):
+        if math.isnan(v):
+            return "NaN"
+        if math.isinf(v):
+            return "Infinity" if v > 0 else "-Infinity"
+        return v
+    return v if abs(v) <= MAX_SAFE else str(v)
+
+
+def decode_text(b: bytes) -> str:
+    """Bytes as text: UTF-8 if valid, else ISO 8859-1 (conventions/README.md §6)."""
+    try:
+        return b.decode("utf-8")
+    except UnicodeDecodeError:
+        return b.decode("latin-1")
+
+
+def json_text(b: bytes) -> str:
+    """A fixed-size character field: its bytes up to the first NUL, as text."""
+    return decode_text(b.split(b"\0", 1)[0])
+
+
+def json_base64(b: bytes) -> str:
+    return base64.b64encode(b).decode("ascii")
+
+
 def _varint_size(v: int) -> int:
     return max(1, (v.bit_length() + 6) // 7)
 
@@ -97,7 +129,7 @@ UNITS = {
 
 TYPES = {"t": "time", "c": "channel", "z": "space", "y": "space", "x": "space"}
 
-# Sizes of the length units in metres (§2.3).
+# Sizes of the length units in metres (conventions §5).
 LENGTHS = {
     "micrometer": 1e-6, "nanometer": 1e-9, "millimeter": 1e-3, "centimeter": 1e-2, "meter": 1.0,
     "angstrom": 1e-10, "picometer": 1e-12, "inch": 0.0254, "foot": 0.3048,
@@ -105,12 +137,12 @@ LENGTHS = {
 
 
 def centred(cx: float, cy: float, w0: int, h0: int, sx: float, sy: float) -> dict:
-    """The translation of an image whose centre is at (cx, cy) (§2.3)."""
+    """The translation of an image whose centre is at (cx, cy) (conventions §5)."""
     return {"x": cx - w0 * sx / 2, "y": cy - h0 * sy / 2}
 
 
 def array_json(shape, data_type: str, chunk_shape, codecs: list, axes: list[str]) -> dict:
-    """An array's zarr.json (§2.1)."""
+    """An array's zarr.json (conventions §3)."""
     return {
         "zarr_format": 3,
         "node_type": "array",
@@ -126,7 +158,7 @@ def array_json(shape, data_type: str, chunk_shape, codecs: list, axes: list[str]
 
 
 def transpose_codec(axes: list[str]) -> dict:
-    """The transpose codec for frames that hold the channel axis last (§2.1)."""
+    """The transpose codec for frames that hold the channel axis last (conventions §3)."""
     stored = [a for a in axes if a != "c"] + ["c"]
     return {"name": "transpose", "configuration": {"order": [axes.index(a) for a in stored]}}
 
@@ -135,12 +167,65 @@ def group_json(ome: dict) -> dict:
     return {"zarr_format": 3, "node_type": "group", "attributes": {"ome": ome}}
 
 
+# The virtualization conventions (conventions §2): one per profile, each with its fixed
+# UUID, its current version and its name in the description.
+CONVENTION_KEY = "vzip_virtualized"
+PROFILES = {
+    "tiff": ("48e9ac4e-1156-4a62-955e-20467d9c2700", 1, "TIFF"),
+    "ndpi": ("6cac71ef-dbb2-4acd-b60c-00389aa4238a", 1, "NDPI"),
+    "nd2": ("59612f14-e314-4207-ba00-8f422ba71490", 1, "ND2"),
+    "dicom": ("acf17198-e5a5-48d3-8187-22ec4bb40ea5", 1, "DICOM"),
+    "nifti": ("06e5809d-4d54-4b72-afd0-6bf61a7b4c85", 1, "NIfTI"),
+    "ims": ("5067a535-8261-4b25-a93c-1985ed333bde", 1, "IMS"),
+    "n5": ("ad5d4c39-c69e-48f7-a3ef-4cc8c607d416", 1, "N5"),
+    "zarr2": ("8e792619-d671-4687-ab51-752885dd3ee6", 1, "Zarr v2"),
+    "ome-zarr": ("b74ea302-65bb-49ae-b81f-f9bb52cd4eed", 1, "OME-Zarr"),
+}
+UUIDS = frozenset(uuid for uuid, _, _ in PROFILES.values())
+
+
+def convention(profile: str) -> dict:
+    """The Convention Metadata Object of a profile's convention (conventions §2)."""
+    uuid, version, title = PROFILES[profile]
+    tag = f"virtualize-{profile}-v{version}"
+    return {
+        "uuid": uuid,
+        "schema_url": f"https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/{tag}/conventions/{profile}/schema.json",
+        "spec_url": f"https://github.com/d-v-b/vzip/blob/{tag}/conventions/{profile}/README.md",
+        "name": CONVENTION_KEY,
+        "description": f"The Zarr layout of a {title} source virtualized by vzip, and the source's metadata",
+    }
+
+
+def declare(attributes: dict, profile: str, url: str | None, own: dict | None = None) -> dict:
+    """A node's attributes (conventions §2): `attributes`, the members the target formats
+    define (such as `ome`), and the profile's convention when the node is the
+    root (`url`, the source URL, is given) or has source-specific metadata
+    (`own` is a nonempty object): its metadata object in `zarr_conventions`,
+    and the property `vzip_virtualized`, which holds `own` as its member
+    named after the profile."""
+    value: dict = {}
+    if url is not None:
+        value = {"profile": profile, "version": PROFILES[profile][1], "source": {"url": url}}
+    if own:
+        value[profile] = own
+    if not value:
+        return dict(attributes)
+    return {**attributes, "zarr_conventions": [convention(profile)], CONVENTION_KEY: value}
+
+
+def root_json(ome: dict, profile: str, url: str, own: dict | None = None) -> dict:
+    """The root image group of a file profile (conventions §4, conventions §2), with the
+    source-specific metadata `own`."""
+    return {"zarr_format": 3, "node_type": "group", "attributes": declare({"ome": ome}, profile, url, own)}
+
+
 def image_ome(axes: list[str], units: dict, scales: list[list[float]], name: str | None,
               translations: list[list[float]] | None = None) -> dict:
     for t in translations or []:
         if not all(math.isfinite(v) for v in t):
             raise Rejected("a translation is not finite")
-    """The OME-NGFF 0.5 object of an image (§2.2), with a translation per
+    """The OME-NGFF 0.5 object of an image (conventions §4), with a translation per
     level after its scale when `translations` is given."""
     ms = {}
     if name is not None:

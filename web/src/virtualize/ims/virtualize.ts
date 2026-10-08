@@ -3,7 +3,8 @@
 // Zarr chunk that references the file.
 
 import type { Range } from "../../protobuf.ts";
-import type { ByteReader } from "../common.ts";
+import { type ByteReader, declare } from "../common.ts";
+import { sourceJson } from "./source.ts";
 import type { ArchiveDesc, EntryDesc } from "../../writer.ts";
 import { attributeValue, type Datatype, Hdf5, ImsError, latin1, type Links, u, untilNul } from "./hdf5.ts";
 
@@ -15,7 +16,7 @@ const DECIMAL = /^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$/;
 const DIGITS = /^[0-9]+$/;
 const TIMESTAMP = /^([0-9]{4})-([0-9]{2})-([0-9]{2}) ([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]+))?$/;
 
-// The length units of §2.3, by symbol.
+// The length units of conventions §5, by symbol.
 const LENGTH_UNITS: Record<string, string> = {
   "\u00b5m": "micrometer", "\u03bcm": "micrometer", "um": "micrometer", "nm": "nanometer", "mm": "millimeter",
   "cm": "centimeter", "m": "meter", "\u00c5": "angstrom", "\u212b": "angstrom", "pm": "picometer", "in": "inch",
@@ -28,7 +29,7 @@ const reject = (message: string): never => {
 
 const trim = (s: string) => s.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
 
-// ---- attribute values (§8.7)
+// ---- attribute values (conventions/ims/README.md §2.1)
 
 /** The text of a string attribute, or undefined if it is absent. */
 function text(attrs: Map<string, Uint8Array>, name: string): string | undefined {
@@ -70,7 +71,7 @@ function days(y: number, m: number, d: number): number {
   return era * 146097 + doe - 719468;
 }
 
-/** [whole seconds from 1970-01-01 00:00:00, fraction of a second], or undefined (§8.8). */
+/** [whole seconds from 1970-01-01 00:00:00, fraction of a second], or undefined (conventions/ims/README.md §3). */
 function timestamp(s: string | undefined): [number, number] | undefined {
   const m = s === undefined ? null : s.match(TIMESTAMP);
   if (m === null) return undefined;
@@ -84,7 +85,7 @@ function timestamp(s: string | undefined): [number, number] | undefined {
 }
 
 /** [Zarr data type, byte order or undefined for one byte, integer range or
- * undefined] of a Data dataset (§8.7). */
+ * undefined] of a Data dataset (conventions/ims/README.md §2.2). */
 function dataType(dt: Datatype): [string, string | undefined, [number, number] | undefined] {
   const order = dt.bits & 1 ? "big" : "little";
   if (dt.cls === 0 && (dt.size === 1 || dt.size === 2 || dt.size === 4)) {
@@ -133,7 +134,7 @@ export async function virtualizeIms(
     return f.follow(links, name);
   };
 
-  // §8.7: the levels, time points and channels.
+  // conventions/ims/README.md §2.2: the levels, time points and channels.
   const root = await f.links(f.root);
   if (!root.has("DataSet")) reject("not an Imaris file (no DataSet group)");
   const dataset = await f.links(await follow(root, "DataSet"));
@@ -156,6 +157,7 @@ export async function virtualizeIms(
   let type: ReturnType<typeof dataType> | undefined;
   const levelInfo: Level[] = [];
   const chunkRefs: [number, number, number, number[], [number, number]][] = [];
+  const channelGroups: [string, number][] = []; // for the source metadata
   for (let r = 0; r < levels; r++) {
     const links = r === 0 ? level0 : await f.links(await follow(dataset, `ResolutionLevel ${r}`));
     let info: Level | undefined;
@@ -163,6 +165,7 @@ export async function virtualizeIms(
       const timeLinks = r === 0 && t === 0 ? firstTime : await f.links(await follow(links, `TimePoint ${t}`));
       for (let c = 0; c < channels; c++) {
         const channel = await follow(timeLinks, `Channel ${c}`);
+        channelGroups.push([`ResolutionLevel ${r}/TimePoint ${t}/Channel ${c}`, channel]);
         const attrs = await f.attributes(channel);
         const sizes = ["Z", "Y", "X"].map((axis) => {
           const s = text(attrs, `ImageSize${axis}`);
@@ -191,7 +194,7 @@ export async function virtualizeIms(
   }
   const [dtype, endian, range] = type!;
 
-  // §8.8: metadata.
+  // conventions/ims/README.md §3: metadata.
   const meta: Links = root.has("DataSetInfo") ? await f.links(await follow(root, "DataSetInfo")) : new Map();
   const metaAttrs = async (name: string) => {
     if (!meta.has(name)) return new Map<string, Uint8Array>();
@@ -225,7 +228,7 @@ export async function virtualizeIms(
     }
   }
 
-  // §8.9: output.
+  // conventions/ims/README.md §4: output; profiles/ims.md §8.8: the chunk references.
   const z0 = levelInfo[0].sizes[0];
   // A z axis also when chunks hold several z planes, so that they decode to Zarr chunks.
   const hasZ = z0 > 1 || levelInfo.some((l) => l.chunk[0] > 1);
@@ -270,12 +273,14 @@ export async function virtualizeIms(
     }
     return { label, color: colors[k], active: true, ...window };
   });
+  // The source metadata (conventions/ims/README.md §5).
+  const source = await sourceJson(f, meta, channelGroups);
   const entries: EntryDesc[] = [{
     key: "zarr.json",
     bytes: json({
       zarr_format: 3,
       node_type: "group",
-      attributes: {
+      attributes: declare({
         ome: {
           version: "0.5",
           multiscales: [{
@@ -285,7 +290,7 @@ export async function virtualizeIms(
           }],
           omero: { channels: omeroChannels },
         },
-      },
+      }, "ims", url, source),
     }),
   }];
   for (const [r, l] of levelInfo.entries()) {

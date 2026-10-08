@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-nd2-v1/conventions/nd2/schema.json",
+  "title": "vzip ND2 convention, version 1",
+  "description": "The zarr.json of a node that declares the vzip ND2 convention (https://github.com/d-v-b/vzip/blob/virtualize-nd2-v1/conventions/nd2/README.md)",
+  "type": "object",
+  "properties": {
+    "zarr_format": {
+      "type": "integer",
+      "const": 3
+    },
+    "node_type": {
+      "type": "string",
+      "enum": [
+        "group"
+      ]
+    },
+    "attributes": {
+      "type": "object",
+      "properties": {
+        "ome": {
+          "type": "object",
+          "description": "OME-NGFF 0.5 metadata"
+        },
+        "zarr_conventions": {
+          "type": "array",
+          "contains": {
+            "$ref": "#/$defs/conventionMetadata"
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        "vzip_virtualized": {
+          "$ref": "#/$defs/rootProperty"
+        }
+      },
+      "required": [
+        "zarr_conventions",
+        "vzip_virtualized"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "zarr_format",
+    "node_type",
+    "attributes"
+  ],
+  "$defs": {
+    "conventionMetadata": {
+      "type": "object",
+      "description": "The ND2 convention's metadata object in zarr_conventions",
+      "properties": {
+        "uuid": {
+          "type": "string",
+          "const": "59612f14-e314-4207-ba00-8f422ba71490"
+        },
+        "schema_url": {
+          "type": "string",
+          "const": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-nd2-v1/conventions/nd2/schema.json"
+        },
+        "spec_url": {
+          "type": "string",
+          "const": "https://github.com/d-v-b/vzip/blob/virtualize-nd2-v1/conventions/nd2/README.md"
+        },
+        "name": {
+          "type": "string",
+          "const": "vzip_virtualized"
+        },
+        "description": {
+          "type": "string",
+          "const": "The Zarr layout of a ND2 source virtualized by vzip, and the source's metadata"
+        }
+      },
+      "required": [
+        "uuid"
+      ],
+      "additionalProperties": false
+    },
+    "rootProperty": {
+      "type": "object",
+      "description": "The root's property: the profile and version that produced the hierarchy, its source, and the root's source metadata",
+      "properties": {
+        "profile": {
+          "type": "string",
+          "const": "nd2"
+        },
+        "version": {
+          "type": "integer",
+          "const": 1
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "The URL of the source file"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false
+        },
+        "nd2": {
+          "$ref": "#/$defs/sourceMetadata"
+        }
+      },
+      "required": [
+        "profile",
+        "version",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "sourceMetadata": {
+      "type": "object",
+      "properties": {
+        "signature": {
+          "type": "string",
+          "description": "The signature chunk's data up to its first NUL, e.g. Ver3.0"
+        },
+        "chunks": {
+          "type": "object",
+          "description": "Every chunk of the chunk map but the frames, by name",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "lv": {
+                "type": "object",
+                "description": "A metadata chunk's lite-variant structure"
+              },
+              "data": {
+                "type": "string",
+                "contentEncoding": "base64"
+              },
+              "size": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^[0-9]+$"
+                  }
+                ]
+              }
+            },
+            "maxProperties": 1,
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "signature",
+        "chunks"
+      ],
+      "additionalProperties": false
+    },
+    "headerValue": {
+      "description": "A translated header value (conventions/README.md §6)",
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

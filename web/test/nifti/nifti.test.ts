@@ -23,7 +23,7 @@ test("virtualizes the synthetic NIfTI files", async () => {
     ["nifti_n1_le_int16_3d_sform.nii", { version: 1, byteOrder: "little", sizes: { z: 3, y: 4, x: 5 }, affine: "sform", translation: true }],
     ["nifti_n1_be_int16_4d_scaled.nii", { byteOrder: "big", sizes: { t: 5, z: 2, y: 3, x: 4 }, scaling: { slope: 0.5, inter: -20 }, translation: false }],
     ["nifti_n2_be_float64_5d.nii", { version: 2, sizes: { t: 2, c: 3, z: 2, y: 2, x: 3 }, dataType: "float64", affine: null }],
-    ["nifti_n1_be_rgb24_4d.nii", { colour: true, scaling: null, sizes: { t: 2, c: 3, z: 2, y: 3, x: 2 } }],
+    ["nifti_n1_be_rgb24_4d.nii", { color: true, scaling: null, sizes: { t: 2, c: 3, z: 2, y: 3, x: 2 } }],
     ["nifti_nibabel_n2_vector_ext.nii", { version: 2, extensions: true, chunks: 18 }],
     ["nifti_rowblock_split.nii", { rowBlock: 350, chunks: 2 }],
     ["nifti_edge_inter_inf.nii", { scaling: { slope: 2, inter: 0 } }],
@@ -33,16 +33,18 @@ test("virtualizes the synthetic NIfTI files", async () => {
     assert.equal(v.format, "nifti");
     assert.deepEqual({ ...v.summary, ...expected }, v.summary, name);
   }
-  // A colour type is interleaved, and its omero channels are R, G, B.
+  // A color type is interleaved, and its omero channels are R, G, B.
   const rgb = await virtualize("nifti_n1_be_rgb24_4d.nii");
   assert.deepEqual(decoded(rgb, "0/zarr.json").codecs, [
     { name: "transpose", configuration: { order: [0, 2, 3, 4, 1] } },
     { name: "bytes" },
   ]);
   assert.deepEqual(decoded(rgb, "zarr.json").attributes.ome.omero.channels.map((c: { label: string }) => c.label), ["R", "G", "B"]);
-  // Scaling is recorded next to the OME metadata, and the window is in raw values.
+  // Scaling is recorded in the convention's property (conventions §2), and the window is in raw values.
   const scaled = decoded(await virtualize("nifti_n1_be_int16_4d_scaled.nii"), "zarr.json").attributes;
-  assert.deepEqual(scaled.nifti, { scl_slope: 0.5, scl_inter: -20 });
+  assert.deepEqual(Object.keys(scaled).sort(), ["ome", "vzip_virtualized", "zarr_conventions"]);
+  assert.deepEqual(scaled.vzip_virtualized.nifti.scaling, { slope: 0.5, inter: -20 });
+  assert.equal(scaled.vzip_virtualized.nifti.header.scl_slope, 0.5);
   assert.deepEqual(scaled.ome.omero.channels[0].window, { min: -20, max: 60, start: -20, end: 60 });
   // The second row block of the slice starts 350 rows in.
   const blocks = await virtualize("nifti_rowblock_split.nii");

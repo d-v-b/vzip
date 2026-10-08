@@ -6,7 +6,7 @@ web/conformance/virtualize.ts (the browser code, run under Node). The whole
 array is then read through the reference reader (src/vzip) and zarr-python,
 and must equal what pydicom reads from the file: its pixel_array for native
 pixel data, and for encapsulated pixel data its frames (pydicom's
-generate_frames) decoded by imagecodecs, with the colour space that the
+generate_frames) decoded by imagecodecs, with the color space that the
 Photometric Interpretation names. Whole-slide tiles are assembled into the
 total pixel matrix. `dicom_reject_*` files must be rejected.
 
@@ -15,6 +15,7 @@ Usage: uv run python web/test/dicom/verify.py [<file or URL> ...]
 
 from __future__ import annotations
 
+import base64
 import io
 import subprocess
 import sys
@@ -76,6 +77,30 @@ def expected(ds: pydicom.Dataset) -> np.ndarray:
     return np.moveaxis(image, -1, 0) if spp == 3 else image
 
 
+def header_problems(source: dict, data: bytes) -> list[str]:
+    """The source metadata against pydicom: in explicit VR, its DICOM JSON Model
+    (without group lengths and Pixel Data); in implicit VR, each top-level
+    element's raw bytes as UN (conventions/dicom/README.md §5)."""
+    ds = pydicom.dcmread(io.BytesIO(data))
+    strip = lambda d: {k: v for k, v in d.items() if not k.endswith("0000") and k != "7FE00010"}  # noqa: E731
+    problems = []
+    meta = ds.file_meta.to_json_dict(bulk_data_threshold=1 << 30)
+    if source["meta"] != strip(meta):
+        problems.append("meta differs from pydicom's")
+    ours = strip(source["dataset"])
+    if not ds.file_meta.TransferSyntaxUID.is_implicit_VR:
+        if ours != strip(ds.to_json_dict(bulk_data_threshold=1 << 30)):
+            problems.append("dataset differs from pydicom's")
+        return problems
+    if set(ours) != set(strip({f"{t:08X}": None for t in ds.keys()})):
+        problems.append("dataset tags differ from pydicom's")
+    for k, v in ours.items():
+        raw = ds.get_item(int(k, 16)).value
+        if v["vr"] == "UN" and isinstance(raw, bytes) and base64.b64decode(v.get("InlineBinary", "")) != raw:
+            problems.append(f"{k}: bytes differ")
+    return problems
+
+
 def check(name: str, url: str, data: bytes, tmp: Path) -> tuple[bool, str]:
     out = tmp / "out.vzip"
     out.unlink(missing_ok=True)
@@ -86,7 +111,11 @@ def check(name: str, url: str, data: bytes, tmp: Path) -> tuple[bool, str]:
         return ok, ("rejected: " + p.stderr.strip()[-90:]) if ok else "NOT REJECTED " + p.stderr[-200:]
     if p.returncode:
         return False, f"FAILED: {p.stderr.strip()[-300:]}"
-    arr = zarr.open_group(VZipStore(str(out)), mode="r", zarr_format=3)["0"]
+    root = zarr.open_group(VZipStore(str(out)), mode="r", zarr_format=3)
+    header = header_problems(root.attrs["vzip_virtualized"]["dicom"], data)
+    if header:
+        return False, f"HEADER: {header[:3]}"
+    arr = root["0"]
     got = arr[...]
     want = expected(pydicom.dcmread(io.BytesIO(data)))
     if got.dtype != want.dtype or got.shape != want.shape:

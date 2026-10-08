@@ -15,13 +15,13 @@ const VRS = new Set([
 ]);
 export const UNDEFINED = 0xffffffff;
 export const ITEM = 0xfffee000;
-const ITEM_END = 0xfffee00d;
-const SEQUENCE_END = 0xfffee0dd;
+export const ITEM_END = 0xfffee00d;
+export const SEQUENCE_END = 0xfffee0dd;
 export const PIXEL_DATA = 0x7fe00010;
 // The sequences of defined length that are walked (§6.3, rule 3): Shared
 // Functional Groups and Pixel Measures.
 const WALKED = new Set([0x52009229, 0x00289110]);
-const MAX_DEPTH = 64;
+export const MAX_DEPTH = 64;
 
 export const tagName = (tag: number) => {
   const h = (v: number) => v.toString(16).toUpperCase().padStart(4, "0");
@@ -176,7 +176,7 @@ export class Walker {
   }
 
   /** The items of a fragment sequence at `pos`, as [item offset, data
-   * offset, data length], and where the sequence ends (§6.6). */
+   * offset, data length], and where the sequence ends (§6.5). */
   async fragments(pos: number, limit: number, little: boolean): Promise<[[number, number, number][], number]> {
     const items: [number, number, number][] = [];
     for (;;) {
