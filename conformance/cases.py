@@ -690,7 +690,7 @@ def crafted(root: Path) -> dict[str, dict]:
         f, w = _writer(path, sources=[Source(url="data/blob.bin")])
         w._skip_checks = True
         for i, u in enumerate(["data/my file.bin", "%zz", "data/é.bin", "a:b/../x", "1a:b"]):
-            w._sources[Source(url=u)] = i + 1
+            assert w.source(Source(url=u)) == i + 1  # interned, unchecked until close
             _raw_ref(w, f"u{i}", 0x7A76, Range(source=i + 1, length=1).encode())
         w.close(); f.close()
     invalid_uri.expect = [(get(f"u{i}"), [R]) for i in range(5)]
