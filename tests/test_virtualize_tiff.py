@@ -35,3 +35,19 @@ def test_virtualizes_the_synthetic_files():
 def test_rejects(name, message):
     with pytest.raises(Rejected, match=message):
         virtualize(str(FIXTURES / name), url="https://data.test/x")
+
+
+def test_jpeg_prefix_is_a_data_source():
+    # §3.6: every JPEG tile starts with its IFD's prefix P, a data source
+    # (one per distinct P, in order of first use), then the tile without SOI.
+    for name in ("jpeg_aperio_rgb.tif", "jpeg_gray.tif", "jpeg_ycbcr.tif"):
+        _, out = virtualize(str(FIXTURES / name), url="https://data.test/x.tif")
+        data = list(out.data)
+        assert data and all(d.startswith(b"\xff\xd8") for d in data), name
+        used = set()
+        for key, ranges in out.refs.items():
+            prefix, tile = ranges
+            assert len(prefix) == 3 and prefix[1:] == (0, len(data[prefix[0] - 1])), key
+            assert len(tile) == 2, key
+            used.add(prefix[0])
+        assert used == set(range(1, len(data) + 1)), name

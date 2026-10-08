@@ -52,7 +52,7 @@ A JSON object:
 
 ```json
 {
-  "sources": ["<url>"],
+  "sources": ["<url>", {"data": "/9j/2wBDAA..."}],
   "entries": {
     "0/c/0/0/0": {"ranges": [[0, 4096, 1000]]},
     "0/zarr.json": {"json": {"zarr_format": 3, "...": "..."}},
@@ -61,8 +61,10 @@ A JSON object:
 }
 ```
 
-- `sources`: the source table's URLs, in order (one, `<url>`, for a file; one
-  per chunk entry, in key order, for a store, §1.4).
+- `sources`: the source table, in order. A `url` source is its URL, a
+  string; a `data` source is `{"data": "<base64>"}`. A file's table is
+  `<url>`, then its data sources if its profile has any (§1.2); a store's is
+  one URL per chunk entry, in key order (§1.4).
 - `entries`: one member per key. The value is one of:
   - `{"ranges": [[source, offset, length], ...]}` for a reference entry,
     where a literal range is `{"data": "<base64>"}` instead of a triple;
@@ -75,7 +77,11 @@ binary64 value (any shortest round-trip formatting does this).
 
 ## How outputs are compared
 
-Two outputs are equivalent (§1.1) if they have the same `sources`, the same
+Base64 is the standard alphabet with padding (RFC 4648 §4), so equal bytes
+have equal strings.
+
+Two outputs are equivalent (§1.1) if they have the same `sources` (equal
+URLs, or data sources with equal bytes), the same
 keys, and for every key: equal range lists, equal JSON values (numbers
 compared as binary64, so `1` equals `1.0`), or equal bytes.
 

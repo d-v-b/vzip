@@ -3,11 +3,11 @@
 // Hamamatsu NDPI is a little-endian classic TIFF with 64-bit offsets (an
 // 8-byte first-IFD offset, 8-byte next-IFD offsets, and a high word per entry
 // after each IFD), whose pyramid levels are single JPEG strips with restart
-// markers. Each chunk is a JPEG stream rebuilt from the strip's header, a
-// literal frame header for the chunk's size, and a × b restart intervals.
+// markers. Each chunk is a JPEG stream rebuilt from the strip's header (held in
+// data sources, since every chunk shares it), a literal frame header for the
+// chunk's size, and a × b restart intervals.
 
-import { type ByteReader, MAX_PAYLOAD, payloadSize } from "../common.ts";
-import type { Range } from "../../protobuf.ts";
+import { type ByteReader, DataSources, MAX_PAYLOAD, type Part, payloadSize, toRange } from "../common.ts";
 import { TiffError } from "../tiff/ifd.ts";
 import type { ArchiveDesc, EntryDesc } from "../../writer.ts";
 
@@ -161,8 +161,6 @@ export function jpegHeader(header: Uint8Array): [number, number, number, number,
   return [sof[0], sof[1], 8 * horizontal, 8 * vertical, dri];
 }
 
-type Part = [number, number] | Uint8Array;
-
 export async function virtualizeNdpi(
   url: string,
   read: ByteReader,
@@ -204,6 +202,7 @@ export async function virtualizeNdpi(
   const utf8 = new TextEncoder();
   const json = (v: unknown) => utf8.encode(JSON.stringify(v, null, 2));
   const entries: EntryDesc[] = [];
+  const data = new DataSources();
   const datasets = [];
   for (const [li, level] of levels.entries()) {
     const s0 = one(level.tags, 273, "StripOffsets");
@@ -216,14 +215,10 @@ export async function virtualizeNdpi(
       chunk = [3, level.h, level.w];
       refs.push([`${li}/c/0/0/0`, [[s0, n]]]);
     } else {
-      chunk = await intervals(refs, li, read, level.tags, starts, s0, n, level.w, level.h);
+      chunk = await intervals(refs, data, li, read, level.tags, starts, s0, n, level.w, level.h);
     }
     for (const [key, parts] of refs) {
-      entries.push({
-        key,
-        ranges: parts.map((p): Range =>
-          p instanceof Uint8Array ? { data: p } : { source: 0, offset: BigInt(p[0]), length: BigInt(p[1]) }),
-      });
+      entries.push({ key, ranges: parts.map(toRange) });
     }
     entries.push({
       key: `${li}/zarr.json`,
@@ -263,7 +258,7 @@ export async function virtualizeNdpi(
     }),
   });
   return {
-    sources: [{ url }],
+    sources: data.table(url),
     entries,
     summary: { axes, levels: levels.map((l) => [3, l.h, l.w]), references: entries.length - levels.length - 1, codec: "imagecodecs_jpeg" },
   };
@@ -271,7 +266,7 @@ export async function virtualizeNdpi(
 
 /** Adds a McuStarts level's chunk references (§4); returns its chunk shape. */
 async function intervals(
-  refs: [string, Part[]][], li: number, read: ByteReader, tags: Map<number, Values>,
+  refs: [string, Part[]][], data: DataSources, li: number, read: ByteReader, tags: Map<number, Values>,
   startsLow: number[], s0: number, n: number, w: number, h: number,
 ): Promise<number[]> {
   const high = tags.get(65432) as number[] | undefined;
@@ -289,12 +284,15 @@ async function intervals(
   if (starts.some((s, i) => ends[i] <= s)) reject("an NDPI restart interval is empty");
   const a = Math.min(q, Math.max(1, Math.floor(CHUNK / (interval * mw))));
   const sof = header.slice(sofStart, sofEnd);
+  // The header around SOF0 is the same in every chunk: data sources (§4).
+  const before = data.range(header.subarray(0, sofStart));
+  const after = data.range(header.subarray(sofEnd));
 
   const chunks = (b: number): [number, number, Part[]][] => {
     const s = sof.slice();
     view(s).setUint16(5, b * mh);
     view(s).setUint16(7, a * interval * mw);
-    const head: Part[] = [[s0, sofStart], s, [s0 + sofEnd, starts[0] - sofEnd]];
+    const head: Part[] = [before, s, after];
     const out: [number, number, Part[]][] = [];
     for (let u = 0; u < Math.ceil(r / b); u++) {
       for (let v = 0; v < Math.ceil(q / a); v++) {

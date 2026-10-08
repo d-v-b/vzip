@@ -550,3 +550,57 @@ reading over HTTP. (zarr-python cannot read idr0073's `>u1` arrays as Zarr
 v2, so that image was not pixel-checked.)
 
 **Not yet done.** No independent implementation round has read §11.
+
+## Revision 14: shared JPEG headers in data sources
+
+Revision 14 changes the TIFF and NDPI outputs; it does not come from a spec
+round.
+
+**The problem.** An NDPI chunk is a JPEG stream rebuilt from five pieces,
+two of which, the strip's header before and after SOF0, were ranges of the
+file. They are the same in every chunk of a level, but they sit at the start
+of the strip, beyond the readers' 64 KiB merge gap from most intervals, so
+reading a chunk cost a second HTTP request just for them. The TIFF profile
+had the opposite trade: its JPEG prefix `P` (SOI, the Adobe marker and the
+JPEGTables) was a literal in every tile's reference, costing no request but
+about 300 bytes of reference payload per tile, stored twice (local header
+and central directory).
+
+**The rule (§1.2).** A file input's source table is the `url` source 0, then
+its **data sources** ([SPEC.md §6](../../SPEC.md#6-source-table)): the distinct byte strings that the
+profile names as shared, numbered from 1 in order of first use (references
+in the profile's listed order, ranges in order). A range of a shared string
+is the whole data source `(i, 0, len)`. The TIFF profile shares `P`, and the
+NDPI profile the header before and after SOF0; both state the order in
+which they list their references. Store inputs have no data sources. The
+headers are JPEG markers and tables, which §1.2's **Structure only** now
+says explicitly are not pixel data. §1.1 compares data sources by their
+bytes; HARNESS.md writes one as `{"data": "<base64>"}` in `sources`, and
+`compare.py` compares them.
+
+**Results.** Pixels are unchanged: `web/test/ndpi/verify.py` and
+`web/test/tiff/verify.py` pass, and every chunk of the NDPI fixture and of
+CMU-1.ndpi levels 1–3 reads back byte for byte as before. Both
+implementations agree on all 396 synthetic inputs (145 equivalent, 251
+rejected) and on the NDPI and SVS corpus (7 equivalent). With the Python
+reader through the caching proxy:
+
+| input | read | requests before → after |
+|---|---|---|
+| CMU-1.ndpi | level 0, 4 × 4 chunks | 32 → 16 |
+| CMU-1.ndpi | level 1, all 130 chunks | 247 → 130 |
+| CMU-1.ndpi | level 1, 4 × 4 chunks | 32 → 16 |
+| CMU-1.ndpi | level 2, all 12 chunks | 20 → 12 |
+| `ndpi_levels.ndpi` | level 0, all 4 chunks | 6 → 4 |
+
+CMU-1.ndpi gets four data sources (its levels share the tables before SOF0;
+the part after SOF0 differs by restart interval), and its archive is 3 KB
+smaller (5.52 MB). CMU-1.svs's archive shrinks from 18.4 MB to 3.4 MB (three data
+sources for 24813 tiles), and reading a 4 × 4 tile region fetches 66 KB of
+central directory instead of 263 KB. DICOM's 18-byte prefix stays a literal:
+a data source would save 16 bytes of payload per frame, too little to matter.
+
+**Not changed.** The readers already resolved `data` sources without I/O
+(vzip's Python and browser readers, and the Neuroglancer fork's
+`readSource`), so no reader changed. The round implementations in
+`impls/virtualize/` predate the rule and now differ on JPEG TIFFs and NDPI.

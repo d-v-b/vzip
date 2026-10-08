@@ -2,8 +2,7 @@
 // chunks are vzip references to the TIFF's tiles: the TIFF profile
 // (profiles/tiff.md, §3).
 
-import type { Range, Source } from "../../protobuf.ts";
-import { type ByteReader, MAX_PAYLOAD, payloadSize } from "../common.ts";
+import { type ByteReader, DataSources, MAX_PAYLOAD, type Part, payloadSize, toRange } from "../common.ts";
 import { type Ifd, num, nums, readTiff, Tag, TiffError } from "./ifd.ts";
 import type { ArchiveDesc, EntryDesc } from "../../writer.ts";
 
@@ -12,7 +11,7 @@ const JPEG = 7;
 // The Adobe APP14 marker without its last byte, the colour transform (§3.6).
 const ADOBE = [0xff, 0xee, 0x00, 0x0e, 0x41, 0x64, 0x6f, 0x62, 0x65, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00];
 
-/** The literal start of each JPEG tile's stream (§3.6): SOI, the Adobe colour
+/** The start of each JPEG tile's stream (§3.6), a data source: SOI, the Adobe colour
  * marker for 3 samples, and the IFD's tables. */
 function jpegPrefix(ifd: Ifd, spp: number, photometric: number | null): Uint8Array {
   const out = [0xff, 0xd8];
@@ -487,7 +486,7 @@ export async function virtualizeTiff(
   }
 
   // §3.6: output.
-  const sources: Source[] = [{ url }];
+  const data = new DataSources();
   const entries: EntryDesc[] = [];
   const meta: EntryDesc[] = [];
   const utf8 = new TextEncoder();
@@ -543,16 +542,15 @@ export async function virtualizeTiff(
               if (sizeC > 1) coords.push(f.spp > 1 ? (contig ? 0 : s) : c);
               if (sizeZ > 1) coords.push(z);
               coords.push(Math.floor(j / across), j % across);
-              let ranges: ([number, number] | Uint8Array)[] = [[offsets[k], counts[k]]];
+              let ranges: Part[] = [[offsets[k], counts[k]]];
               if (prefix !== undefined) {
                 if (counts[k] <= 2) reject(`JPEG tile ${k} of the IFD at ${ifd.offset} is too short`);
-                ranges = [prefix, [offsets[k] + 2, counts[k] - 2]];
+                ranges = [data.range(prefix), [offsets[k] + 2, counts[k] - 2]];
               }
               if (payloadSize(ranges) > MAX_PAYLOAD) reject(`tile ${k}'s reference payload exceeds ${MAX_PAYLOAD} bytes`);
               entries.push({
                 key: `${li}/c/${coords.join("/")}`,
-                ranges: ranges.map((r): Range =>
-                  r instanceof Uint8Array ? { data: r } : { source: 0, offset: BigInt(r[0]), length: BigInt(r[1]) }),
+                ranges: ranges.map(toRange),
               });
               references++;
             }
@@ -599,7 +597,7 @@ export async function virtualizeTiff(
   });
   if (raw !== undefined) meta.push({ key: "OME/METADATA.ome.xml", bytes: raw.slice(), compress: true });
   return {
-    sources,
+    sources: data.table(url),
     entries: [...entries, ...meta],
     summary: { name, axes: axes.map((a) => a.name), levels: shapes, references, codec: codecName },
   };

@@ -156,7 +156,7 @@ def aperio_fields(description: bytes) -> dict | None:
 # ---- profile
 
 def jpeg_prefix(ifd: Ifd, spp: int, photometric) -> bytes:
-    """The literal start of each JPEG tile's stream (§3.6): SOI, the Adobe
+    """The start of each JPEG tile's stream (§3.6), a data source: SOI, the Adobe
     colour marker for 3 samples, and the IFD's tables."""
     out = b"\xff\xd8"
     if spp == 3:
@@ -407,7 +407,7 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
                             if prefix is None:
                                 ranges = [(offsets[k], counts[k])]
                             elif counts[k] > 2:
-                                ranges = [prefix, (offsets[k] + 2, counts[k] - 2)]
+                                ranges = [out.shared(prefix), (offsets[k] + 2, counts[k] - 2)]
                             else:
                                 raise Rejected(f"JPEG tile {k} of the IFD at {ifd.offset} is too short")
                             if payload_size(ranges) > MAX_PAYLOAD:
