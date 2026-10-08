@@ -90,13 +90,13 @@ def validate(entries, sources, page_size):
             raise InvalidInput("entry %r must have exactly one of bytes and ranges" % e.key)
         if e.is_ref and e.compress:
             raise InvalidInput("reference entry %r cannot be compressed" % e.key)
+        if e.compress and e.data is not None and len(e.data) >= 0xFFFFFFFF:
+            raise InvalidInput("entry %r of 4 GiB or more must be STORED" % e.key)
         if e.pinned:
             if page_size is None:
                 raise InvalidInput("pinned entry %r requires a page index" % e.key)
             if e.is_ref:
                 raise InvalidInput("pinned entry %r is not a bytes entry" % e.key)
-        if not e.is_ref and len(e.data) >= 0xFFFFFFFF:
-            raise InvalidInput("entry %r is 4 GiB or larger" % e.key)
     if page_size is not None and (isinstance(page_size, bool) or not isinstance(page_size, int)
                                   or page_size < 1):
         raise InvalidInput("page_size must be a positive integer")
@@ -164,26 +164,41 @@ def validate(entries, sources, page_size):
     return by_key
 
 
+def _is_large(csize, usize):
+    """Whether an entry needs ZIP64 sizes (spec §3.1 rule 7)."""
+    return csize >= 0xFFFFFFFF or usize >= 0xFFFFFFFF
+
+
 def _local_header(name, method, crc, csize, usize):
+    """Local header; a large entry's sizes go in a 20-byte ZIP64 extra (§3.1 rules 4, 7)."""
+    if _is_large(csize, usize):
+        extra = struct.pack("<HHQQ", 0x0001, 16, usize, csize)
+        return struct.pack("<IHHHHHIIIHH", LH_SIG, 45, FLAG_UTF8, method, DOS_TIME, DOS_DATE,
+                           crc, 0xFFFFFFFF, 0xFFFFFFFF, len(name), len(extra)) + name + extra
     return struct.pack("<IHHHHHIIIHH", LH_SIG, 20, FLAG_UTF8, method, DOS_TIME, DOS_DATE,
                        crc, csize, usize, len(name), 0) + name
 
 
 def _cd_record(name, method, crc, csize, usize, offset, ref=None):
-    extra = b""
-    ver = 20
-    off32 = offset
+    # §3.2: the ZIP64 block holds a large entry's sizes, then an offset that does not
+    # fit, in that order
+    z64 = b""
+    csize32, usize32, off32 = csize, usize, offset
+    if _is_large(csize, usize):
+        z64 += struct.pack("<QQ", usize, csize)
+        csize32 = usize32 = 0xFFFFFFFF
     if offset >= 0xFFFFFFFF:
-        extra += struct.pack("<HHQ", 0x0001, 8, offset)
+        z64 += struct.pack("<Q", offset)
         off32 = 0xFFFFFFFF
-        ver = 45
+    extra = struct.pack("<HH", 0x0001, len(z64)) + z64 if z64 else b""
+    ver = 45 if z64 else 20
     if ref is not None:
         rid, payload = ref
         extra += struct.pack("<HH", rid, len(payload)) + payload
     if len(extra) > 0xFFFF:
         raise InvalidInput("extra field too large")
     return struct.pack("<IHHHHHHIIIHHHHHII", CD_SIG, 20, ver, FLAG_UTF8, method, DOS_TIME, DOS_DATE,
-                       crc, csize, usize, len(name), len(extra), 0, 0, 0, 0, off32) + name + extra
+                       crc, csize32, usize32, len(name), len(extra), 0, 0, 0, 0, off32) + name + extra
 
 
 def build(entries, sources, page_size=None, mirror=True):
@@ -194,13 +209,15 @@ def build(entries, sources, page_size=None, mirror=True):
     pinned_info = []  # (name, body_offset, size, csize, method)
 
     def add(name, method, body, usize, crc, ref=None):
-        if len(body) >= 0xFFFFFFFF or usize >= 0xFFFFFFFF:
-            raise InvalidInput("entry %r is 4 GiB or larger" % name)
+        # §3.1 rule 7: a large entry is STORED, so a DEFLATEd format entry is never large
+        if method == 8 and _is_large(len(body), usize):
+            raise InvalidInput("%r would be a large DEFLATE entry" % name)
         off = len(out)
         out.extend(_local_header(name, method, crc, len(body), usize))
+        boff = len(out)
         out.extend(body)
         cd.append((name, method, crc, len(body), usize, off, ref))
-        return off + 30 + len(name)
+        return boff
 
     def add_entry(e):
         name = e.key.encode("utf-8")
@@ -265,12 +282,12 @@ def build(entries, sources, page_size=None, mirror=True):
     cd_size = len(cd_bytes)
     n = len(cd)
     comment = b"vzip/0" + struct.pack("<QQ", sources_off, sources_size) + comment_extra
-    if n >= 0xFFFF or cd_size >= 0xFFFFFFFF or cd_off >= 0xFFFFFFFF:
-        z64off = len(out)
-        out.extend(struct.pack("<IQHHIIQQQQ", Z64_EOCD_SIG, 44, 45, 45, 0, 0, n, n, cd_size, cd_off))
-        out.extend(struct.pack("<IIQI", Z64_LOC_SIG, 0, z64off, 1))
-    out.extend(struct.pack("<IHHHHIIH", EOCD_SIG, 0, 0,
-                           min(n, 0xFFFF), min(n, 0xFFFF),
-                           min(cd_size, 0xFFFFFFFF), min(cd_off, 0xFFFFFFFF), len(comment)))
+    # §3.2: the zip64 end records are written in every archive, and the end record's
+    # counts, size and offset are always all ones
+    z64off = len(out)
+    out.extend(struct.pack("<IQHHIIQQQQ", Z64_EOCD_SIG, 44, 45, 45, 0, 0, n, n, cd_size, cd_off))
+    out.extend(struct.pack("<IIQI", Z64_LOC_SIG, 0, z64off, 1))
+    out.extend(struct.pack("<IHHHHIIH", EOCD_SIG, 0, 0, 0xFFFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+                           len(comment)))
     out.extend(comment)
     return bytes(out)

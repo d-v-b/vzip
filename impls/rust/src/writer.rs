@@ -114,10 +114,10 @@ fn prepare(spec: &ArchiveSpec) -> Result<Vec<Prepared>, String> {
     for e in &spec.entries {
         let p = match &e.data {
             EntryData::Bytes { data, compress } => {
-                let body = if *compress { deflate(data) } else { data.clone() };
-                if data.len() as u64 >= 0xFFFF_FFFF || body.len() as u64 >= 0xFFFF_FFFF {
-                    return Err(format!("entry {:?} is 4 GiB or larger", e.key));
+                if *compress && data.len() as u64 >= 0xFFFF_FFFF {
+                    return Err(format!("entry {:?} of 4 GiB or more must be STORED", e.key));
                 }
+                let body = if *compress { deflate(data) } else { data.clone() };
                 Prepared {
                     name: e.key.as_bytes().to_vec(),
                     method: if *compress { 8 } else { 0 },
@@ -202,36 +202,70 @@ impl<W: Write> Counting<W> {
 const DOS_TIME: u16 = 0;
 const DOS_DATE: u16 = (1 << 5) | 1; // 1980-01-01
 
+/// Whether an entry needs ZIP64 sizes (§3.1 rule 7).
+fn is_large(p: &Prepared) -> bool {
+    p.usize >= 0xFFFF_FFFF || p.body.len() as u64 >= 0xFFFF_FFFF
+}
+
+/// The 32-bit size fields of both headers: all ones for a large entry.
+fn size32(p: &Prepared) -> (u32, u32) {
+    if is_large(p) { (0xFFFF_FFFF, 0xFFFF_FFFF) } else { (p.body.len() as u32, p.usize as u32) }
+}
+
+/// Where an entry's body starts, given its local header offset (§3.1 rule 4).
+fn data_offset(p: &Prepared, lho: u64) -> u64 {
+    lho + 30 + p.name.len() as u64 + if is_large(p) { 20 } else { 0 }
+}
+
 fn local_header(p: &Prepared) -> Vec<u8> {
-    let mut h = Vec::with_capacity(30 + p.name.len());
+    let large = is_large(p);
+    let (csize32, usize32) = size32(p);
+    let mut h = Vec::with_capacity(30 + p.name.len() + 20);
     h.extend_from_slice(&0x04034b50u32.to_le_bytes());
-    h.extend_from_slice(&20u16.to_le_bytes());
+    h.extend_from_slice(&(if large { 45u16 } else { 20 }).to_le_bytes());
     h.extend_from_slice(&0x0800u16.to_le_bytes());
     h.extend_from_slice(&p.method.to_le_bytes());
     h.extend_from_slice(&DOS_TIME.to_le_bytes());
     h.extend_from_slice(&DOS_DATE.to_le_bytes());
     h.extend_from_slice(&p.crc.to_le_bytes());
-    h.extend_from_slice(&(p.body.len() as u32).to_le_bytes());
-    h.extend_from_slice(&(p.usize as u32).to_le_bytes());
+    h.extend_from_slice(&csize32.to_le_bytes());
+    h.extend_from_slice(&usize32.to_le_bytes());
     h.extend_from_slice(&(p.name.len() as u16).to_le_bytes());
-    h.extend_from_slice(&0u16.to_le_bytes());
+    h.extend_from_slice(&(if large { 20u16 } else { 0 }).to_le_bytes());
     h.extend_from_slice(&p.name);
+    if large {
+        h.extend_from_slice(&1u16.to_le_bytes());
+        h.extend_from_slice(&16u16.to_le_bytes());
+        h.extend_from_slice(&p.usize.to_le_bytes());
+        h.extend_from_slice(&(p.body.len() as u64).to_le_bytes());
+    }
     h
 }
 
 fn cd_record(p: &Prepared, lho: u64) -> Vec<u8> {
+    // §3.2: the ZIP64 block holds a large entry's sizes, then an offset that
+    // does not fit, in that order.
+    let mut block = Vec::new();
+    if is_large(p) {
+        block.extend_from_slice(&p.usize.to_le_bytes());
+        block.extend_from_slice(&(p.body.len() as u64).to_le_bytes());
+    }
+    if lho >= 0xFFFF_FFFF {
+        block.extend_from_slice(&lho.to_le_bytes());
+    }
+    let z64 = !block.is_empty();
     let mut extra = Vec::new();
     if let Some((id, payload)) = &p.reference {
         extra.extend_from_slice(&id.to_le_bytes());
         extra.extend_from_slice(&(payload.len() as u16).to_le_bytes());
         extra.extend_from_slice(payload);
     }
-    let z64 = lho >= 0xFFFF_FFFF;
     if z64 {
         extra.extend_from_slice(&1u16.to_le_bytes());
-        extra.extend_from_slice(&8u16.to_le_bytes());
-        extra.extend_from_slice(&lho.to_le_bytes());
+        extra.extend_from_slice(&(block.len() as u16).to_le_bytes());
+        extra.extend_from_slice(&block);
     }
+    let (csize32, usize32) = size32(p);
     let mut h = Vec::with_capacity(46 + p.name.len() + extra.len());
     h.extend_from_slice(&0x02014b50u32.to_le_bytes());
     h.extend_from_slice(&20u16.to_le_bytes()); // version made by
@@ -241,8 +275,8 @@ fn cd_record(p: &Prepared, lho: u64) -> Vec<u8> {
     h.extend_from_slice(&DOS_TIME.to_le_bytes());
     h.extend_from_slice(&DOS_DATE.to_le_bytes());
     h.extend_from_slice(&p.crc.to_le_bytes());
-    h.extend_from_slice(&(p.body.len() as u32).to_le_bytes());
-    h.extend_from_slice(&(p.usize as u32).to_le_bytes());
+    h.extend_from_slice(&csize32.to_le_bytes());
+    h.extend_from_slice(&usize32.to_le_bytes());
     h.extend_from_slice(&(p.name.len() as u16).to_le_bytes());
     h.extend_from_slice(&(extra.len() as u16).to_le_bytes());
     h.extend_from_slice(&0u16.to_le_bytes()); // comment
@@ -272,9 +306,6 @@ fn format_entry(name: &[u8], content: &[u8]) -> Prepared {
 pub fn write_archive<W: Write>(spec: &ArchiveSpec, w: W) -> Result<(), String> {
     let prepared = prepare(spec)?;
     let sources = format_entry(SOURCES_KEY, &proto::encode_source_table(&spec.sources));
-    if sources.body.len() as u64 >= 0xFFFF_FFFF || sources.usize >= 0xFFFF_FFFF {
-        return Err("source table is too large".into());
-    }
     let mut w = Counting { w, pos: 0 };
     let io = |e: std::io::Error| format!("write failed: {e}");
     // (prepared index, local header offset)
@@ -292,7 +323,11 @@ pub fn write_archive<W: Write>(spec: &ArchiveSpec, w: W) -> Result<(), String> {
         }
     }
     let sources_lho = write_entry(&mut w, &sources).map_err(io)?;
-    let sources_body = sources_lho + 30 + sources.name.len() as u64;
+    // §3.1 rule 7: the format entries use method 8, so they are never large.
+    if is_large(&sources) {
+        return Err("source table is too large".into());
+    }
+    let sources_body = data_offset(&sources, sources_lho);
     let mut index_info = None;
     let mut cd_body: Vec<u8> = Vec::new();
     if paged {
@@ -325,16 +360,13 @@ pub fn write_archive<W: Write>(spec: &ArchiveSpec, w: W) -> Result<(), String> {
             .filter(|(_, p)| p.pinned)
             .map(|(i, p)| Pinned {
                 key: String::from_utf8(p.name.clone()).unwrap(),
-                data_offset: offsets[i] + 30 + p.name.len() as u64,
+                data_offset: data_offset(p, offsets[i]),
                 size: p.usize,
                 csize: p.body.len() as u64,
                 method: p.method as u32,
             })
             .collect();
         let idx = format_entry(INDEX_KEY, &proto::encode_cd_index(&CdIndex { pages, pinned }));
-        if idx.body.len() as u64 >= 0xFFFF_FFFF {
-            return Err("page index is too large".into());
-        }
         let lho = write_entry(&mut w, &idx).map_err(io)?;
         index_info = Some((idx, lho));
     } else {
@@ -350,7 +382,9 @@ pub fn write_archive<W: Write>(spec: &ArchiveSpec, w: W) -> Result<(), String> {
     let cd_size = cd_body.len() as u64;
     w.put(&cd_body).map_err(io)?;
     let n = prepared.len() as u64 + 1 + index_info.is_some() as u64;
-    if n >= 0xFFFF || cd_size >= 0xFFFF_FFFF || cd_offset >= 0xFFFF_FFFF {
+    // §3.2: the zip64 end records are written in every archive, and the end record's
+    // counts, size and offset are always all ones.
+    {
         let z_off = w.pos;
         let mut z = Vec::new();
         z.extend_from_slice(&0x06064b50u32.to_le_bytes());
@@ -373,17 +407,20 @@ pub fn write_archive<W: Write>(spec: &ArchiveSpec, w: W) -> Result<(), String> {
     comment.extend_from_slice(&sources_body.to_le_bytes());
     comment.extend_from_slice(&(sources.body.len() as u64).to_le_bytes());
     if let Some((idx, lho)) = &index_info {
-        comment.extend_from_slice(&(lho + 30 + idx.name.len() as u64).to_le_bytes());
+        if is_large(idx) {
+            return Err("page index is too large".into());
+        }
+        comment.extend_from_slice(&data_offset(idx, *lho).to_le_bytes());
         comment.extend_from_slice(&(idx.body.len() as u64).to_le_bytes());
     }
     let mut e = Vec::new();
     e.extend_from_slice(&0x06054b50u32.to_le_bytes());
     e.extend_from_slice(&0u16.to_le_bytes());
     e.extend_from_slice(&0u16.to_le_bytes());
-    e.extend_from_slice(&(n.min(0xFFFF) as u16).to_le_bytes());
-    e.extend_from_slice(&(n.min(0xFFFF) as u16).to_le_bytes());
-    e.extend_from_slice(&(cd_size.min(0xFFFF_FFFF) as u32).to_le_bytes());
-    e.extend_from_slice(&(cd_offset.min(0xFFFF_FFFF) as u32).to_le_bytes());
+    e.extend_from_slice(&0xFFFFu16.to_le_bytes());
+    e.extend_from_slice(&0xFFFFu16.to_le_bytes());
+    e.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+    e.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
     e.extend_from_slice(&(comment.len() as u16).to_le_bytes());
     e.extend_from_slice(&comment);
     w.put(&e).map_err(io)?;
@@ -534,4 +571,65 @@ pub fn parse_description(bytes: &[u8]) -> Result<ArchiveSpec, String> {
         entries.push(EntrySpec { key, data, pinned });
     }
     Ok(ArchiveSpec { page_size, mirror, sources, entries })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn prep(usize: u64, body: &[u8], method: u16) -> Prepared {
+        Prepared { name: b"ab".to_vec(), method, body: body.to_vec(), crc: 7, usize, reference: None, pinned: false }
+    }
+    fn u16at(b: &[u8], o: usize) -> u16 {
+        u16::from_le_bytes([b[o], b[o + 1]])
+    }
+    fn u32at(b: &[u8], o: usize) -> u32 {
+        u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
+    }
+    fn u64s(b: &[u8]) -> Vec<u64> {
+        b.chunks(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect()
+    }
+
+    /// §3.1 rules 4 and 7, §3.2: header layout for small and large entries and
+    /// local header offsets below and above 4 GiB. A large entry is modelled as a
+    /// DEFLATE entry whose uncompressed size is 4 GiB or more.
+    #[test]
+    fn header_layout() {
+        let big = 5u64 << 30;
+        let ff = 0xFFFF_FFFFu32;
+        // (entry, lho, local (version, csize32, usize32, extra u64s),
+        //  cd (version, csize32, usize32, lho32, zip64 block u64s), data offset)
+        let cases: Vec<(Prepared, u64, (u16, u32, u32, Vec<u64>), (u16, u32, u32, u32, Vec<u64>), u64)> = vec![
+            (prep(3, b"abc", 0), 10, (20, 3, 3, vec![]), (20, 3, 3, 10, vec![]), 42),
+            (prep(3, b"abc", 0), big, (20, 3, 3, vec![]), (45, 3, 3, ff, vec![big]), big + 32),
+            (prep(big, b"xyz", 8), 10, (45, ff, ff, vec![big, 3]), (45, ff, ff, 10, vec![big, 3]), 62),
+            (prep(big, b"xyz", 8), big, (45, ff, ff, vec![big, 3]), (45, ff, ff, ff, vec![big, 3, big]), big + 52),
+            (prep(0xFFFF_FFFF, b"xyz", 8), 0, (45, ff, ff, vec![0xFFFF_FFFF, 3]), (45, ff, ff, 0, vec![0xFFFF_FFFF, 3]), 52),
+        ];
+        for (p, lho, (lv, lc, lu, lx), (cv, cc, cu, co, cx), doff) in cases {
+            let l = local_header(&p);
+            assert_eq!((u16at(&l, 4), u32at(&l, 18), u32at(&l, 22)), (lv, lc, lu));
+            let xlen = u16at(&l, 28) as usize;
+            assert_eq!(l.len(), 30 + 2 + xlen);
+            if lx.is_empty() {
+                assert_eq!(xlen, 0);
+            } else {
+                assert_eq!((xlen, u16at(&l, 32), u16at(&l, 34)), (20, 1, 16));
+                assert_eq!(u64s(&l[36..]), lx);
+            }
+            assert_eq!(data_offset(&p, lho), lho + l.len() as u64);
+            assert_eq!(data_offset(&p, lho), doff);
+
+            let c = cd_record(&p, lho);
+            assert_eq!((u16at(&c, 6), u32at(&c, 20), u32at(&c, 24), u32at(&c, 42)), (cv, cc, cu, co));
+            let x = &c[48..];
+            assert_eq!(x.len(), u16at(&c, 30) as usize);
+            if cx.is_empty() {
+                assert!(x.is_empty());
+            } else {
+                assert_eq!((u16at(x, 0), u16at(x, 2) as usize), (1, cx.len() * 8));
+                assert_eq!(u64s(&x[4..]), cx);
+            }
+        }
+    }
 }

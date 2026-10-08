@@ -1,6 +1,6 @@
 # vzip: a ZIP container for byte-range references
 
-Format version: 0 (**provisional**) · Specification revision: 10.1
+Format version: 0 (**provisional**) · Specification revision: 10
 
 ## 1. Introduction
 
@@ -93,9 +93,6 @@ the ZIP64 end records are now present in every archive (§3.2). An archive
 written to revision 8 without them is no longer valid. It also allowed
 entries of 4 GiB or more (§3.1 rule 7), a compatible change. Revision 10
 clarifies §3.1 rule 2, adds §1.5 and §9.3, and changes no reader behaviour.
-Revision 10.1 closes a gap the large entries left: a pinned large entry
-must be STORED (§7.2), and §3.2, §8.6 and §9.1 now state in full what §3.1
-rule 7 implies. It changes no result on a valid archive.
 
 **Feedback** — ambiguities, implementation reports, test cases, objections —
 is welcome as issues or pull requests on the specification's repository. A
@@ -269,9 +266,8 @@ directory records use ZIP64 only where a value is too large for its field:
   uncompressed size and the compressed size if the entry is large (§3.1
   rule 7), then the local header offset if it is 0xFFFFFFFF or more; each
   value it holds has its 32-bit field set to 0xFFFFFFFF. A writer MUST NOT
-  write the block on a record that needs neither. The block holds both
-  sizes or neither (§3.1 rule 7), and MUST NOT hold an offset that fits its
-  32-bit field.
+  write the block on a record that needs neither, and MUST NOT include a
+  value that fits its 32-bit field.
 
 A reader decodes a central directory record's sizes and offset like this:
 
@@ -831,10 +827,6 @@ archive error, if any of the following hold:
 - a page's `first_key` or a pinned `key` is empty;
 - a pinned key is listed twice or is a format entry;
 - a pinned `method` is not 0 or 8;
-- a pinned entry is large (its `size` or `csize` is 0xFFFFFFFF or more,
-  §3.1 rule 7) and its `method` is not 0. No central directory record is
-  consulted for a pinned key, so this is where a large DEFLATE entry is
-  caught;
 - a pinned body (`data_offset`, `csize`) lies outside the file.
 
 ## 8. Reading
@@ -1019,7 +1011,7 @@ For archives that break these writer requirements, reader results are
 unspecified:
 
 - §3.1 rules 1, 2, 4, 5 (except bit 0), 6, 7 (except a large entry with
-  method 8, and a large reference entry, §4.3) and 8: readers use body offsets computed from the central
+  method 8) and 8: readers use body offsets computed from the central
   directory, need not read local headers, and need not verify CRC-32 values. Duplicate names are included here. A reader that
   does verify a CRC-32 and finds a mismatch reports a body error.
 - §3.2: whether a record's ZIP64 extra block was written only where needed;
@@ -1058,9 +1050,6 @@ MUST reject its input, producing no archive, if:
 - a source range's `offset + length`, or a reference's total size, exceeds
   2^64 − 1 (§5.2, §5.3);
 - a key's UTF-8 encoding is longer than 65535 bytes;
-- a bytes entry of 0xFFFFFFFF bytes or more, compressed or uncompressed,
-  would use method 8, or the source table or page index would reach
-  0xFFFFFFFF bytes (§3.1 rule 7);
 - a pinned entry is not a bytes entry, is a format entry, or is listed
   twice.
 

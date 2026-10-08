@@ -690,7 +690,7 @@ def crafted(root: Path) -> dict[str, dict]:
         f, w = _writer(path, sources=[Source(url="data/blob.bin")])
         w._skip_checks = True
         for i, u in enumerate(["data/my file.bin", "%zz", "data/é.bin", "a:b/../x", "1a:b"]):
-            w._sources[Source(url=u)] = i + 1
+            assert w.source(Source(url=u)) == i + 1  # interned, unchecked until close
             _raw_ref(w, f"u{i}", 0x7A76, Range(source=i + 1, length=1).encode())
         w.close(); f.close()
     invalid_uri.expect = [(get(f"u{i}"), [R]) for i in range(5)]
@@ -709,19 +709,21 @@ def crafted(root: Path) -> dict[str, dict]:
     case("page_that_cannot_be_parsed")(bad_page)
 
     # -- revision 4 ----------------------------------------------------------
-    def false_locator(path):
-        # unpaged, trailer records first, so the last record is "zz..." whose name ends
-        # with a zip64 locator signature exactly 20 bytes before the EOCD
+    # r4's false_zip64_locator_signature case is retired: since revision 9 the locator is
+    # always present, so the bytes before the end record are never file-name bytes. This
+    # case keeps the part that still applies: unpaged, trailer records first, so the last
+    # record's name, full of end-record signatures, sits right before the zip64 record.
+    def signatures_in_name(path):
         f, w = _writer(path)
         w._trailer_first = True
-        name = "zz" + "PK\x06\x07" + "\x01" * 16
+        name = "zz" + "PK\x06\x07" + "\x01" * 16 + "PK\x06\x06" + "PK\x05\x06"
         w.add_bytes(name, b"still fine")
         w.add_bytes("fine", b"ok")
         w.close(); f.close()
-        b = path.read_bytes()
-        assert b[len(b) - 44 - 20 : len(b) - 44 - 16] == b"PK\x06\x07"
-    false_locator.expect = fine + [(get("zz" + "PK\x06\x07" + "\x01" * 16), [ok_value(b"still fine")])]
-    case("false_zip64_locator_signature")(false_locator)
+    signatures_in_name.expect = fine + [
+        (get("zz" + "PK\x06\x07" + "\x01" * 16 + "PK\x06\x06" + "PK\x05\x06"),
+         [ok_value(b"still fine")])]
+    case("end_record_signatures_in_name")(signatures_in_name)
 
     def trailing_bytes(path):
         f, w = _writer(path)
@@ -865,9 +867,11 @@ def crafted(root: Path) -> dict[str, dict]:
         b[i + 46 + nlen : i + 46 + nlen] = block
         struct.pack_into("<H", b, i + 30, len(block))
         struct.pack_into("<I", b, i + 42, 0xFFFFFFFF)
-        # the central directory grew: fix its size in the end record (offset is unchanged)
-        e = len(b) - 22 - 22
-        struct.pack_into("<I", b, e + 12, struct.unpack_from("<I", b, e + 12)[0] + len(block))
+        # the central directory grew: fix its size in the zip64 record (its offset is
+        # unchanged), and the locator, because the zip64 record moved
+        z = len(b) - 22 - 22 - 20 - 56
+        struct.pack_into("<Q", b, z + 40, struct.unpack_from("<Q", b, z + 40)[0] + len(block))
+        struct.pack_into("<Q", b, z + 56 + 8, z)
         path.write_bytes(bytes(b))
     long_zip64_block.expect = [(get("z"), [ok_value(b"hello")])]
     case("zip64_block_longer_than_8_bytes")(long_zip64_block)
@@ -920,15 +924,169 @@ def crafted(root: Path) -> dict[str, dict]:
     case("pinned_duplicate", open="fail")(
         lambda p: page_outside(p, lambda idx: [idx.pinned.add(key="k00", data_offset=0, size=1,
                                                               csize=1, method=0) for _ in "ab"]))
+    # revision 10.1: a pinned large entry must be STORED (§7.2); no record is consulted
+    case("pinned_large_deflate", open="fail")(
+        lambda p: page_outside(p, lambda idx: idx.pinned.add(key="k00", data_offset=0,
+                                                             size=0xFFFFFFFF, csize=1, method=8)))
 
-    def sentinel_without_locator(path):
-        f, w = _writer(path)
-        w.add_bytes("a", b"x")
+    # -- revision 9: the zip64 end records are always present (§3.2) -----------
+    def end_records(path, mutate, paged=False):
+        """Write a small archive, then let `mutate(b, z, loc, eocd)` change its bytes `b`,
+        given the offsets of the zip64 record, its locator and the end record. `mutate`
+        edits `b` in place, or returns the new bytes."""
+        f, w = _writer(path, page_size=64 if paged else None)
+        w.add_bytes("fine", b"ok")
+        w.add_ref("x", "data/blob.bin", 3, 2)
         w.close(); f.close()
         b = bytearray(path.read_bytes())
-        struct.pack_into("<H", b, len(b) - 44 + 10, 0xFFFF)  # total entries = 0xFFFF
-        path.write_bytes(bytes(b))
-    case("zip64_sentinel_without_locator", open="fail")(sentinel_without_locator)
+        eocd = len(b) - (60 if paged else 44)
+        assert b[eocd - 76 : eocd - 72] == b"PK\x06\x06" and b[eocd - 20 : eocd - 16] == b"PK\x06\x07"
+        path.write_bytes(bytes(mutate(b, eocd - 76, eocd - 20, eocd) or b))
+
+    def strip_zip64(real_values):
+        def mutate(b, z, loc, eocd):
+            n, _, cd_size, cd_off = struct.unpack_from("<QQQQ", b, z + 24)
+            if real_values:  # exactly what a revision 8 writer produced for this archive
+                struct.pack_into("<HHII", b, eocd + 8, n, n, cd_size, cd_off)
+            return b[:z] + b[eocd:]
+        return mutate
+
+    case("zip64_end_records_missing", open="fail")(
+        lambda p: end_records(p, strip_zip64(False)))
+    case("revision_8_archive_without_zip64_records", open="fail")(
+        lambda p: end_records(p, strip_zip64(True)))
+    case("revision_8_archive_without_zip64_records_paged", open="fail")(
+        lambda p: end_records(p, strip_zip64(True), paged=True))
+    case("zip64_locator_not_adjacent_to_end_record", open="fail")(
+        lambda p: end_records(p, lambda b, z, loc, eocd: b[:eocd] + b"\0\0\0\0" + b[eocd:]))
+    case("zip64_record_bad_signature", open="fail")(
+        lambda p: end_records(p, lambda b, z, loc, eocd: struct.pack_into("<I", b, z, 0x06064B51)))
+    case("zip64_record_size_not_44", open="fail")(
+        lambda p: end_records(p, lambda b, z, loc, eocd: struct.pack_into("<Q", b, z + 4, 45)))
+    case("zip64_record_outside_file", open="fail")(
+        lambda p: end_records(p, lambda b, z, loc, eocd: struct.pack_into("<Q", b, loc + 8, len(b) - 55)))
+    case("central_directory_outside_file", open="fail")(
+        lambda p: end_records(p, lambda b, z, loc, eocd: struct.pack_into("<Q", b, z + 40, len(b))))
+
+    # the end record's own counts, size and offset are ignored, whatever they hold
+    end_ok = fine + [(get("x"), [ok_value(BLOB[3:5])]),
+                     ({"op": "list", "prefix": ""}, [{"ok": True, "keys": ["fine", "x"]}])]
+
+    def eocd_fields(*values, paged=False):
+        def build(path):
+            end_records(path, lambda b, z, loc, eocd: struct.pack_into("<HHII", b, eocd + 8, *values),
+                        paged=paged)
+        build.expect = end_ok
+        return build
+
+    case("end_record_fields_zero")(eocd_fields(0, 0, 0, 0))
+    case("end_record_fields_garbage")(eocd_fields(7, 9, 0xFFFFFFF0, 0x12345678))
+    case("end_record_fields_garbage_paged")(eocd_fields(7, 9, 0xFFFFFFF0, 0x12345678, paged=True))
+
+    def eocd_real_values(path):
+        # actual values in the end record (what a generic ZIP writer forced into zip64 mode
+        # might produce): accepted, because readers never look at them
+        def mutate(b, z, loc, eocd):
+            n, _, cd_size, cd_off = struct.unpack_from("<QQQQ", b, z + 24)
+            struct.pack_into("<HHII", b, eocd + 8, n, n, cd_size, cd_off)
+        end_records(path, mutate)
+    eocd_real_values.expect = end_ok
+    case("end_record_fields_actual_values")(eocd_real_values)
+
+    def zip64_counts_ignored(path):
+        end_records(path, lambda b, z, loc, eocd: struct.pack_into("<QQ", b, z + 24, 0, 10**9))
+    zip64_counts_ignored.expect = end_ok
+    case("zip64_record_counts_ignored")(zip64_counts_ignored)
+
+    # -- revision 9: large entries (§3.1 rules 4 and 7, §3.2) --------------------
+    # Bodies of 4 GiB or more are sparse files: zeros, then a short tail.
+    def large(path):
+        f, w = _writer(path)
+        _sparse_entry(w, "edge", 0xFFFFFFFF, b"EDGE")  # the smallest large entry
+        _sparse_entry(w, "big", 0x100000000 + 3, b"tail!")
+        w.add_bytes("after", b"past 8 GiB")  # its local header offset needs ZIP64 too
+        w.add_ref("x", "data/blob.bin", 3, 2)
+        w.close(); f.close()
+    large.expect = [
+        (classify("big"), [{"ok": True, "kind": "bytes"}]),
+        (get("big", {"suffix": 5}), [ok_value(b"tail!")]),
+        (get("big", {"start": 0x100000000 - 4, "end": 0x100000000}), [ok_value(b"\0\0ta")]),
+        (get("big", {"start": 0, "end": 4}), [ok_value(b"\0" * 4)]),
+        (get("edge", {"suffix": 4}), [ok_value(b"EDGE")]),
+        (get("edge", {"offset": 0xFFFFFFFF - 6}), [ok_value(b"\0\0EDGE")]),
+        (get("after"), [ok_value(b"past 8 GiB")]),
+        (get("x"), [ok_value(BLOB[3:5])]),
+        ({"op": "list", "prefix": ""}, [{"ok": True, "keys": ["after", "big", "edge", "x"]}]),
+    ]
+    case("large_entries")(large)
+
+    def patched_record(key, mutate):
+        """`mutate(size32, csize32, off32, extra)` returns those fields, and optionally a
+        method, for the central directory record of `key`, in an archive with `fine`
+        and a reference `x`."""
+        def build(path):
+            f, w = _writer(path)
+            w.add_bytes("z", b"hello")
+            w.add_bytes("fine", b"ok")
+            w.add_ref("x", "data/blob.bin", 3, 2)
+            w.close(); f.close()
+            b = bytearray(path.read_bytes())
+            i = next(_records(b, b"PK\x01\x02", 28, 46, key.encode()))
+            csize, size = struct.unpack_from("<II", b, i + 20)
+            nlen, xlen = struct.unpack_from("<HH", b, i + 28)
+            off = struct.unpack_from("<I", b, i + 42)[0]
+            extra = bytes(b[i + 46 + nlen : i + 46 + nlen + xlen])
+            size, csize, off, new, *method = mutate(size, csize, off, extra)
+            if method:
+                struct.pack_into("<H", b, i + 10, method[0])
+            struct.pack_into("<II", b, i + 20, csize, size)
+            struct.pack_into("<I", b, i + 42, off)
+            struct.pack_into("<H", b, i + 30, len(new))
+            b[i + 46 + nlen : i + 46 + nlen + xlen] = new
+            # the central directory changed size: fix it in the zip64 record (its
+            # offset is unchanged), and the locator, because the zip64 record moved
+            z = len(b) - 22 - 22 - 20 - 56
+            assert b[z : z + 4] == b"PK\x06\x06"
+            struct.pack_into("<Q", b, z + 40, struct.unpack_from("<Q", b, z + 40)[0] + len(new) - xlen)
+            struct.pack_into("<Q", b, z + 56 + 8, z)
+            path.write_bytes(bytes(b))
+        build.expect = fine + entry_error(key)
+        return build
+
+    def z64(*values):
+        return struct.pack("<HH", 1, 8 * len(values)) + struct.pack(f"<{len(values)}Q", *values)
+
+    U32 = 0xFFFFFFFF
+    case("large_zip64_block_too_short")(
+        patched_record("z", lambda s, c, o, x: (U32, U32, o, z64(s) + x)))
+    case("large_zip64_block_without_offset")(
+        patched_record("z", lambda s, c, o, x: (U32, U32, U32, z64(s, c) + x)))
+    case("large_without_zip64_block")(
+        patched_record("z", lambda s, c, o, x: (U32, U32, o, x)))
+    case("large_reference_entry")(
+        patched_record("x", lambda s, c, o, x: (U32, U32, o, z64(s, c) + x)))
+    # "hello" again, but DEFLATEd: a well-formed body, rejected because it is large
+    case("large_deflate_entry")(
+        patched_record("z", lambda s, c, o, x: (U32, U32, o, z64(5, 7) + x, 8)))
+
+    # -- revision 10 ----------------------------------------------------------
+    def orphan_local_header(path):
+        # a local header and body that no central directory record points to, as a
+        # SOZip index file is: not allowed (§3.1 rule 2), but readers never look for
+        # one, so the archive reads normally (§8.6)
+        f, w = _writer(path)
+        w.add_bytes("fine", b"ok")
+        name, body = b".fine.sozip.idx", b"\0" * 32
+        w._write(struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, 0x800, 0, 0, 0x21, zlib.crc32(body),
+                             len(body), len(body), len(name), 0) + name + body)
+        w.add_ref("x", "data/blob.bin", 3, 2)
+        w.close(); f.close()
+    orphan_local_header.expect = fine + [
+        (get("x"), [ok_value(BLOB[3:5])]),
+        ({"op": "list", "prefix": ""}, [{"ok": True, "keys": ["fine", "x"]}]),
+        (classify(".fine.sozip.idx"), [{"ok": True, "kind": "missing"}]),
+    ]
+    case("local_header_without_record")(orphan_local_header)
 
     def empty_url(path):
         f, w = _writer(path, sources=[Source(url="data/blob.bin"), Source(url="")])
@@ -987,6 +1145,24 @@ def _records(b: bytes, sig: bytes, name_len_at: int, name_at: int, key: bytes):
         i += 4
 
 
+def _sparse_entry(w, key: str, size: int, tail: bytes) -> None:
+    """Add a STORED entry of `size` bytes, zeros then `tail`, leaving the zeros as
+    a hole in the file so it takes no disk space."""
+    crc, zeros, left = 0, bytes(1 << 24), size - len(tail)
+    while left:
+        n = min(left, len(zeros))
+        crc, left = zlib.crc32(zeros[:n] if n < len(zeros) else zeros, crc), left - n
+    crc = zlib.crc32(tail, crc)
+    w._check_new_key(key)
+    w._names.add(key)
+    off = w._pos
+    w._local_header(key.encode(), 0, crc, size, size)
+    w._f.seek(size - len(tail), 1)
+    w._f.write(tail)
+    w._pos += size
+    w._cd.append((key, off, size, size, 0, crc, b""))
+
+
 def _body_offset(b: bytes, key: str) -> int:
     i = next(_records(b, b"PK\x03\x04", 26, 30, key.encode()))
     return i + 30 + len(key.encode())
@@ -1043,15 +1219,15 @@ def _rewrite_index(path: Path, mutate) -> None:
     mutate(idx)
     comp = _z.compressobj(9, _z.DEFLATED, -15)
     new = comp.compress(idx.SerializeToString()) + comp.flush()
-    # append the new body at the end of the file and point the comment at it; readers
-    # use the comment's offsets (spec §3.4), and a ZIP tool still sees the old entry
-    eocd = bytes(b[-60:])
-    body_off = len(b) - 60
-    out = b[:-60] + new + eocd
-    struct.pack_into("<I", out, len(out) - 60 + 16,
-                     struct.unpack_from("<I", eocd, 16)[0])  # cd offset unchanged
-    struct.pack_into("<QQ", out, len(out) - 16, body_off, len(new))
-    path.write_bytes(bytes(out))
+    # put the new body between the central directory and the zip64 end records and point
+    # the comment at it; readers use the comment's offsets (spec §3.4), and a ZIP tool still
+    # sees the old entry. The zip64 record moves, so its locator is updated.
+    tail = bytearray(b[-(60 + 76):])
+    body_off = len(b) - len(tail)
+    assert tail[:4] == b"PK\x06\x06" and tail[56:60] == b"PK\x06\x07"
+    struct.pack_into("<Q", tail, 56 + 8, body_off + len(new))
+    struct.pack_into("<QQ", tail, len(tail) - 16, body_off, len(new))
+    path.write_bytes(bytes(b[:body_off] + new + tail))
 
 
 def _set_method(path: Path, key: str, method: int) -> None:

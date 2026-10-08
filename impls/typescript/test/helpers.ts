@@ -31,6 +31,7 @@ export type RawEntry = {
   method?: number;
   flags?: number;
   extra?: Buffer; // central directory extra field
+  localExtra?: Buffer; // local header extra field (a large entry's 20-byte ZIP64 field)
   csize?: number;
   usize?: number;
   lho?: number; // override local header offset field
@@ -56,6 +57,9 @@ export function rawZip(opts: {
   magic?: string;
   cdHook?: (cd: Buffer) => Buffer;
   pageRecs?: (recs: Buffer[], names: string[]) => void;
+  zip64?: boolean; // false leaves out the zip64 end records (invalid since revision 9)
+  // (count, count, cd size, cd offset) of the end record; all ones in a valid archive
+  eocdFields?: [number, number, number, number];
 }): Buffer {
   const out: Buffer[] = [];
   let off = 0;
@@ -76,9 +80,11 @@ export function rawZip(opts: {
     lh.writeUInt32LE(e.csize ?? body.length, 18);
     lh.writeUInt32LE(e.usize ?? body.length, 22);
     lh.writeUInt16LE(name.length, 26);
+    const lx = e.localExtra ?? Buffer.alloc(0);
+    lh.writeUInt16LE(lx.length, 28);
     const lho = off;
-    out.push(lh, name, body);
-    off += 30 + name.length + body.length;
+    out.push(lh, name, lx, body);
+    off += 30 + name.length + lx.length + body.length;
     const extra = e.extra ?? Buffer.alloc(0);
     const cd = Buffer.alloc(46);
     cd.writeUInt32LE(0x02014b50, 0);
@@ -94,7 +100,7 @@ export function rawZip(opts: {
     cd.writeUInt32LE(e.lho ?? lho, 42);
     recs.push(Buffer.concat([cd, name, extra]));
     names.push(name.toString("latin1"));
-    return lho + 30 + name.length;
+    return lho + 30 + name.length + lx.length;
   };
   for (const e of opts.entries) add(e);
   const st = opts.sources === undefined ? Buffer.alloc(0) : Buffer.isBuffer(opts.sources) ? opts.sources : encodeSourceTable(opts.sources);
@@ -117,12 +123,28 @@ export function rawZip(opts: {
     comment.writeBigUInt64LE(BigInt(iOff), 22);
     comment.writeBigUInt64LE(BigInt(iBody.length), 30);
   }
+  if (opts.zip64 ?? true) {
+    const z = Buffer.alloc(56 + 20);
+    z.writeUInt32LE(0x06064b50, 0);
+    z.writeBigUInt64LE(44n, 4);
+    z.writeUInt16LE(45, 12);
+    z.writeUInt16LE(45, 14);
+    z.writeBigUInt64LE(BigInt(recs.length), 24);
+    z.writeBigUInt64LE(BigInt(recs.length), 32);
+    z.writeBigUInt64LE(BigInt(cd.length), 40);
+    z.writeBigUInt64LE(BigInt(cdOff), 48);
+    z.writeUInt32LE(0x07064b50, 56);
+    z.writeBigUInt64LE(BigInt(cdOff + cd.length), 64);
+    z.writeUInt32LE(1, 72);
+    out.push(z);
+  }
+  const fields = opts.eocdFields ?? [0xffff, 0xffff, 0xffffffff, 0xffffffff];
   const eocd = Buffer.alloc(22);
   eocd.writeUInt32LE(0x06054b50, 0);
-  eocd.writeUInt16LE(recs.length, 8);
-  eocd.writeUInt16LE(recs.length, 10);
-  eocd.writeUInt32LE(cd.length, 12);
-  eocd.writeUInt32LE(cdOff, 16);
+  eocd.writeUInt16LE(fields[0], 8);
+  eocd.writeUInt16LE(fields[1], 10);
+  eocd.writeUInt32LE(fields[2], 12);
+  eocd.writeUInt32LE(fields[3], 16);
   eocd.writeUInt16LE(comment.length, 20);
   out.push(eocd, comment);
   return Buffer.concat(out);
