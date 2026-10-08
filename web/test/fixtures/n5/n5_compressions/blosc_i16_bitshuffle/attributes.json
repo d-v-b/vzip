@@ -1,0 +1,18 @@
+{
+ "dimensions": [
+  7,
+  7
+ ],
+ "blockSize": [
+  4,
+  4
+ ],
+ "dataType": "int16",
+ "compression": {
+  "type": "blosc",
+  "cname": "zstd",
+  "clevel": 3,
+  "shuffle": 2,
+  "blocksize": 0
+ }
+}

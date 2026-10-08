@@ -1,0 +1,52 @@
+{
+  "multiscales": [
+    {
+      "version": "0.4",
+      "axes": [
+        {
+          "name": "c",
+          "type": "channel"
+        },
+        {
+          "name": "y",
+          "type": "space",
+          "unit": "micrometer"
+        },
+        {
+          "name": "x",
+          "type": "space",
+          "unit": "micrometer"
+        }
+      ],
+      "datasets": [
+        {
+          "path": "0",
+          "coordinateTransformations": [
+            {
+              "type": "scale",
+              "scale": [
+                1,
+                0.5,
+                0.5
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "image-label": {
+    "version": "0.4",
+    "colors": [
+      {
+        "label-value": 1,
+        "rgba": [
+          255,
+          0,
+          0,
+          255
+        ]
+      }
+    ]
+  }
+}

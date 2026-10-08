@@ -1,0 +1,1 @@
+{"dimensions": [4, 4], "blockSize": [2, 2], "dataType": "uint8", "compression": {"type": "blosc", "cname": "lz5", "clevel": 5, "shuffle": 1}}

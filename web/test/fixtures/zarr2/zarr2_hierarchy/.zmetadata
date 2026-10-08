@@ -1,0 +1,13 @@
+{
+  "zarr_consolidated_format": 1,
+  "metadata": {
+    ".zgroup": {
+      "zarr_format": 2
+    },
+    "ghost/.zarray": {
+      "shape": [
+        1
+      ]
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "zarr_format": 2,
+  "shape": [
+    6,
+    6
+  ],
+  "chunks": [
+    3,
+    3
+  ],
+  "dtype": ">f4",
+  "compressor": null,
+  "fill_value": "-Infinity",
+  "order": "C",
+  "filters": null
+}

@@ -122,3 +122,46 @@ test("reports a tile that cannot be fetched", async () => {
 test("ignores paths outside the routes", async () => {
   assert.equal((await get(handler(), "other/zarr.json")).status, 404);
 });
+
+test("serves virtualized stores, and reports rejected ones", async () => {
+  // A store whose listing (§1.5) and objects come from the N5 fixtures, in the bucket "b".
+  const root = new URL("fixtures/n5/", import.meta.url);
+  const file = (url: string) => new URL(decodeURIComponent(new URL(url).pathname.slice("/b/".length)), root);
+  const fetchStore = async (url: string) => {
+    const u = new URL(url);
+    const prefix = u.searchParams.get("prefix")!;
+    const dir = new URL(prefix, root);
+    if (!fs.existsSync(dir)) return new Response("no such bucket", { status: 404 });
+    const keys: string[] = [];
+    const walk = (d: URL, rel: string) => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        if (e.isDirectory()) walk(new URL(`${e.name}/`, d), `${rel}${e.name}/`);
+        else keys.push(`<Contents><Key>${prefix}${rel}${e.name}</Key><Size>${fs.statSync(new URL(e.name, d)).size}</Size></Contents>`);
+      }
+    };
+    walk(dir, "");
+    return new Response(`<ListBucketResult><IsTruncated>false</IsTruncated>${keys.join("")}</ListBucketResult>`);
+  };
+  const h = makeHandler({
+    prefix: PREFIX,
+    fetchStore: async (url, init) => {
+      if (new URL(url).search) return fetchStore(url);
+      return new Response(fs.readFileSync(file(url)), { status: init ? 206 : 200 });
+    },
+    fetchRange: async (url, start, end) => ({ data: new Uint8Array(fs.readFileSync(file(url))).subarray(start, end), size: undefined }),
+  });
+  const base = `image/${encodeId("https://data.test/b/n5_cosem/")}/`;
+  const group = await get(h, `${base}em/fibsem-uint8/zarr.json`);
+  assert.equal(group.status, 200);
+  assert.equal((await group.json()).attributes.ome.multiscales[0].datasets.length, 3);
+  // A chunk is the whole block object.
+  const chunk = await get(h, `${base}em/fibsem-uint8/s0/0/0/0`);
+  assert.equal(chunk.status, 200);
+  assert.equal((await chunk.arrayBuffer()).byteLength, fs.statSync(new URL("n5_cosem/em/fibsem-uint8/s0/0/0/0", root)).size);
+  const rejected = await get(h, `image/${encodeId("https://data.test/b/n5_reject_compression_lz4/")}/zarr.json`);
+  assert.equal(rejected.status, 422);
+  assert.match(await rejected.text(), /^N5: .*lz4/);
+  const missing = await get(h, `image/${encodeId("https://data.test/b/no_such_store/")}/zarr.json`);
+  assert.equal(missing.status, 422);
+  assert.match(await missing.text(), /^store: the store has no listing/);
+});

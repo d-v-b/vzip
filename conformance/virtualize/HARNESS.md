@@ -13,8 +13,9 @@ An implementation is a command:
 virtualize <url> <out.json>
 ```
 
-- `<url>` is an `http://` URL of an image file (any profile). Use it, exactly as given,
-  as the input URL `U` of the specification (§1.2).
+- `<url>` is an `http://` URL of an image file (any profile), or of a store (N5 or
+  Zarr v2), whose URL ends in `/` (§1.4). Use it, exactly as given, as the input
+  URL `U` of the specification (§1.2).
 - On success, write the output (§1.1) to `<out.json>` as described below, and
   exit with status 0. Printing a one-line summary to stdout is optional.
 - If the specification rejects the input, exit with status 3, write nothing,
@@ -37,6 +38,14 @@ Read only the file's structure (headers, directories, metadata), never its
 pixel data. Files can be tens of gigabytes. Caching reads in blocks is
 recommended.
 
+A store is listed as §1.5 says. Store URLs from the harness are path-style
+(`http://127.0.0.1:<port>/f/...` and `http://127.0.0.1:<port>/u/...`, with
+the buckets `f` and `u`), and the server answers
+`GET /<bucket>/?list-type=2&prefix=<P>[&continuation-token=<T>]` with an S3
+`ListBucketResult` of at most 100 keys per page. A store's objects are served
+like files (`HEAD`, and `GET` with a single `Range`), at the store URL
+followed by the key (§1.4).
+
 ## The output file
 
 A JSON object:
@@ -52,7 +61,8 @@ A JSON object:
 }
 ```
 
-- `sources`: the source table's URLs, in order (one, `<url>`).
+- `sources`: the source table's URLs, in order (one, `<url>`, for a file; one
+  per chunk entry, in key order, for a store, §1.4).
 - `entries`: one member per key. The value is one of:
   - `{"ranges": [[source, offset, length], ...]}` for a reference entry,
     where a literal range is `{"data": "<base64>"}` instead of a triple;
@@ -72,18 +82,22 @@ compared as binary64, so `1` equals `1.0`), or equal bytes.
 ## Test inputs
 
 The synthetic files in `web/test/fixtures/`, one directory per format
-(`tiff/`, `ndpi/`, `nd2/`, `dicom/`, `nifti/`, `ims/`), are good first
-inputs. Their names say what they exercise, and `unsupported_*`,
-`edge_reject_*` and `<profile>_reject_*` files must be rejected. To serve them the way the harness
-does, run:
+(`tiff/`, `ndpi/`, `nd2/`, `dicom/`, `nifti/`, `ims/`), and the synthetic
+stores in `web/test/fixtures/n5/` and `web/test/fixtures/zarr2/` (one
+directory per store), are good first inputs. Their names say what they
+exercise, and `unsupported_*`, `edge_reject_*` and `<profile>_reject_*`
+inputs must be rejected. To serve them the way the harness does, run:
 
 ```
 python conformance/virtualize/proxy.py web/test/fixtures /tmp/vzip-proxy-cache 8765
 ```
 
-Then `http://127.0.0.1:8765/f/<format>/<file name>` is a fixture. The same server also
-serves remote files at `http://127.0.0.1:8765/u/<id>/<name>`, where `<id>` is
-the base64url encoding (no padding) of an `https://` URL. Public test inputs
+Then `http://127.0.0.1:8765/f/<format>/<file name>` is a fixture file, and
+`http://127.0.0.1:8765/f/<format>/<store name>/` a fixture store. The same
+server also serves remote files at `http://127.0.0.1:8765/u/<id>/<name>`, and
+remote stores at `http://127.0.0.1:8765/u/<id>/`, where `<id>` is the
+base64url encoding (no padding) of an `https://` URL (a store's ending in
+`/`; the server lists it with its own S3 endpoint, §1.5). Public test inputs
 include:
 
 - `https://ftp.ebi.ac.uk/pub/databases/IDR/idr0096-tratwal-marrowquant/20210609-ftp-ome-tiffs/4000_d11_m5_LT_2%20(20x_01).ome.tiff`
@@ -91,4 +105,12 @@ include:
 - `https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/1-SR_1_9_6hPre-C_MC1.nd2`
   (ND2, 4.6 GB);
 - `https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/077/S-BIAD2077/Files/373_230614_A1_Blk_Reg2_40x.nd2`
-  (ND2 Z-stack).
+  (ND2 Z-stack);
+- `https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/labels/gt/`
+  (an N5 COSEM multiscale group, 831 objects);
+- `https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.zarr/recon-1/labels/groundtruth/crop1/ves/`
+  (a Zarr v2 OME-NGFF 0.4 multiscale group).
+
+`compare.py --fixtures <dir>` takes the store fixtures from `<dir>/n5/` and
+`<dir>/zarr2/` (as `mutate.py` writes them), and `--large` adds the corpus
+inputs marked `py-only`, which only the reference runs.

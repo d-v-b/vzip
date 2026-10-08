@@ -1,0 +1,16 @@
+{
+ "dimensions": [
+  6,
+  6
+ ],
+ "blockSize": [
+  4,
+  4
+ ],
+ "dataType": "float64",
+ "compression": {
+  "type": "gzip",
+  "useZlib": true,
+  "level": 6
+ }
+}

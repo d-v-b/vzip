@@ -1,0 +1,19 @@
+{
+  "zarr_format": 2,
+  "shape": [
+    6,
+    6
+  ],
+  "chunks": [
+    3,
+    3
+  ],
+  "dtype": "<f8",
+  "compressor": {
+    "id": "zlib",
+    "level": 1
+  },
+  "fill_value": "Infinity",
+  "order": "C",
+  "filters": null
+}

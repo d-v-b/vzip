@@ -1,0 +1,92 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { directoryStore } from "../../conformance/directory_store.ts";
+import { virtualizeStore } from "../../src/virtualize/index.ts";
+import { N5Error } from "../../src/virtualize/n5/virtualize.ts";
+import { StoreError } from "../../src/virtualize/store.ts";
+
+const FIXTURES = fileURLToPath(new URL("../fixtures/n5/", import.meta.url));
+const URL_OF = (name: string) => `https://data.test/n5/${name}/`;
+
+async function virtualize(name: string) {
+  return virtualizeStore(directoryStore(FIXTURES + name, URL_OF(name)));
+}
+
+function doc(v: Awaited<ReturnType<typeof virtualize>>, key: string) {
+  const e = v.entries.find((x) => x.key === key);
+  assert.ok(e && "bytes" in e, key);
+  return JSON.parse(new TextDecoder().decode(e.bytes as Uint8Array));
+}
+
+test("virtualizes the synthetic N5 stores", async () => {
+  const cases: [string, object][] = [
+    ["n5_compressions", { arrays: 8, groups: 1, images: [] }],
+    ["n5_root_dataset", { arrays: 1, groups: 0 }],
+    ["n5_hierarchy", { arrays: 3, groups: 6, chunks: 9, emptyChunks: 1 }],
+    ["n5_cosem", { images: [{ path: "em/fibsem-uint8", convention: "cosem" }] }],
+    ["n5_viewer_scales", { images: [{ path: "setup0/timepoint0", convention: "n5-viewer" }] }],
+    ["n5_viewer_downsampling", { images: [{ path: "g", convention: "n5-viewer" }] }],
+    ["n5_multiscales_unrecognized", { images: [], arrays: 4 }],
+  ];
+  for (const [name, expected] of cases) {
+    const v = await virtualize(name);
+    assert.equal(v.format, "n5");
+    assert.deepEqual({ ...v.summary, ...expected }, v.summary, name);
+    // One url source per chunk entry, in key order, each referencing the whole object.
+    const refs = v.entries.filter((e) => "ranges" in e);
+    assert.equal(v.sources.length, refs.length, name);
+    for (const [i, e] of refs.entries()) {
+      assert.ok("ranges" in e);
+      assert.equal(v.sources[i].url, URL_OF(name) + e.key.replaceAll(" ", "%20").replaceAll("é", "%C3%A9"));
+      assert.deepEqual(e.ranges, [{ source: i, offset: 0n, length: (e.ranges[0] as { length: bigint }).length }]);
+    }
+  }
+  // The array: dimensions not reversed, n5_default with the full transpose and big-endian bytes.
+  const c = await virtualize("n5_compressions");
+  const zlib = doc(c, "zlib_f64/zarr.json");
+  assert.deepEqual([zlib.shape, zlib.chunk_grid.configuration.chunk_shape], [[6, 6], [4, 4]]);
+  assert.deepEqual(zlib.codecs, [{ name: "n5_default", configuration: { codecs: [
+    { name: "transpose", configuration: { order: [1, 0] } },
+    { name: "bytes", configuration: { endian: "big" } },
+    { name: "zlib", configuration: { level: 1 } },
+  ] } }]);
+  assert.deepEqual(zlib.chunk_key_encoding, { name: "v2", configuration: { separator: "/" } });
+  assert.deepEqual(doc(c, "blosc_u8/zarr.json").codecs[0].configuration.codecs.slice(1), [
+    { name: "bytes" },
+    { name: "blosc", configuration: { cname: "lz4", clevel: 5, shuffle: "shuffle", typesize: 1, blocksize: 0 } },
+  ]);
+  // COSEM: the transform's C-order values reversed onto the dimension order; levels get dimension names.
+  const cosem = await virtualize("n5_cosem");
+  const ms = doc(cosem, "em/fibsem-uint8/zarr.json").attributes.ome.multiscales[0];
+  assert.deepEqual(ms.datasets[1].coordinateTransformations, [
+    { type: "scale", scale: [8, 8, 10.48] }, { type: "translation", translation: [2, 2, 2.62] },
+  ]);
+  assert.deepEqual(doc(cosem, "em/fibsem-uint8/s2/zarr.json").dimension_names, ["x", "y", "z"]);
+  // Implicit groups, and nodes inside datasets that are not nodes.
+  const h = await virtualize("n5_hierarchy");
+  assert.deepEqual(doc(h, "a/zarr.json"), { zarr_format: 3, node_type: "group", attributes: {} });
+  assert.ok(!h.entries.some((e) => e.key === "a/b/sparse/0/zarr.json" || e.key.startsWith("docs/")));
+});
+
+for (const [name, message] of [
+  ["n5_reject_datatype_string", /dataType "string"/],
+  ["n5_reject_compression_lz4", /compression "lz4"/],
+  ["n5_reject_compression_jpeg", /compression "jpeg"/],
+  ["n5_reject_blosc_cname", /cname "lz5"/],
+  ["n5_reject_gzip_usezlib_string", /useZlib/],
+  ["n5_reject_dimensions_fraction", /dimensions \[4,2.5\]/],
+  ["n5_reject_blocksize_mismatch", /blockSize \[2\]/],
+  ["n5_reject_no_compression", /no compression/],
+] as const) {
+  test(`rejects ${name}`, async () => {
+    await assert.rejects(virtualize(name), (e) => e instanceof N5Error && message.test(e.message));
+  });
+}
+
+for (const name of ["n5_reject_json_nan", "n5_reject_json_bom", "n5_reject_json_not_utf8", "n5_reject_json_too_deep",
+  "n5_reject_reserved_key", "n5_reject_no_root_attributes"]) {
+  test(`rejects ${name}`, async () => {
+    await assert.rejects(virtualize(name), StoreError);
+  });
+}

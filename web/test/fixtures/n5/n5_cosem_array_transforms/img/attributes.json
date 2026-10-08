@@ -1,0 +1,14 @@
+{
+ "multiscales": [
+  {
+   "datasets": [
+    {
+     "path": "s0"
+    },
+    {
+     "path": "s1"
+    }
+   ]
+  }
+ ]
+}

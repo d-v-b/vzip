@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from typing import BinaryIO
 
 from vzip.pb import (
+    _put_bytes,
+    _put_uint,
     Page,
     Pinned,
     Concat,
@@ -121,6 +123,8 @@ class VZipWriter:
         self._ref_names: set[str] = set()
         self._range_checks: list = []  # (key, Range) for spec §9.1 bounds checks
         self._sources: dict[Source, int] = {}
+        # every source in table order: a Source, or a url string from add_url_refs
+        self._source_list: list[Source | str] = []
         self._late: list[tuple[str, bytes, bool]] = []
 
     def source(self, src: Source) -> int:
@@ -128,7 +132,11 @@ class VZipWriter:
 
         Index 0 is free on the wire, so register the most common source first.
         """
-        return self._sources.setdefault(src, len(self._sources))
+        i = self._sources.get(src)
+        if i is None:
+            i = self._sources[src] = len(self._source_list)
+            self._source_list.append(src)
+        return i
 
     def url(self, url: str) -> int:
         """Source index of an external object (absolute, or relative to the archive)."""
@@ -225,7 +233,7 @@ class VZipWriter:
         if key.startswith(RESERVED_PREFIX):
             raise ValueError(f"{RESERVED_PREFIX!r} is reserved")
         for r in ranges:
-            if r.data is None and r.source >= len(self._sources):
+            if r.data is None and r.source >= len(self._source_list):
                 raise ValueError(f"range of {key!r} uses unregistered source {r.source}")
         self._range_checks.extend((key, r) for r in ranges if r.data is None)
         if len(ranges) == 1:
@@ -239,8 +247,36 @@ class VZipWriter:
         self._entry(key, payload if self._mirror else b"", extra)
         self._ref_names.add(key)
 
-    def _check_sources(self, sources: list[Source]) -> None:
+    def add_url_refs(self, items) -> None:
+        """Bulk path for many objects referenced whole: for each (key, url, size),
+        a new url source (not interned) and a reference entry `(source, 0, size)`.
+
+        Avoids a Source object, an interning lookup and a deferred bounds check per
+        entry (url sources are not bounds-checked), so millions of entries fit.
+        """
+        for key, url, size in items:
+            if key.startswith(RESERVED_PREFIX):
+                raise ValueError(f"{RESERVED_PREFIX!r} is reserved")
+            i = len(self._source_list)
+            self._source_list.append(url)
+            payload = bytearray()
+            _put_uint(payload, 1, i)
+            _put_uint(payload, 4, size)
+            payload = bytes(payload)
+            extra = struct.pack("<HH", RANGE_EXTRA_ID, len(payload)) + payload
+            self._entry(key, payload if self._mirror else b"", extra)
+            self._ref_names.add(key)
+
+    def _check_sources(self, all_sources: list) -> None:
         """Writer requirements on the source table (spec §9.1)."""
+        from vzip.uri import is_uri_reference
+
+        bulk = [x for x in all_sources if isinstance(x, str)]
+        bad = [u for u in bulk if not u or not is_uri_reference(u)]
+        if bad:
+            raise ValueError(f"empty or invalid url sources: {bad[:5]}")
+        placeholder = Source(url="x")  # bulk urls are checked above
+        sources = [x if isinstance(x, Source) else placeholder for x in all_sources]
         if any(x.key == "" for x in sources):
             raise ValueError("empty key source")
         sizes = {name: size for name, _, size, *_ in self._cd}
@@ -257,9 +293,8 @@ class VZipWriter:
         fmt = sorted(x.key for x in sources if x.key in (SOURCES_KEY, INDEX_KEY))
         if fmt:
             raise ValueError(f"key sources naming format entries: {fmt}")
-        from vzip.uri import is_uri_reference
-
-        bad = [x.url for x in sources if x.url is not None and not is_uri_reference(x.url)]
+        bad = [x.url for x in sources if x.url is not None and x is not placeholder
+               and not is_uri_reference(x.url)]
         if any(x.url == "" for x in sources) or bad:
             raise ValueError(f"empty or invalid url sources: {bad}")
         to_refs = sorted(x.key for x in sources if x.key is not None and x.key in self._ref_names)
@@ -285,9 +320,9 @@ class VZipWriter:
         return off + _LFH.size + len(name.encode()), csize
 
     def close(self) -> None:
-        sources = sorted(self._sources, key=self._sources.__getitem__)
+        sources = self._source_list
         # test hooks (conformance/cases.py builds deliberately broken archives)
-        table = getattr(self, "_source_table_override", None) or encode_source_table(sources)
+        table = getattr(self, "_source_table_override", None) or _encode_sources(sources)
         if getattr(self, "_sources_trailing_junk", False):
             c = zlib.compressobj(9, zlib.DEFLATED, -15)
             self._entry_raw(SOURCES_KEY, table, c.compress(table) + c.flush() + b"junk")
@@ -348,6 +383,22 @@ class VZipWriter:
     def __exit__(self, *exc) -> None:
         if exc[0] is None:
             self.close()
+
+
+def _encode_sources(sources: list) -> bytes:
+    """The SourceTable of `sources` (Source objects, or bare url strings)."""
+    if all(isinstance(x, Source) for x in sources):
+        return encode_source_table(sources)
+    out = bytearray()
+    for x in sources:
+        if isinstance(x, Source):
+            _put_bytes(out, 1, x.encode())
+        else:
+            u = x.encode()
+            sub = bytearray()
+            _put_bytes(sub, 1, u)
+            _put_bytes(out, 1, bytes(sub))
+    return bytes(out)
 
 
 # ---------------------------------------------------------------- reading

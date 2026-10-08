@@ -1,0 +1,22 @@
+{
+  "zarr_format": 2,
+  "shape": [
+    6,
+    3
+  ],
+  "chunks": [
+    4,
+    2
+  ],
+  "dtype": "<i8",
+  "compressor": {
+    "id": "blosc",
+    "cname": "zlib",
+    "clevel": 1,
+    "shuffle": 0,
+    "blocksize": 256
+  },
+  "fill_value": 0,
+  "order": "C",
+  "filters": null
+}
