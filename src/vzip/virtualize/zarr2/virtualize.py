@@ -135,9 +135,7 @@ class Hierarchy:
     implicit: set[str] = field(default_factory=set)
 
 
-def read_hierarchy(store: Store) -> Hierarchy:
-    """The nodes of a Zarr v2 store (conventions/zarr2/README.md §2), each document read and checked."""
-    objects = store.objects
+def _nodes(objects: dict[str, int]) -> tuple[dict[str, str], set[str]]:
     candidates: dict[str, str] = {}
     for key in objects:
         head, _, name = key.rpartition("/")
@@ -146,7 +144,30 @@ def read_hierarchy(store: Store) -> Hierarchy:
             if candidates.get(head, kind) != kind:
                 raise Rejected(f"{head or '/'} has both .zarray and .zgroup")
             candidates[head] = kind
-    nodes, implicit = classify(candidates)
+    return classify(candidates)
+
+
+def prefetch(store: Store) -> None:
+    """Starts reading, concurrently, exactly the documents read_hierarchy reads
+    and in its order: for each node in path order, its .zarray or .zgroup,
+    then its .zattrs if listed."""
+    try:
+        nodes, _ = _nodes(store.objects)
+    except Rejected:
+        return  # read_hierarchy rejects before it reads a document
+    keys = []
+    for path in sorted(nodes):
+        keys.append(join(path, ".zarray" if nodes[path] == "array" else ".zgroup"))
+        if join(path, ".zattrs") in store.objects:
+            keys.append(join(path, ".zattrs"))
+    store.prefetch(keys)
+
+
+def read_hierarchy(store: Store) -> Hierarchy:
+    """The nodes of a Zarr v2 store (conventions/zarr2/README.md §2), each document read and checked."""
+    objects = store.objects
+    nodes, implicit = _nodes(objects)
+    prefetch(store)
 
     def attributes(path: str) -> dict:
         key = join(path, ".zattrs")

@@ -403,6 +403,133 @@ export interface Store {
   listed: number;
   requests: number;
   read(key: string): Promise<Uint8Array>;
+  /** Documents read at a time by `prefetchDocuments`; read one at a time if absent or 1. */
+  concurrency?: number;
+  /** Bytes read ahead and not yet taken, at most (but always one document). */
+  prefetchBytes?: number;
+  prefetch?: Prefetch;
+  /** Reads kept for a second read of the same key (`readDocument` with `keep`). */
+  kept?: Map<string, Promise<Settled>>;
+}
+
+/** Concurrent document reads by default: 16. Over HTTP/1.1 a browser opens about 6
+ * connections per host and queues the rest, so up to 16 keeps those 6 busy at the cost
+ * of a short queue; over HTTP/2 the requests share one connection and 16 run at once.
+ * Node (undici) opens a connection per request in flight. */
+export const CONCURRENCY = 16;
+export const PREFETCH_BYTES = 64 << 20;
+
+type Settled = { ok: true; value: Uint8Array } | { ok: false; error: unknown };
+
+const settle = (p: Promise<Uint8Array>): Promise<Settled> =>
+  p.then((value) => ({ ok: true as const, value }), (error) => ({ ok: false as const, error }));
+
+/** Reads the objects of a plan (keys, in the order a profile will read them) ahead of
+ * the profile, `concurrency` at a time, holding at most `budget` bytes read or being read
+ * and not yet taken (but always one object). Each result, the bytes or the error the read
+ * threw, is handed over once, by `take`, when the profile reads that key: so a failed read
+ * fails the profile exactly where the sequential read would, and only if it reads that key. */
+export class Prefetch {
+  #queue: string[];
+  #pos = 0;
+  #size: Map<string, number>;
+  #state = new Map<string, "queued" | "started">();
+  #result = new Map<string, Promise<Settled>>();
+  #held = 0;
+  #running = 0;
+  #closed = false;
+  #read: (key: string) => Promise<Uint8Array>;
+  #concurrency: number;
+  #budget: number;
+  #wanted?: (key: string) => boolean | undefined;
+
+  /** `wanted(key)` is false for a key the profile will not read after all, and undefined
+   * while that is not known yet (asked again after each document the profile reads). */
+  constructor(
+    read: (key: string) => Promise<Uint8Array>,
+    plan: [string, number][],
+    concurrency: number,
+    budget: number,
+    wanted?: (key: string) => boolean | undefined,
+  ) {
+    this.#read = read;
+    this.#concurrency = concurrency;
+    this.#budget = budget;
+    this.#wanted = wanted;
+    this.#queue = plan.map(([k]) => k);
+    this.#size = new Map(plan);
+    for (const [k] of plan) this.#state.set(k, "queued");
+    this.#pump();
+  }
+
+  #pump() {
+    while (!this.#closed && this.#running < this.#concurrency && this.#pos < this.#queue.length) {
+      const key = this.#queue[this.#pos];
+      if (this.#state.get(key) !== "queued") { // taken by the profile before it was started
+        this.#pos++;
+        continue;
+      }
+      const wanted = this.#wanted === undefined ? true : this.#wanted(key);
+      if (wanted === undefined) return;
+      if (!wanted) {
+        this.#state.delete(key);
+        this.#pos++;
+        continue;
+      }
+      const size = this.#size.get(key)!;
+      if (this.#held > 0 && this.#held + size > this.#budget) return;
+      this.#pos++;
+      this.#state.set(key, "started");
+      this.#held += size;
+      this.#running++;
+      const r = settle(this.#read(key));
+      this.#result.set(key, r);
+      void r.then(() => {
+        this.#running--;
+        this.#pump();
+      });
+    }
+  }
+
+  /** The result of reading `key`; undefined if it was not planned, was taken already, or
+   * was not started (the caller reads it). */
+  take(key: string): Promise<Settled> | undefined {
+    const state = this.#state.get(key);
+    this.#state.delete(key);
+    let r: Promise<Settled> | undefined;
+    if (state === "started") {
+      r = this.#result.get(key)!;
+      this.#result.delete(key);
+      void r.then(() => {
+        this.#held -= this.#size.get(key)!;
+        this.#pump();
+      });
+    }
+    this.#pump(); // the profile has read on: `wanted` may now know more
+    return r;
+  }
+
+  close() {
+    this.#closed = true;
+  }
+}
+
+/** Starts reading the documents `keys`, in that order (the order the profile reads them),
+ * `store.concurrency` at a time; once per store. Empty documents and documents §1.6 rejects
+ * for their size are not read. */
+export function prefetchDocuments(store: Store, keys: Iterable<string>, wanted?: (key: string) => boolean | undefined) {
+  if ((store.concurrency ?? 1) <= 1 || store.prefetch !== undefined) return;
+  const plan: [string, number][] = [];
+  for (const k of new Set(keys)) {
+    const size = store.objects.get(k)!;
+    if (size > 0 && size <= MAX_DOCUMENT) plan.push([k, size]);
+  }
+  store.prefetch = new Prefetch((k) => store.read(k), plan, store.concurrency!, store.prefetchBytes ?? PREFETCH_BYTES, wanted);
+}
+
+/** Stops reading ahead. */
+export function closeStore(store: Store) {
+  store.prefetch?.close();
 }
 
 /** Adds listed objects to `store`, rejecting a key listed twice (§1.5). */
@@ -416,11 +543,19 @@ export function addListed(store: Store, listed: [string, number][], prefix: stri
   store.listed = seen.size;
 }
 
-/** The JSON document at `key` (§1.6). */
-export async function readDocument(store: Store, key: string): Promise<Json> {
+/** The JSON document at `key` (§1.6). With `keep`, its bytes are kept for the next read
+ * of `key` (each document is read once). */
+export async function readDocument(store: Store, key: string, { keep = false } = {}): Promise<Json> {
   const size = store.objects.get(key)!;
   if (size > MAX_DOCUMENT) reject(`${key}: JSON document of ${size} bytes exceeds ${MAX_DOCUMENT}`);
-  return parseJson(size ? await store.read(key) : new Uint8Array(0));
+  if (!size) return parseJson(new Uint8Array(0));
+  const kept = (store.kept ??= new Map());
+  const r = kept.get(key) ?? store.prefetch?.take(key) ?? settle(store.read(key));
+  if (keep) kept.set(key, r);
+  else kept.delete(key);
+  const s = await r;
+  if (!s.ok) throw s.error;
+  return parseJson(s.value);
 }
 
 export type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
@@ -428,7 +563,12 @@ export type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 /** A store listed by S3 ListObjectsV2 (§1.5). Fails (StoreLimitError) past `maxObjects`. */
 export async function openHttpStore(
   url: string,
-  { fetch: f = (u, i) => fetch(u, i), maxObjects = MAX_OBJECTS }: { fetch?: Fetch; maxObjects?: number } = {},
+  { fetch: f = (u, i) => fetch(u, i), maxObjects = MAX_OBJECTS, concurrency = CONCURRENCY }: {
+    fetch?: Fetch;
+    maxObjects?: number;
+    /** Documents read at a time (CONCURRENCY). */
+    concurrency?: number;
+  } = {},
 ): Promise<Store> {
   const [endpoint, prefix] = listingEndpoint(url);
   const store: Store = {
@@ -436,6 +576,7 @@ export async function openHttpStore(
     objects: new Map(),
     listed: 0,
     requests: 0,
+    concurrency,
     async read(key) {
       const size = this.objects.get(key)!;
       if (size === 0) return new Uint8Array(0);

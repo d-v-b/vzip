@@ -17,7 +17,7 @@ import {
   type StoreResult,
   without,
 } from "../store.ts";
-import { hierarchyOutput, readHierarchy } from "../zarr2/virtualize.ts";
+import { hierarchyOutput, prefetch, readHierarchy } from "../zarr2/virtualize.ts";
 
 export class OmeZarrError extends Error {}
 
@@ -57,9 +57,10 @@ function version04(a: Obj, key: string): boolean {
 /** Does the root of this Zarr v2 store declare OME-NGFF 0.4 content (§1.4)? */
 export async function declares04(store: Store): Promise<boolean> {
   const objects = store.objects;
+  prefetch(store); // the documents §10 reads, these among them
   const attrs = async (path: string): Promise<Obj | undefined> => {
     if (!objects.has(join(path, ".zgroup")) || !objects.has(join(path, ".zattrs"))) return undefined;
-    const a = await readDocument(store, join(path, ".zattrs"));
+    const a = await readDocument(store, join(path, ".zattrs"), { keep: true }); // read again by readHierarchy
     return isObject(a) ? a : undefined;
   };
   if (objects.has(".zarray")) return false;

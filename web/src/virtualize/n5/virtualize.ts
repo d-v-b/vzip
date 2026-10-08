@@ -18,6 +18,8 @@ import {
   isObject,
   join,
   type Json,
+  parentOf,
+  prefetchDocuments,
   readDocument,
   type Store,
   show,
@@ -316,7 +318,23 @@ export async function virtualizeN5(store: Store): Promise<StoreResult & { summar
   const docs = new Map<string, { [k: string]: Json }>();
   const datasets = new Set<string>();
   const groupPaths: string[] = [];
-  for (const path of byDepth(candidates)) {
+  const readOrder = byDepth(candidates);
+  const isCandidate = new Set(candidates);
+  // Read ahead exactly the documents the loop below reads: a candidate's, once every
+  // candidate above it has been read and none is a dataset.
+  const wanted = (key: string): boolean | undefined => {
+    let p = parentOf(key); // the candidate
+    let known = true;
+    while (p !== "") {
+      p = parentOf(p);
+      if (!isCandidate.has(p)) continue;
+      if (datasets.has(p)) return false;
+      known &&= docs.has(p);
+    }
+    return known ? true : undefined;
+  };
+  prefetchDocuments(store, readOrder.map((p) => join(p, "attributes.json")), wanted);
+  for (const path of readOrder) {
     if (insideArray(path, datasets)) continue;
     const doc = await readDocument(store, join(path, "attributes.json"));
     if (!isObject(doc)) reject(`${join(path, "attributes.json")} is not a JSON object`);

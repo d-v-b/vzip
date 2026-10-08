@@ -9,6 +9,7 @@ import json
 import os
 import re
 import stat
+import threading
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -411,6 +412,88 @@ def _ignored(rel: str) -> bool:
     return rel == "" or rel.endswith("/") or any(s in ("", ".", "..") for s in rel.split("/"))
 
 
+WORKERS = 16
+PREFETCH_BYTES = 64 << 20
+
+
+class _Prefetch:
+    """Reads the objects of `plan` (keys, in the order a profile will read them)
+    ahead of the profile with up to `workers` threads, holding at most `budget`
+    bytes read or being read and not yet taken (but always one object, so that
+    a document of MAX_DOCUMENT bytes is read). Each result, the bytes or the
+    exception the read raised, is handed over once, by `take`, when the
+    profile reads that key; so a failed read fails the profile exactly where
+    the sequential read would, and only if the profile reads that key."""
+
+    def __init__(self, read: Callable[[str], bytes], plan: list[tuple[str, int]], workers: int, budget: int,
+                 wanted: Callable[[str], bool | None] | None) -> None:
+        self._read, self._budget, self._wanted = read, budget, wanted
+        self._queue = [k for k, _ in reversed(plan)]  # popped from the end: the next key in plan order
+        self._size = dict(plan)
+        self._state: dict[str, str] = {k: "queued" for k, _ in plan}  # queued, running, done
+        self._result: dict[str, tuple[bool, object]] = {}
+        self._held = 0
+        self._closed = False
+        self._cv = threading.Condition()
+        for _ in range(min(workers, len(plan))):
+            threading.Thread(target=self._work, daemon=True).start()
+
+    def _next(self) -> str | None:
+        with self._cv:
+            while True:
+                if self._closed or not self._queue:
+                    return None
+                key = self._queue[-1]
+                if self._state.get(key) != "queued":  # taken by the profile before it was started
+                    self._queue.pop()
+                    continue
+                wanted = True if self._wanted is None else self._wanted(key)
+                if wanted is None:  # not known yet: asked again after the profile's next read
+                    self._cv.wait()
+                    continue
+                if not wanted:
+                    self._queue.pop()
+                    del self._state[key]
+                    continue
+                size = self._size[key]
+                if self._held == 0 or self._held + size <= self._budget:
+                    self._queue.pop()
+                    self._state[key] = "running"
+                    self._held += size
+                    return key
+                self._cv.wait()
+
+    def _work(self) -> None:
+        while (key := self._next()) is not None:
+            try:
+                r = (True, self._read(key))
+            except Exception as e:  # handed over as is by take()
+                r = (False, e)
+            with self._cv:
+                self._state[key] = "done"
+                self._result[key] = r
+                self._cv.notify_all()
+
+    def take(self, key: str) -> tuple[bool, object] | None:
+        """The result of reading `key`, waiting for it; None if `key` was not
+        planned, was taken already, or was not started (the caller reads it)."""
+        with self._cv:
+            self._cv.notify_all()  # the profile has read on: `wanted` may now know more
+            state = self._state.pop(key, None)
+            if state is None or state == "queued":
+                return None
+            while key not in self._result:
+                self._cv.wait()
+            self._held -= self._size[key]
+            self._cv.notify_all()
+            return self._result.pop(key)
+
+    def close(self) -> None:
+        with self._cv:
+            self._closed = True
+            self._cv.notify_all()
+
+
 class Store:
     """A listed store: `objects` maps each relative key to its size (§1.4)."""
 
@@ -418,16 +501,57 @@ class Store:
     objects: dict[str, int]
     listed: int = 0
     requests: int = 0
+    workers: int = 1
+    prefetch_bytes: int = PREFETCH_BYTES
+    _prefetch: _Prefetch | None = None
+    _kept: dict[str, tuple[bool, object]] | None = None
 
     def read(self, key: str) -> bytes:  # pragma: no cover - interface
         raise NotImplementedError
 
-    def document(self, key: str):
-        """The JSON document at `key` (§1.6)."""
+    def prefetch(self, keys, wanted: Callable[[str], bool | None] | None = None) -> None:
+        """Starts reading the documents `keys`, in that order (the order the
+        profile reads them), concurrently if `workers` > 1; once per store.
+        `wanted(key)`, asked before a read starts, is False for a key the
+        profile will not read after all, and None while that is not known yet
+        (asked again after each document the profile reads). Empty documents and documents §1.6 rejects for
+        their size are not read."""
+        if self.workers <= 1 or self._prefetch is not None:
+            return
+        plan = [(k, self.objects[k]) for k in dict.fromkeys(keys) if 0 < self.objects[k] <= MAX_DOCUMENT]
+        self._prefetch = _Prefetch(self.read, plan, self.workers, self.prefetch_bytes, wanted)
+
+    def close(self) -> None:
+        """Stops reading ahead."""
+        if self._prefetch is not None:
+            self._prefetch.close()
+
+    def document(self, key: str, *, keep: bool = False):
+        """The JSON document at `key` (§1.6). With `keep`, its bytes are kept
+        for the next read of `key` (each document is read once)."""
         size = self.objects[key]
         if size > MAX_DOCUMENT:
             raise Rejected(f"{key}: JSON document of {size} bytes exceeds {MAX_DOCUMENT}")
-        return parse_json(self.read(key) if size else b"")
+        if not size:
+            return parse_json(b"")
+        if self._kept is None:
+            self._kept = {}
+        r = self._kept.get(key)
+        if r is None and self._prefetch is not None:
+            r = self._prefetch.take(key)
+        if r is None:
+            try:
+                r = (True, self.read(key))
+            except Exception as e:
+                r = (False, e)
+        if keep:
+            self._kept[key] = r
+        else:
+            self._kept.pop(key, None)
+        ok, value = r
+        if not ok:
+            raise value
+        return parse_json(value)
 
     def _add(self, listed: list[tuple[str, int]], prefix: str, seen: set[str]) -> None:
         for key, size in listed:
@@ -444,7 +568,8 @@ class HttpStore(Store):
     """A store listed by S3 ListObjectsV2 (§1.5)."""
 
     def __init__(self, url: str, *, max_objects: int | None = None,
-                 opener: Callable | None = None) -> None:
+                 opener: Callable | None = None, workers: int = WORKERS) -> None:
+        self.workers = workers  # concurrent document reads (prefetch)
         # Where the store is listed and read; `url`, the store's name in the
         # output, may be changed afterwards (--url).
         self.location = url
@@ -537,11 +662,13 @@ class DirStore(Store):
 
 
 def open_store(location: str, url: str | None = None, *, max_objects: int | None = None,
-               opener: Callable | None = None) -> Store:
+               opener: Callable | None = None, workers: int = WORKERS) -> Store:
     """The store at an http(s) URL ending in `/` (listed and read there, and
-    named `url` in the output if given), or a local directory served at `url` (§1.2)."""
+    named `url` in the output if given, its documents read by up to `workers`
+    requests at a time), or a local directory served at `url` (§1.2), read
+    sequentially."""
     if location.startswith(("http://", "https://")):
-        store = HttpStore(location, max_objects=max_objects, opener=opener)
+        store = HttpStore(location, max_objects=max_objects, opener=opener, workers=workers)
         if url is not None:
             check_store_url(url)
             store.url = url
