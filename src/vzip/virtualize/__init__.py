@@ -23,7 +23,7 @@ from vzip.virtualize.ims import virtualize_ims
 from vzip.virtualize.n5 import virtualize_n5
 from vzip.virtualize.nd2 import is_nd2, virtualize_nd2
 from vzip.virtualize.ome_zarr import declares_04, virtualize_ome_zarr
-from vzip.virtualize.store import StoreOutput, choose_profile, open_store
+from vzip.virtualize.store import WORKERS, StoreOutput, choose_profile, open_store
 from vzip.virtualize.tiff import virtualize_tiff
 from vzip.virtualize.zarr2 import virtualize_zarr2
 
@@ -36,16 +36,20 @@ NOT_SUPPORTED = "not a TIFF, NDPI, ND2, DICOM, NIfTI or IMS file"
 __all__ = ["Output", "Rejected", "StoreOutput", "virtualize", "virtualize_store", "virtualize_dicom", "virtualize_ims", "virtualize_nd2", "virtualize_tiff"]
 
 
-def virtualize_store(location: str, url: str | None = None, *,
-                     max_objects: int | None = None) -> tuple[str, StoreOutput]:
-    """(format, output) for the store at `location` (§1.4)."""
-    store = open_store(location, url, max_objects=max_objects)
-    fmt = choose_profile(store)
-    if fmt == "n5":
-        return fmt, virtualize_n5(store)
-    if declares_04(store):
-        return "ome-zarr", virtualize_ome_zarr(store)
-    return fmt, virtualize_zarr2(store)
+def virtualize_store(location: str, url: str | None = None, *, max_objects: int | None = None,
+                     workers: int = WORKERS) -> tuple[str, StoreOutput]:
+    """(format, output) for the store at `location` (§1.4), its documents read
+    by up to `workers` requests at a time."""
+    store = open_store(location, url, max_objects=max_objects, workers=workers)
+    try:
+        fmt = choose_profile(store)
+        if fmt == "n5":
+            return fmt, virtualize_n5(store)
+        if declares_04(store):
+            return "ome-zarr", virtualize_ome_zarr(store)
+        return fmt, virtualize_zarr2(store)
+    finally:
+        store.close()
 
 
 def is_store(location: str) -> bool:
@@ -56,11 +60,12 @@ def is_store(location: str) -> bool:
     return os.path.isdir(location)
 
 
-def virtualize(location: str, url: str | None = None) -> tuple[str, Output | StoreOutput]:
+def virtualize(location: str, url: str | None = None, *,
+               workers: int = WORKERS) -> tuple[str, Output | StoreOutput]:
     """(format, output) for the file at `location`, by its first bytes, or for
     the store at `location` (a URL ending in `/`, or a directory)."""
     if is_store(location):
-        return virtualize_store(location, url)
+        return virtualize_store(location, url, workers=workers)
     if location.startswith(("http://", "https://")):
         read, size = http_reader(location)
     else:

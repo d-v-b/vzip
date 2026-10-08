@@ -8,7 +8,7 @@ import re
 
 from vzip.virtualize.common import Rejected
 from vzip.virtualize.store import Store, StoreOutput, as_int, canonical_index, is_number, join, parent_of
-from vzip.virtualize.zarr2.virtualize import hierarchy_output, read_hierarchy
+from vzip.virtualize.zarr2.virtualize import hierarchy_output, prefetch, read_hierarchy
 
 OME_KEYS = ("multiscales", "omero", "labels", "image-label", "plate", "well", "bioformats2raw.layout")
 VERSIONED = ("omero", "image-label", "plate", "well")  # whose own `version` is dropped (conventions/ome-zarr/README.md §5)
@@ -40,11 +40,12 @@ def _version_04(a, key: str) -> bool:
 def declares_04(store: Store) -> bool:
     """Does the root of this Zarr v2 store declare OME-NGFF 0.4 content (§1.4)?"""
     objects = store.objects
+    prefetch(store)  # the documents §10 reads, these among them
 
     def attrs(path: str):
         if join(path, ".zgroup") not in objects or join(path, ".zattrs") not in objects:
             return None
-        a = store.document(join(path, ".zattrs"))
+        a = store.document(join(path, ".zattrs"), keep=True)  # read again by read_hierarchy
         return a if isinstance(a, dict) else None
 
     if ".zarray" in objects:

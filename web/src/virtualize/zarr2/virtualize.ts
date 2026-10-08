@@ -20,6 +20,7 @@ import {
   isObject,
   join,
   type Json,
+  prefetchDocuments,
   readDocument,
   type Store,
   show,
@@ -136,9 +137,7 @@ export interface Hierarchy {
   implicit: Set<string>;
 }
 
-/** The nodes of a Zarr v2 store (conventions/zarr2/README.md §2), each document read and checked. */
-export async function readHierarchy(store: Store): Promise<Hierarchy> {
-  const objects = store.objects;
+function nodesOf(objects: Map<string, number>): Map<string, string> {
   const candidates = new Map<string, string>();
   for (const key of objects.keys()) {
     const i = key.lastIndexOf("/");
@@ -157,7 +156,33 @@ export async function readHierarchy(store: Store): Promise<Hierarchy> {
     nodes.set(path, candidates.get(path)!);
     if (candidates.get(path) === "array") arrayPaths.add(path);
   }
+  return nodes;
+}
+
+/** Starts reading, concurrently, exactly the documents readHierarchy reads and in its
+ * order: for each node in path order, its .zarray or .zgroup, then its .zattrs if listed. */
+export function prefetch(store: Store) {
+  let nodes: Map<string, string>;
+  try {
+    nodes = nodesOf(store.objects);
+  } catch (e) {
+    if (e instanceof Zarr2Error) return; // readHierarchy rejects before it reads a document
+    throw e;
+  }
+  const keys: string[] = [];
+  for (const path of [...nodes.keys()].sort(compareKeys)) {
+    keys.push(join(path, nodes.get(path) === "array" ? ".zarray" : ".zgroup"));
+    if (store.objects.has(join(path, ".zattrs"))) keys.push(join(path, ".zattrs"));
+  }
+  prefetchDocuments(store, keys);
+}
+
+/** The nodes of a Zarr v2 store (conventions/zarr2/README.md §2), each document read and checked. */
+export async function readHierarchy(store: Store): Promise<Hierarchy> {
+  const objects = store.objects;
+  const nodes = nodesOf(objects);
   const implicit = implicitGroups(nodes.keys());
+  prefetch(store);
 
   const attributes = async (path: string): Promise<{ [k: string]: Json }> => {
     const key = join(path, ".zattrs");

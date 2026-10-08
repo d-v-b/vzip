@@ -282,7 +282,22 @@ def virtualize_n5(store: Store) -> StoreOutput:
     datasets: set[str] = set()
     from vzip.virtualize.store import depth, parent_of
 
-    for path in sorted(candidates, key=lambda p: (depth(p), p)):
+    def wanted(key: str) -> bool | None:
+        # Read ahead exactly the documents the loop below reads: a candidate's,
+        # once every candidate above it has been read and none is a dataset.
+        p, known = parent_of(key), True  # the candidate
+        while p:
+            p = parent_of(p)
+            if p in candidates:
+                d = docs.get(p)
+                if isinstance(d, dict) and "dimensions" in d:
+                    return False
+                known = known and d is not None
+        return True if known else None
+
+    order = sorted(candidates, key=lambda p: (depth(p), p))
+    store.prefetch([join(p, "attributes.json") for p in order], wanted)
+    for path in order:
         p, inside = path, False
         while p:
             p = parent_of(p)
