@@ -5,11 +5,13 @@ conformance/virtualize/compare.py, and pixel correctness against an
 independent block reader and zarr-n5 by web/test/n5/verify.py.
 """
 
+import json
 from pathlib import Path
 
 import pytest
 
 from vzip.virtualize import Rejected, virtualize
+from vzip.virtualize.common import declare
 
 FIXTURES = Path(__file__).parents[1] / "web" / "test" / "fixtures" / "n5"
 URL = "https://data.test/n5/{}/"
@@ -114,7 +116,8 @@ def test_virtualizes_the_synthetic_stores():
             if codecs is not None:
                 assert doc["codecs"] == codecs, (name, path)
             assert doc.get("dimension_names") == names, (name, path)
-            assert not {"dimensions", "blockSize", "dataType", "compression", "n5"} & set(doc["attributes"])
+            assert set(doc["attributes"]) <= {"zarr_conventions", "vzip_virtualized"}, (name, path)
+            assert {"dimensions", "blockSize", "dataType"} <= set(doc["attributes"]["vzip_virtualized"]["n5"])
         for path, ms in groups.items():
             doc = out.docs[key(path)]
             assert doc["node_type"] == "group" and "n5" not in doc["attributes"], (name, path)
@@ -144,10 +147,12 @@ def test_virtualizes_the_synthetic_stores():
         else:
             got = flat(d["coordinateTransformations"][1]["translation"] for d in datasets)
             assert got == pytest.approx(flat(translations)), name
-    # Every N5 attribute that is not an array key is kept; nodes inside datasets and stray objects are not.
+    # Every node's attributes.json is kept whole, under the convention (conventions/n5/README.md §5);
+    # nodes inside datasets and stray objects are not.
     _, out = virtualize(str(FIXTURES / "n5_hierarchy"), url=URL.format("n5_hierarchy"))
-    assert out.docs["zarr.json"]["attributes"] == {"description": "groups"}
-    assert out.docs["c/zarr.json"]["attributes"] == {"kind": "explicit group"}
+    assert out.docs["zarr.json"]["attributes"] == declare(
+        {}, "n5", URL.format("n5_hierarchy"), {"n5": "4.0.0", "description": "groups"})
+    assert out.docs["c/zarr.json"]["attributes"] == declare({}, "n5", None, {"kind": "explicit group", "n5": "x"})
     assert out.docs["a/zarr.json"] == {"zarr_format": 3, "node_type": "group", "attributes": {}}
     assert "a/b/sparse/0/zarr.json" not in out.docs and "docs/zarr.json" not in out.docs
     # The missing block (1/0) and the empty one (2/0) have no entry.
@@ -157,9 +162,12 @@ def test_virtualizes_the_synthetic_stores():
     assert [k for k, _ in out.chunks if k.startswith(("raw_u16/", "gzip_i32_padded/"))] == [
         "gzip_i32_padded/0/0/0", "gzip_i32_padded/1/0/0", "raw_u16/0/0", "raw_u16/0/1"]
     _, out = virtualize(str(FIXTURES / "n5_root_dataset"), url=URL.format("n5_root_dataset"))
-    assert out.docs["zarr.json"]["attributes"] == {"resolution": [1.5, 2, 3], "name": "root"}
+    doc = json.loads((FIXTURES / "n5_root_dataset" / "attributes.json").read_text())
+    assert out.docs["zarr.json"]["attributes"] == declare({}, "n5", URL.format("n5_root_dataset"), doc)
     _, out = virtualize(str(FIXTURES / "n5_multiscales_unrecognized"), url=URL.format("x"))
-    assert out.docs["has_ome/zarr.json"]["attributes"]["ome"] == {"version": "0.5", "custom": True}
+    # A group whose attributes.json already has `ome` is not recognized; that `ome` is copied.
+    attrs = out.docs["has_ome/zarr.json"]["attributes"]
+    assert "ome" not in attrs and attrs["vzip_virtualized"]["n5"]["ome"] == {"version": "0.5", "custom": True}
 
 
 @pytest.mark.parametrize("name,message", [

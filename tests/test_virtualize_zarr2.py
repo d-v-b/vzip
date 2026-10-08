@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from vzip.virtualize import Rejected, virtualize
+from vzip.virtualize.common import declare
 
 FIXTURES = Path(__file__).parents[1] / "web" / "test" / "fixtures" / "zarr2"
 URL = "https://data.test/zarr2/{}/"
@@ -94,15 +95,23 @@ def test_virtualizes_the_synthetic_stores():
         "a/b/zero_d/0", "a/c/0/0", "a/c/1/0", "g/h/0", "sp ace/é/x y/0.0"]
     assert out.sources[-1] == "https://data.test/zarr2/h/sp%20ace/%C3%A9/x%20y/0.0"
     assert out.docs["a/zarr.json"] == {"zarr_format": 3, "node_type": "group", "attributes": {}}
-    assert out.docs["a/c/zarr.json"]["attributes"] == {"_ARRAY_DIMENSIONS": ["y", "x"]}
+    assert out.docs["a/c/zarr.json"]["attributes"] == declare({}, "zarr2", None, {"_ARRAY_DIMENSIONS": ["y", "x"]})
     assert not {"a/c/inside/zarr.json", "orphan/zarr.json", "ghost/zarr.json", "notes/zarr.json"} & set(out.docs)
-    # Attributes are copied unchanged, OME-NGFF 0.4 ones included: the root does not declare
-    # OME-NGFF 0.4 (VIRTUALIZE.md §1.4), so the store is not read by the OME-Zarr profile.
+    # Attributes are copied unchanged under the convention (VIRTUALIZE.md conventions §2), OME-NGFF 0.4
+    # ones included: the root does not declare OME-NGFF 0.4 (§1.4), so the store is not read
+    # by the OME-Zarr profile.
     _, out = virtualize(str(FIXTURES / "zarr2_ome_attrs"), url=URL.format("o"))
     for path in ("", "0", "0/labels", "0/labels/cells", "v03", "has_ome", "mixed", "dup_axes"):
-        zattrs = FIXTURES / "zarr2_ome_attrs" / path / ".zattrs"
-        assert out.docs[key(path)]["attributes"] == json.loads(zattrs.read_text()), path
+        zattrs = json.loads((FIXTURES / "zarr2_ome_attrs" / path / ".zattrs").read_text())
+        expected = declare({}, "zarr2", URL.format("o") if path == "" else None, zattrs)
+        assert out.docs[key(path)]["attributes"] == expected, path
     assert not any("dimension_names" in d for d in out.docs.values())
+    # Other conventions, a vzip declaration and a malformed zarr_conventions are all copied as they are.
+    _, out = virtualize(str(FIXTURES / "zarr2_conventions"), url=URL.format("c"))
+    for path in ("", "x", "v", "bad"):
+        zattrs = json.loads((FIXTURES / "zarr2_conventions" / path / ".zattrs").read_text())
+        assert out.docs[key(path)]["attributes"] == declare({}, "zarr2", URL.format("c") if path == "" else None,
+                                                            zattrs), path
 
 
 @pytest.mark.parametrize("name,message", [

@@ -1,4 +1,4 @@
-"""The lite variant (LV) metadata encoding of ND2 files (profiles/nd2.md §5.2)."""
+"""The lite variant (LV) metadata encoding of ND2 files (conventions/nd2/README.md §2.2)."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ MAX_DEPTH = 100
 
 
 def _records(data: bytes, pos: int, end: int, count: int | None, depth: int = 0):
-    """The records in data[pos:end], which are at `depth` (§5.2)."""
+    """The records in data[pos:end], which are at `depth` (conventions/nd2/README.md §2.2)."""
     if depth > MAX_DEPTH:
         raise Rejected(f"LV levels nested more than {MAX_DEPTH} deep")
     out = []
@@ -91,15 +91,21 @@ def _records(data: bytes, pos: int, end: int, count: int | None, depth: int = 0)
     return out, pos
 
 
-def decode_lv(data: bytes) -> dict:
+def decode_lv(data: bytes, limit: int | None = None) -> dict:
     """A chunk's LV structure: a tree of dicts (objects), LVLists (lists) and
-    Scalars. The top level is always an object."""
+    Scalars. The top level is always an object. Compressed data may inflate to
+    at most `limit` bytes."""
     if len(data) >= 1 and data[0] == 76:
         if len(data) < 12:
             raise Rejected("truncated compressed LV record")
         d = zlib.decompressobj()
         try:
-            inner = d.decompress(data[12:]) + d.flush()
+            if limit is None:
+                inner = d.decompress(data[12:]) + d.flush()
+            else:
+                inner = d.decompress(data[12:], limit + 1)
+                if len(inner) > limit:
+                    raise Rejected(f"compressed LV data inflates to more than {limit} bytes")
         except zlib.error as e:
             raise Rejected(f"invalid zlib stream in compressed LV data: {e}") from None
         if not d.eof or d.unused_data:

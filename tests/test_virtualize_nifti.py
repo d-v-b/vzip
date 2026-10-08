@@ -25,7 +25,7 @@ CASES = {
     "nifti_n1_be_int16_4d_scaled": (
         {"byteOrder": "big", "sizes": {"t": 5, "z": 2, "y": 3, "x": 4}, "scaling": {"slope": 0.5, "inter": -20}},
         [("t", "second"), ("z", MM), ("y", MM), ("x", MM)], [2.5, 3, 1.5, 1.5], None,
-        {"scl_slope": 0.5, "scl_inter": -20}, {"min": -20, "max": 60, "start": -20, "end": 60},
+        {"slope": 0.5, "inter": -20}, {"min": -20, "max": 60, "start": -20, "end": 60},
         ("0/c/4/1/0/0", [(352 + 9 * 24, 24)])),
     "nifti_n1_le_qform_identity": (
         {"affine": "qform", "dataType": "uint16"}, [("z", "micrometer"), ("y", "micrometer"), ("x", "micrometer")],
@@ -42,15 +42,15 @@ CASES = {
         # k = 2, t = 1, z = 0: slab (2 * 2 + 1) * 2 = 10 of 6 voxels of 8 bytes, after 544 bytes.
         ("0/c/1/2/0/0/0", [(544 + 10 * 48, 48)])),
     "nifti_n1_be_rgb24_4d": (
-        {"colour": True, "scaling": None, "sizes": {"t": 2, "c": 3, "z": 2, "y": 3, "x": 2}}, None, None, None, None,
+        {"color": True, "scaling": None, "sizes": {"t": 2, "c": 3, "z": 2, "y": 3, "x": 2}}, None, None, None, None,
         {"min": 0, "max": 255, "start": 0, "end": 255}, ("0/c/1/0/1/0/0", [(352 + 3 * 18, 18)])),
-    "nifti_n2_be_rgba32": ({"colour": True, "dataType": "uint8"}, None, None, None, None,
+    "nifti_n2_be_rgba32": ({"color": True, "dataType": "uint8"}, None, None, None, None,
                            {"min": 0, "max": 255, "start": 0, "end": 255}, None),
     "nifti_n1_le_rgba32_2d": ({"extensions": True, "sizes": {"c": 4, "y": 2, "x": 3}}, None, None, None, None,
                               {"min": 0, "max": 255, "start": 0, "end": 255}, ("0/c/0/0/0", [(400, 24)])),
     "nifti_nibabel_n2_vector_ext": ({"version": 2, "extensions": True, "sizes": {"t": 2, "c": 3, "z": 3, "y": 4, "x": 5}},
                                     None, [250, 1, 2, 2, 2], [0, 0, 0, 0, 0], None, None, None),
-    "nifti_nibabel_rgb24": ({"colour": True, "sizes": {"c": 3, "z": 2, "y": 3, "x": 4}}, None, None, [0, 0, 0, 0], None,
+    "nifti_nibabel_rgb24": ({"color": True, "sizes": {"c": 3, "z": 2, "y": 3, "x": 4}}, None, None, [0, 0, 0, 0], None,
                             {"min": 0, "max": 255, "start": 0, "end": 255}, None),
     "nifti_dtype_uint64": ({"dataType": "uint64"}, None, None, None, None, None, None),
     "nifti_dtype_float32_be": ({"dataType": "float32", "byteOrder": "big"}, None, None, None, None, None, None),
@@ -62,9 +62,9 @@ CASES = {
     "nifti_edge_n2_units_negative": ({}, [("t", None), ("z", None), ("y", None), ("x", None)], None, None, None, None, None),
     "nifti_edge_slope_zero": ({"scaling": None}, None, None, None, None, {"min": 1, "max": 2, "start": 1, "end": 2}, None),
     "nifti_edge_slope_nan": ({"scaling": None}, None, None, None, None, None, None),
-    "nifti_edge_inter_inf": ({}, None, None, None, {"scl_slope": 2, "scl_inter": 0},
+    "nifti_edge_inter_inf": ({}, None, None, None, {"slope": 2, "inter": 0},
                              {"min": -2, "max": 4, "start": -2, "end": 4}, None),
-    "nifti_edge_slope_negative": ({}, None, None, None, {"scl_slope": -2, "scl_inter": 1},
+    "nifti_edge_slope_negative": ({}, None, None, None, {"slope": -2, "inter": 1},
                                   {"min": -3.5, "max": 2.5, "start": -3.5, "end": 2.5}, None),
     "nifti_edge_slope_trivial": ({"scaling": None}, None, None, None, None, None, None),
     "nifti_edge_cal_reversed": ({}, None, None, None, None, None, None),
@@ -92,7 +92,10 @@ def test_virtualizes_the_synthetic_files():
         if scale is not None:
             assert transforms[0]["scale"][-len(scale):] == scale, name
         assert (transforms[1]["translation"] if len(transforms) > 1 else None) == translation, name
-        assert attributes.get("nifti") == scaling, name
+        assert set(attributes) == {"ome", "zarr_conventions", "vzip_virtualized"}, name
+        meta = attributes["vzip_virtualized"]["nifti"]  # conventions/nifti/README.md §5
+        assert meta.get("scaling") == scaling, name
+        assert meta["header"]["magic"] == f"n+{meta['nifti_version']}", name
         omero = attributes["ome"].get("omero")
         assert (omero["channels"][0]["window"] if omero else None) == window, name
         if chunk is not None:
@@ -112,7 +115,7 @@ def test_virtualizes_the_synthetic_files():
     ("nifti_reject_binary", "BINARY"),
     ("nifti_reject_datatype_unknown", "unknown NIfTI datatype 3"),
     ("nifti_reject_bitpix", "bitpix 8"),
-    ("nifti_reject_rgb_5d", "colour data with a fifth dimension"),
+    ("nifti_reject_rgb_5d", "color data with a fifth dimension"),
     ("nifti_reject_vox_offset_fraction", "not an integer"),
     ("nifti_reject_vox_offset_nan", "not an integer"),
     ("nifti_reject_vox_offset_zero", "vox_offset 0 is not from 352"),

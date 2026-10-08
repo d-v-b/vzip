@@ -112,3 +112,23 @@ def test_virtualizes_the_synthetic_files():
 def test_rejects(name, message):
     with pytest.raises(Rejected, match=message):
         virtualize(str(FIXTURES / name), url="https://data.test/x")
+
+
+def test_value_json():
+    """Each datatype class's translation (conventions/ims/README.md §5)."""
+    import struct
+
+    from vzip.virtualize.ims.source import value_json
+
+    cases = [
+        ((3, 1, 0, 4, b"5.5\0"), "5.5"),  # Imaris: an array of 1-character strings
+        ((3, 1, 0, 3, b"\xb5m\0"), "µm"),  # not UTF-8: ISO 8859-1
+        ((3, 4, 0, 2, b"ab\0\0cd\0\0"), ["ab", "cd"]),
+        ((0, 2, 8, 2, struct.pack("<2h", -1, 7)), [-1, 7]),  # signed
+        ((0, 4, 1, 1, struct.pack(">I", 7)), [7]),  # big-endian
+        ((0, 8, 0, 1, struct.pack("<Q", 2**64 - 1)), ["18446744073709551615"]),
+        ((1, 8, 0, 2, struct.pack("<2d", 0.5, float("inf"))), [0.5, "Infinity"]),
+        ((6, 2, 0, 1, b"\x01\x02"), {"class": 6, "size": 2, "data": "AQI="}),  # a compound: opaque
+    ]
+    for args, expected in cases:
+        assert value_json(*args) == expected, args

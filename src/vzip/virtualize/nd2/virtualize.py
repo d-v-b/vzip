@@ -7,9 +7,10 @@ import re
 import struct
 
 from vzip.virtualize.common import (
-    MAX_PAYLOAD, Output, Reader, Rejected, array_json, group_json, image_ome, payload_size, transpose_codec,
+    MAX_PAYLOAD, Output, Reader, Rejected, array_json, group_json, root_json, image_ome, payload_size, transpose_codec, json_text,
 )
 from vzip.virtualize.nd2.lv import LVList, Scalar, decode_lv
+from vzip.virtualize.nd2.source import chunks_json
 
 CHUNK_MAGIC = 0x0ABECEDA
 FILE_SIGNATURE = b"ND2 FILE SIGNATURE CHUNK NAME01!"
@@ -35,7 +36,7 @@ def _header(read: Reader, offset: int) -> tuple[int, int, bytes]:
     return name_length, data_length, read(offset + 16, name_length).split(b"\0", 1)[0]
 
 
-# ---- typed member access (§5.2)
+# ---- typed member access (conventions/nd2/README.md §2.2)
 
 def _missing(what: str, default):
     if default is REQUIRED:
@@ -48,7 +49,7 @@ def number(value, what: str, default=REQUIRED):
         return _missing(what, default)
     if not isinstance(value, Scalar) or value.type not in (2, 3, 4, 5, 6):
         raise Rejected(f"{what} is not a number")
-    v = float(value.value)  # every number is used as binary64 (§5.2)
+    v = float(value.value)  # every number is used as binary64 (conventions/nd2/README.md §2.2)
     if not math.isfinite(v):
         raise Rejected(f"{what} is not finite")
     return v
@@ -122,7 +123,7 @@ def _valid(items: list, flags, what: str) -> list:
     return [m for i, m in enumerate(items) if i < len(f) and f[i]]
 
 
-# ---- experiment (§5.3)
+# ---- experiment (conventions/nd2/README.md §3)
 
 def _node_loop(node: dict):
     """A node's loop as (kind, count, period or step), "spectral", or None (skipped)."""
@@ -244,13 +245,16 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
         chunks[cname] = struct.unpack("<Q", data[end + 1 : end + 9])[0]
         pos = end + 17
 
+    # The source metadata (conventions/nd2/README.md §5).
+    source = {"signature": json_text(read(48, 64)), "chunks": chunks_json(read, size, chunks)}
+
     def chunk(cname: bytes):
         if cname not in chunks:
             return None
         n, d, _ = _header(read, chunks[cname])
         return decode_lv(read(chunks[cname] + 16 + n, d))
 
-    # §5.3 attributes
+    # conventions/nd2/README.md §3 attributes
     attributes = chunk(b"ImageAttributesLV!")
     if attributes is None:
         raise Rejected("no ImageAttributesLV! chunk")
@@ -281,11 +285,11 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
     if compressed and width_bytes != row_bytes:
         raise Rejected("compressed frames with padded rows are not supported")
 
-    # §5.3 experiment
+    # conventions/nd2/README.md §3 experiment
     exp = chunk(b"ImageMetadataLV!")
     loops = flatten_experiment(exp.get("SLxExperiment") if exp is not None else None)
 
-    # §5.3 picture metadata
+    # conventions/nd2/README.md §3 picture metadata
     seq = chunk(b"ImageMetadataSeqLV|0!")
     picture = (obj(seq.get("SLxPictureMetadata"), "SLxPictureMetadata", None) if seq is not None else None) or {}
     bcal = flag(picture.get("bCalibrated"), "bCalibrated", False)
@@ -293,7 +297,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
     aspect = number(picture.get("dAspect"), "dAspect", 1)
     camera = [number(picture.get(f"dStgLgCT{k}"), f"dStgLgCT{k}", default)
               for k, default in (("11", 1.0), ("12", 0.0), ("21", 0.0), ("22", 1.0))]
-    # The stage position without a position loop (§5.6).
+    # The stage position without a position loop (conventions/nd2/README.md §4.3).
     picture_stage = (number(picture.get("dXPos"), "dXPos", None), number(picture.get("dYPos"), "dYPos", None))
     calibrated = bcal and cal is not None and cal > 0
     if not aspect > 0:
@@ -310,7 +314,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
                                  color(p.get("uiColor"), "uiColor", 0xFFFFFF),
                                  integer(p.get("uiCompCount"), "uiCompCount", 1))
 
-    # §5.5
+    # conventions/nd2/README.md §4.2
     labels, colors = [], []
     if (plane_count >= 1 and len(planes) == plane_count
             and all(k in (1, 3) for _, _, k in planes.values())
@@ -327,7 +331,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
         labels = [f"C{k}" for k in range(comp)]
         colors = ["FFFFFF"] * comp
 
-    # §5.4
+    # profiles/nd2.md §5.3
     total = 1
     for l in loops:
         total *= l["count"]
@@ -376,7 +380,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
             rows = [(start(f) + r * width_bytes, row_bytes) for r in range(height)]
             return [rows[j : j + h] for j in range(0, height, h)]
 
-    # §5.6
+    # conventions/nd2/README.md §4.3
     def loop(kind):
         return next((l for l in loops if l["kind"] == kind), None)
 
@@ -400,7 +404,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
     b = int(significant) if significant == int(significant) and 1 <= significant <= bpc else bpc
     window = {} if data_type == "float32" else {"window": {"min": 0, "max": 2**b - 1, "start": 0, "end": 2**b - 1}}
     positions = p["count"] if p else 1
-    # §5.6 stage positions: where each position's image goes.
+    # conventions/nd2/README.md §4.3 stage positions: where each position's image goes.
     translations = None
     m11, m12, m21, m22 = camera
     det = m11 * m22 - m12 * m21
@@ -415,7 +419,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
                 raise Rejected("a stage position is not finite")
             translations.append([shift.get(a, 0) for a in axes])
     out = Output(url)
-    out.json("zarr.json", group_json({"version": "0.5", "bioformats2raw.layout": 3}))
+    out.json("zarr.json", root_json({"version": "0.5", "bioformats2raw.layout": 3}, "nd2", url, source))
     out.json("OME/zarr.json", group_json({"version": "0.5", "series": [str(i) for i in range(positions)]}))
     for pi in range(positions):
         ome = image_ome(axes, units, [[scale[a] for a in axes]], f"position {pi}",

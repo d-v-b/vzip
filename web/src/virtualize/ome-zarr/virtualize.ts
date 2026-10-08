@@ -37,7 +37,7 @@ const ALNUM = /^[A-Za-z0-9]+$/;
 /** The member `k` of `o`, or undefined when it has none. */
 const get = (o: Obj, k: string): Json | undefined => (has(o, k) ? o[k] : undefined);
 
-/** A relative path (§11.2): one or more segments separated by `/`, none empty, `.` or `..`. */
+/** A relative path (conventions/ome-zarr/README.md §3): one or more segments separated by `/`, none empty, `.` or `..`. */
 export function relPath(p: unknown): p is string {
   return typeof p === "string" && p !== "" && p.split("/").every((s) => s !== "" && s !== "." && s !== "..");
 }
@@ -91,7 +91,7 @@ export async function declares04(store: Store): Promise<boolean> {
   return qa !== undefined && multiscales04(qa);
 }
 
-/** `rel` resolved against the group path `base` (§11.3, image-label `source`), or undefined above the root. */
+/** `rel` resolved against the group path `base` (conventions/ome-zarr/README.md §4, image-label `source`), or undefined above the root. */
 export function resolve(base: string, rel: string): string | undefined {
   const segs = base === "" ? [] : base.split("/");
   for (const s of rel.split("/")) {
@@ -106,7 +106,7 @@ export function resolve(base: string, rel: string): string | undefined {
   return segs.join("/");
 }
 
-/** The scale of a valid list of coordinate transformations (§11.3). */
+/** The scale of a valid list of coordinate transformations (conventions/ome-zarr/README.md §4). */
 function transforms(where: string, ts: Json | undefined, n: number): number[] {
   if (!Array.isArray(ts) || (ts.length !== 1 && ts.length !== 2) || !ts.every(isObject)) {
     reject(`${where}: coordinateTransformations is not one or two transformation objects`);
@@ -131,7 +131,7 @@ const sorted = (xs: Iterable<string>) => [...xs].sort(compareKeys);
 const lastSegment = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 
 export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { summary: object }> {
-  const h = await readHierarchy(store); // §11.1: every rule of §10.1–§10.3
+  const h = await readHierarchy(store); // conventions/ome-zarr/README.md §2: every rule of conventions/zarr2/README.md §2–§3
   const attrs = h.groups;
   const arrays = h.arrays;
   for (const path of sorted(attrs.keys())) {
@@ -142,7 +142,7 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
   const omeGroups = sorted([...attrs.keys()].filter((p) => seriesGroups.has(p) || OME_KEYS.some((k) => has(attrs.get(p)!, k))));
   const images = new Set([...attrs.keys()].filter((p) => has(attrs.get(p)!, "multiscales")));
 
-  // §11.3 Images.
+  // conventions/ome-zarr/README.md §4 Images.
   const levels: [string, number, number, string, string[]][] = []; // (image, multiscale, dataset, array, axis names)
   const multiscales = new Map<string, Obj[]>();
   for (const g of sorted(images)) {
@@ -195,7 +195,7 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
     });
   }
 
-  // §11.3 omero.
+  // conventions/ome-zarr/README.md §4 omero.
   for (const g of omeGroups) {
     const a = attrs.get(g)!;
     if (!has(a, "omero")) continue;
@@ -213,7 +213,7 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
     }
   }
 
-  // §11.3 Labels.
+  // conventions/ome-zarr/README.md §4 Labels.
   const labelImages = new Set<string>();
   const kept = new Map<string, number>(); // `${label image}\0${multiscale}` -> datasets kept, when fewer than all
   const keptKey = (g: string, i: number) => `${g}\0${i}`;
@@ -281,7 +281,7 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
     }
   }
 
-  // §11.3 Plates and wells.
+  // conventions/ome-zarr/README.md §4 Plates and wells.
   const wells = new Set([...attrs.keys()].filter((p) => has(attrs.get(p)!, "well")));
   const wellImages = new Map<string, Obj[]>();
   for (const g of sorted(wells)) {
@@ -358,7 +358,7 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
     }
   }
 
-  // §11.3 Collections (bioformats2raw.layout).
+  // conventions/ome-zarr/README.md §4 Collections (bioformats2raw.layout).
   for (const g of collections) {
     const a = attrs.get(g)!;
     if (asInt(a["bioformats2raw.layout"]) !== 3) reject(`${g || "/"}: bioformats2raw.layout is not 3`);
@@ -377,7 +377,7 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
     }
   }
 
-  // §11.3 I8 and §11.5: the axis names of the levels the output keeps.
+  // conventions/ome-zarr/README.md §4 I8 and conventions/ome-zarr/README.md §6: the axis names of the levels the output keeps.
   const names = new Map<string, string[]>();
   for (const [g, i, j, target, axisNames] of levels) {
     if (j >= (kept.get(keptKey(g, i)) ?? j + 1)) continue;
@@ -392,8 +392,9 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
     dropped += (multiscales.get(g)![i].datasets as Json[]).length - n;
   }
 
-  // §11.4, §11.5 Output.
+  // conventions/ome-zarr/README.md §5, conventions/ome-zarr/README.md §6 Output.
   const groups = new Map<string, Obj>();
+  const omes = new Map<string, Json>();
   const omeSet = new Set(omeGroups);
   for (const [path, a] of attrs) {
     if (!omeSet.has(path)) {
@@ -416,9 +417,8 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
       else if (VERSIONED.has(k)) v = without(v as Obj, ["version"]);
       ome[k] = v;
     }
-    const out = without(a, keys);
-    out.ome = ome;
-    groups.set(path, out);
+    groups.set(path, without(a, keys));
+    omes.set(path, ome);
   }
   const docs = new Map<string, Json>();
   for (const [path, doc] of arrays) {
@@ -429,7 +429,7 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
     .map((c) => join(join(c, "OME"), "METADATA.ome.xml"))
     .filter((k) => store.objects.has(k))
     .map((k) => [k, store.objects.get(k)!]);
-  const [result, all] = hierarchyOutput(store, h, groups, docs, xml);
+  const [result, all] = hierarchyOutput(store, h, groups, docs, "ome-zarr", xml, omes);
   const nonempty = all.filter(([, n]) => n > 0).length;
   let fields = 0;
   for (const v of wellImages.values()) fields += v.length;

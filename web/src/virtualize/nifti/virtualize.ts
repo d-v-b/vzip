@@ -3,7 +3,7 @@
 // z-slice, or each row block of a large one, becomes a Zarr chunk that
 // references it.
 
-import type { ByteReader } from "../common.ts";
+import { base64, type ByteReader, declare, jsonNumber, jsonText } from "../common.ts";
 import type { ArchiveDesc, EntryDesc } from "../../writer.ts";
 
 export class NiftiError extends Error {}
@@ -14,7 +14,7 @@ const reject = (message: string): never => {
 const view = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset, b.byteLength);
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
-const BLOCK_BYTES = 1 << 17; // the most bytes of a row block (§7.3)
+const BLOCK_BYTES = 1 << 17; // the most bytes of a row block (conventions/nifti/README.md §4.1)
 
 type Kind = "i16" | "i32" | "i64" | "u8" | "f32" | "f64";
 type Field = [offset: number, kind: Kind, count?: number];
@@ -25,7 +25,7 @@ interface Layout {
   qform_code: Field; sform_code: Field; quatern: Field; qoffset: Field; srow: Field;
 }
 
-// Header length and the offset and kind of each field (§7.1).
+// Header length and the offset and kind of each field (conventions/nifti/README.md §2).
 const LAYOUTS: Record<1 | 2, Layout> = {
   1: {
     length: 348, dim: [40, "i16", 8], datatype: [70, "i16"], bitpix: [72, "i16"], pixdim: [76, "f32", 8],
@@ -41,7 +41,40 @@ const LAYOUTS: Record<1 | 2, Layout> = {
   },
 };
 
-// datatype: [Zarr data type, bitpix, samples per voxel] (§7.2).
+// Every header field, in the standard's order, with its offset and kind: the
+// source metadata of conventions/nifti/README.md §5. A kind "s<N>" is a
+// character field of N bytes; a count makes the field an array.
+type HeaderField = [name: string, offset: number, kind: Kind | `s${number}`, count?: number];
+const HEADER_FIELDS: Record<1 | 2, HeaderField[]> = {
+  1: [
+    ["sizeof_hdr", 0, "i32"], ["data_type", 4, "s10"], ["db_name", 14, "s18"], ["extents", 32, "i32"],
+    ["session_error", 36, "i16"], ["regular", 38, "s1"], ["dim_info", 39, "u8"], ["dim", 40, "i16", 8],
+    ["intent_p1", 56, "f32"], ["intent_p2", 60, "f32"], ["intent_p3", 64, "f32"], ["intent_code", 68, "i16"],
+    ["datatype", 70, "i16"], ["bitpix", 72, "i16"], ["slice_start", 74, "i16"], ["pixdim", 76, "f32", 8],
+    ["vox_offset", 108, "f32"], ["scl_slope", 112, "f32"], ["scl_inter", 116, "f32"], ["slice_end", 120, "i16"],
+    ["slice_code", 122, "u8"], ["xyzt_units", 123, "u8"], ["cal_max", 124, "f32"], ["cal_min", 128, "f32"],
+    ["slice_duration", 132, "f32"], ["toffset", 136, "f32"], ["glmax", 140, "i32"], ["glmin", 144, "i32"],
+    ["descrip", 148, "s80"], ["aux_file", 228, "s24"], ["qform_code", 252, "i16"], ["sform_code", 254, "i16"],
+    ["quatern_b", 256, "f32"], ["quatern_c", 260, "f32"], ["quatern_d", 264, "f32"], ["qoffset_x", 268, "f32"],
+    ["qoffset_y", 272, "f32"], ["qoffset_z", 276, "f32"], ["srow_x", 280, "f32", 4], ["srow_y", 296, "f32", 4],
+    ["srow_z", 312, "f32", 4], ["intent_name", 328, "s16"], ["magic", 344, "s4"],
+  ],
+  2: [
+    ["sizeof_hdr", 0, "i32"], ["magic", 4, "s8"], ["datatype", 12, "i16"], ["bitpix", 14, "i16"], ["dim", 16, "i64", 8],
+    ["intent_p1", 80, "f64"], ["intent_p2", 88, "f64"], ["intent_p3", 96, "f64"], ["pixdim", 104, "f64", 8],
+    ["vox_offset", 168, "i64"], ["scl_slope", 176, "f64"], ["scl_inter", 184, "f64"], ["cal_max", 192, "f64"],
+    ["cal_min", 200, "f64"], ["slice_duration", 208, "f64"], ["toffset", 216, "f64"], ["slice_start", 224, "i64"],
+    ["slice_end", 232, "i64"], ["descrip", 240, "s80"], ["aux_file", 320, "s24"], ["qform_code", 344, "i32"],
+    ["sform_code", 348, "i32"], ["quatern_b", 352, "f64"], ["quatern_c", 360, "f64"], ["quatern_d", 368, "f64"],
+    ["qoffset_x", 376, "f64"], ["qoffset_y", 384, "f64"], ["qoffset_z", 392, "f64"], ["srow_x", 400, "f64", 4],
+    ["srow_y", 432, "f64", 4], ["srow_z", 464, "f64", 4], ["slice_code", 496, "i32"], ["xyzt_units", 500, "i32"],
+    ["intent_code", 504, "i32"], ["intent_name", 508, "s16"], ["dim_info", 524, "u8"], ["unused_str", 525, "s15"],
+  ],
+};
+const MAX_EXTENSION_BYTES = 1 << 24; // the most extension data recorded (conventions/nifti/README.md §5)
+const SIZES: Record<Kind, number> = { u8: 1, i16: 2, i32: 4, i64: 8, f32: 4, f64: 8 };
+
+// datatype: [Zarr data type, bitpix, samples per voxel] (conventions/nifti/README.md §3).
 const DATATYPES: Record<number, [string, number, number]> = {
   2: ["uint8", 8, 1], 4: ["int16", 16, 1], 8: ["int32", 32, 1], 16: ["float32", 32, 1],
   64: ["float64", 64, 1], 256: ["int8", 8, 1], 512: ["uint16", 16, 1], 768: ["uint32", 32, 1],
@@ -52,7 +85,7 @@ const UNSUPPORTED: Record<number, string> = {
 };
 const SPACE_UNITS: Record<number, string> = { 1: "meter", 2: "millimeter", 3: "micrometer" };
 const TIME_UNITS: Record<number, string> = { 8: "second", 16: "millisecond", 24: "microsecond" };
-const COLOURS: [string, string][] = [["R", "FF0000"], ["G", "00FF00"], ["B", "0000FF"], ["A", "FFFFFF"]];
+const COLORS: [string, string][] = [["R", "FF0000"], ["G", "00FF00"], ["B", "0000FF"], ["A", "FFFFFF"]];
 const TYPES: Record<string, string> = { t: "time", c: "channel", z: "space", y: "space", x: "space" };
 
 const ascii = (b: Uint8Array) => String.fromCharCode(...b);
@@ -116,8 +149,8 @@ export async function virtualizeNifti(
   if (!(code in DATATYPES)) reject(`unknown NIfTI datatype ${code}`);
   const [dataType, bits, samples] = DATATYPES[code];
   if (bitpix !== bits) reject(`bitpix ${bitpix} does not match datatype ${code}`);
-  const colour = samples > 1;
-  if (colour && n >= 5) reject("colour data with a fifth dimension");
+  const color = samples > 1;
+  if (color && n >= 5) reject("color data with a fifth dimension");
   const rawOffset = field("vox_offset");
   let vox: bigint;
   if (typeof rawOffset === "number") {
@@ -135,7 +168,7 @@ export async function virtualizeNifti(
   const [X, Y, Z, T, C] = sizes.slice(1, 6).map(Number);
   const v = Number(vox);
 
-  // §7.3
+  // Row blocks (conventions/nifti/README.md §4.1) and their ranges (profiles/nifti.md §7.2)
   const row = X * b;
   let h = 1;
   for (let d = Math.min(Y, Math.floor(BLOCK_BYTES / row)); d > 1; d--) {
@@ -145,16 +178,16 @@ export async function virtualizeNifti(
     }
   }
 
-  // §7.4
+  // conventions/nifti/README.md §4.2
   let scaling: [number, number] | undefined;
-  if (!colour) {
+  if (!color) {
     const slope = num("scl_slope");
     const inter = num("scl_inter");
     if (Number.isFinite(slope) && slope !== 0) scaling = [slope, Number.isFinite(inter) ? inter : 0];
   }
   const nontrivial = scaling !== undefined && (scaling[0] !== 1 || scaling[1] !== 0);
 
-  // §7.5
+  // conventions/nifti/README.md §4.3
   const unitsCode = num("xyzt_units");
   const space = SPACE_UNITS[unitsCode & 7];
   const time = TIME_UNITS[unitsCode & 56];
@@ -186,10 +219,10 @@ export async function virtualizeNifti(
     unit[a] = valid(s) ? space : undefined;
   });
 
-  // §7.6
+  // conventions/nifti/README.md §4.4
   let channels: object[] | undefined;
-  if (colour) {
-    channels = COLOURS.slice(0, samples).map(([label, color]) => ({
+  if (color) {
+    channels = COLORS.slice(0, samples).map(([label, color]) => ({
       label, color, active: true, window: { min: 0, max: 255, start: 0, end: 255 },
     }));
   } else {
@@ -209,18 +242,18 @@ export async function virtualizeNifti(
     }
   }
 
-  // §7.7
+  // conventions/nifti/README.md §4.1
   const axes: string[] = [];
   if (n >= 4) axes.push("t");
-  if (n >= 5 || colour) axes.push("c");
+  if (n >= 5 || color) axes.push("c");
   if (n >= 3) axes.push("z");
   axes.push("y", "x");
-  const shape: Record<string, number> = { t: T, c: colour ? samples : C, z: Z, y: Y, x: X };
+  const shape: Record<string, number> = { t: T, c: color ? samples : C, z: Z, y: Y, x: X };
   const chunkShape: Record<string, number> = { t: 1, c: samples, z: 1, y: h, x: X };
   const translation = diagonal ? axes.map((a) => (a === "x" ? offset![0] : a === "y" ? offset![1] : a === "z" ? offset![2] : 0)) : undefined;
   const endian = little ? "little" : "big";
   const codecs: unknown[] = [];
-  if (colour) {
+  if (color) {
     const stored = axes.filter((a) => a !== "c").concat("c");
     codecs.push({ name: "transpose", configuration: { order: stored.map((a) => axes.indexOf(a)) } });
   }
@@ -242,10 +275,41 @@ export async function virtualizeNifti(
     }],
     ...(channels ? { omero: { channels } } : {}),
   };
-  const attributes = {
-    ome,
-    ...(nontrivial ? { nifti: { scl_slope: scaling![0], scl_inter: scaling![1] } } : {}),
-  };
+  // The source metadata (conventions/nifti/README.md §5).
+  const headerJson: Record<string, unknown> = {};
+  for (const [name, at, kind, count] of HEADER_FIELDS[version]) {
+    if (kind[0] === "s") {
+      headerJson[name] = jsonText(new Uint8Array(header.buffer, header.byteOffset + at, Number(kind.slice(1))));
+    } else if (count === undefined) {
+      headerJson[name] = jsonNumber(one(at, kind as Kind));
+    } else {
+      headerJson[name] = Array.from({ length: count }, (_, i) => jsonNumber(one(at + i * SIZES[kind as Kind], kind as Kind)));
+    }
+  }
+  const meta: Record<string, unknown> = { nifti_version: version, byte_order: endian, header: headerJson };
+  const extender = await read(length, 1);
+  if (extender[0] !== 0) {
+    const extensions: { ecode: number; edata: string }[] = [];
+    let q = length + 4;
+    let total = 0;
+    let cut = false;
+    while (q + 8 <= v) {
+      const e = view(await read(q, 8));
+      const esize = e.getInt32(0, little);
+      const ecode = e.getInt32(4, little);
+      if (esize < 8 || q + esize > v || total + esize - 8 > MAX_EXTENSION_BYTES) {
+        cut = true;
+        break;
+      }
+      extensions.push({ ecode, edata: base64(await read(q + 8, esize - 8)) });
+      total += esize - 8;
+      q += esize;
+    }
+    meta.extensions = extensions;
+    if (cut) meta.extensions_truncated = true;
+  }
+  if (nontrivial) meta.scaling = { slope: scaling![0], inter: scaling![1] };
+  const attributes = declare({ ome }, "nifti", url, meta);
   const entries: EntryDesc[] = [];
   const slab = Y * row;
   for (let k = 0; k < C; k++) {
@@ -281,12 +345,11 @@ export async function virtualizeNifti(
       }),
     },
   );
-  const extender = await read(length, 1);
   return {
     sources: [{ url }],
     entries,
     summary: {
-      version, byteOrder: endian, sizes: Object.fromEntries(axes.map((a) => [a, shape[a]])), dataType, colour,
+      version, byteOrder: endian, sizes: Object.fromEntries(axes.map((a) => [a, shape[a]])), dataType, color,
       rowBlock: h, chunks, scaling: nontrivial ? { slope: scaling![0], inter: scaling![1] } : null, affine,
       translation: translation !== undefined, extensions: extender[0] !== 0,
     },

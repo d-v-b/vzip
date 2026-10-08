@@ -45,3 +45,54 @@ def test_padded_rows_become_one_range_per_row():
 def test_rejects(name, message):
     with pytest.raises(Rejected, match=message):
         virtualize(str(FIXTURES / name), url="https://data.test/x")
+
+
+def test_chunks_json():
+    """Every chunk but the frames, by the forms of conventions/nd2/README.md §5."""
+    import base64
+    import struct
+
+    import vzip.virtualize.nd2.source as source
+
+    def chunk(name: bytes, data: bytes, magic: int = 0x0ABECEDA) -> bytes:
+        return struct.pack("<IIQ", magic, len(name), len(data)) + name + data
+
+    def lv_string(name: str, value: str) -> bytes:
+        n = (name + "\0").encode("utf-16-le")
+        return bytes([8, len(n) // 2]) + n + (value + "\0").encode("utf-16-le")
+
+    parts = {
+        b"ImageTextInfoLV!": chunk(b"ImageTextInfoLV!", lv_string("sDescription", "a cell")),
+        b"CustomData|AcqTimesCache!": chunk(b"CustomData|AcqTimesCache!", struct.pack("<2d", 0.0, 1000.5)),
+        b"ImageEventsLV!": chunk(b"ImageEventsLV!", b"\x63\x00"),  # not valid LV: kept as data
+        b"ImageDataSeq|0!": chunk(b"ImageDataSeq|0!", bytes(16)),  # a frame: not recorded
+        b"BadMagic!": chunk(b"BadMagic!", b"xy", magic=0),
+    }
+    blob, offsets = b"", {}
+    for k, v in parts.items():
+        offsets[k] = len(blob)
+        blob += v
+    offsets[b"Outside!"] = len(blob) - 4  # its header runs past the end
+    offsets[b"Huge|1!"] = len(blob)
+    blob += struct.pack("<IIQ", 0x0ABECEDA, 7, 1 << 40) + b"Huge|1!"  # its data is not in the file
+
+    def read(o, n):
+        return blob[o:o + n]
+
+    got = source.chunks_json(read, len(blob), offsets)
+    assert got == {
+        "ImageTextInfoLV!": {"lv": {"sDescription": "a cell"}},
+        "CustomData|AcqTimesCache!": {"data": base64.b64encode(struct.pack("<2d", 0.0, 1000.5)).decode()},
+        "ImageEventsLV!": {"data": base64.b64encode(b"\x63\x00").decode()},
+        "BadMagic!": {},
+        "Outside!": {},
+        "Huge|1!": {"size": 1 << 40},
+    }
+    # The budget is shared in map order: once spent, later chunks keep only their size.
+    source.MAX_DATA_BYTES, saved = 20, source.MAX_DATA_BYTES
+    try:
+        got = source.chunks_json(read, len(blob), offsets)
+    finally:
+        source.MAX_DATA_BYTES = saved
+    assert "lv" not in got["ImageTextInfoLV!"] and got["CustomData|AcqTimesCache!"] == {"data": base64.b64encode(
+        struct.pack("<2d", 0.0, 1000.5)).decode()}

@@ -2,16 +2,17 @@
 // chunks are vzip references to the TIFF's tiles: the TIFF profile
 // (profiles/tiff.md, §3).
 
-import { type ByteReader, DataSources, MAX_PAYLOAD, type Part, payloadSize, toRange } from "../common.ts";
+import { type ByteReader, DataSources, declare, MAX_PAYLOAD, type Part, payloadSize, toRange } from "../common.ts";
 import { type Ifd, num, nums, readTiff, Tag, TiffError } from "./ifd.ts";
+import { Translator } from "./tags.ts";
 import type { ArchiveDesc, EntryDesc } from "../../writer.ts";
 
 const JPEG2000 = new Set([33003, 33004, 33005, 34712]);
 const JPEG = 7;
-// The Adobe APP14 marker without its last byte, the colour transform (§3.6).
+// The Adobe APP14 marker without its last byte, the color transform (profiles/tiff.md §3.3).
 const ADOBE = [0xff, 0xee, 0x00, 0x0e, 0x41, 0x64, 0x6f, 0x62, 0x65, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00];
 
-/** The start of each JPEG tile's stream (§3.6), a data source: SOI, the Adobe colour
+/** The start of each JPEG tile's stream (profiles/tiff.md §3.3), a data source: SOI, the Adobe color
  * marker for 3 samples, and the IFD's tables. */
 function jpegPrefix(ifd: Ifd, spp: number, photometric: number | null): Uint8Array {
   const out = [0xff, 0xd8];
@@ -30,7 +31,7 @@ const reject = (message: string): never => {
   throw new TiffError(message);
 };
 
-// ---- OME-XML (§3.2)
+// ---- OME-XML (conventions/tiff/README.md §3)
 
 interface XmlTag {
   start: number;
@@ -60,7 +61,7 @@ function decodeXml(s: string): string {
   });
 }
 
-/** The tags of `xml` in order, and the spans of its skipped sections (§3.2). */
+/** The tags of `xml` in order, and the spans of its skipped sections (conventions/tiff/README.md §3). */
 function scan(xml: string): { tags: XmlTag[]; skipped: [number, number][] } {
   const tags: XmlTag[] = [];
   const skipped: [number, number][] = [];
@@ -159,14 +160,14 @@ function physical(attrs: Record<string, string>, d: string): number | undefined 
   return decimal(attrs[`PhysicalSize${d}`], true);
 }
 
-/** A decimal value (§3.2), or undefined. */
+/** A decimal value (conventions/tiff/README.md §3), or undefined. */
 function decimal(v: string | undefined, positive = false): number | undefined {
   if (v === undefined || !DECIMAL.test(v)) return undefined;
   const x = Number(v);
   return Number.isFinite(x) && (x > 0 || !positive) ? x : undefined;
 }
 
-/** The `name = value` fields of an Aperio ImageDescription (§3.6), or undefined. */
+/** The `name = value` fields of an Aperio ImageDescription (conventions/tiff/README.md §4.4), or undefined. */
 function aperioFields(description: Uint8Array): Map<string, string> | undefined {
   if (String.fromCharCode(...description.subarray(0, 6)) !== "Aperio") return undefined;
   let text: string;
@@ -186,7 +187,7 @@ function aperioFields(description: Uint8Array): Map<string, string> | undefined 
   return fields;
 }
 
-// Sizes of the length units in metres (§2.3).
+// Sizes of the length units in metres (conventions §5).
 const LENGTHS: Record<string, number> = {
   micrometer: 1e-6, nanometer: 1e-9, millimeter: 1e-3, centimeter: 1e-2, meter: 1,
   angstrom: 1e-10, picometer: 1e-12, inch: 0.0254, foot: 0.3048,
@@ -229,7 +230,7 @@ function format(ifd: Ifd) {
     planar,
     compression: num(ifd, Tag.Compression, 1),
     predictor: num(ifd, Tag.Predictor, 1),
-    // For JPEG, PhotometricInterpretation is part of the format (§3.1).
+    // For JPEG, PhotometricInterpretation is part of the format (conventions/tiff/README.md §2).
     photometric: num(ifd, Tag.Compression, 1) === JPEG ? (ifd.tags.get(Tag.PhotometricInterpretation) as number[] | undefined)?.[0] ?? null : null,
   };
 }
@@ -237,7 +238,7 @@ function format(ifd: Ifd) {
 const sameFormat = (a: Ifd, b: Ifd) => JSON.stringify(format(a)) === JSON.stringify(format(b));
 const tiled = (ifd: Ifd) => ifd.tags.has(Tag.TileWidth) && ifd.tags.has(Tag.TileOffsets);
 
-/** The size checks of §3.1, for planes, levels and level-scan candidates. */
+/** The size checks of conventions/tiff/README.md §2, for planes, levels and level-scan candidates. */
 function checkSize(ifd: Ifd) {
   if (num(ifd, Tag.ImageWidth) < 1 || num(ifd, Tag.ImageLength) < 1) reject(`the image at ${ifd.offset} is empty`);
   if (tiled(ifd)) {
@@ -300,12 +301,25 @@ export async function virtualizeTiff(
   fileSize: number,
 ): Promise<Virtualized> {
   const tiff = await readTiff(read, fileSize);
+  // The source metadata (conventions/tiff/README.md §5): every IFD's tags.
+  const translate = new Translator(read, fileSize, tiff.littleEndian);
+  const sourceIfds: Record<string, unknown>[] = [];
+  for (const ifd of tiff.ifds) {
+    const node: Record<string, unknown> = { tags: await translate.tags(ifd.entries) };
+    if (ifd.tags.has(Tag.SubIFDs)) {
+      const subs = [];
+      for (const sub of ifd.subIfds) subs.push({ tags: await translate.tags(sub.entries) });
+      node.subifds = subs;
+    }
+    sourceIfds.push(node);
+  }
+  const source = { byte_order: tiff.littleEndian ? "little" : "big", bigtiff: tiff.bigTiff, ifds: sourceIfds };
   const [ifd0] = tiff.ifds;
   if (ifd0 === undefined) reject("no images");
 
-  // §3.2: OME-XML in IFD 0's ImageDescription (type ASCII, valid UTF-8).
+  // conventions/tiff/README.md §3: OME-XML in IFD 0's ImageDescription (type ASCII, valid UTF-8).
   const description = ifd0.tags.get(Tag.ImageDescription);
-  let raw: Uint8Array | undefined;
+  let xml: string | undefined; // X, the OME-XML's text
   let ome: Ome | undefined;
   let ascii: Uint8Array | undefined; // D: the ASCII description up to its first NUL
   if (ifd0.types.get(Tag.ImageDescription) === 2 && description instanceof Uint8Array) {
@@ -320,13 +334,13 @@ export async function virtualizeTiff(
     }
     if (text !== undefined) {
       ome = parseOme(text);
-      if (ome !== undefined) raw = d;
+      if (ome !== undefined) xml = text;
     }
   }
   const f = format(ifd0);
   if (!JPEG2000.has(f.compression) && f.predictor !== 1) reject(`unsupported predictor ${f.predictor}`);
 
-  // §3.3: planes, in (t, c, z) order, as main-chain IFD indices.
+  // conventions/tiff/README.md §4.1: planes, in (t, c, z) order, as main-chain IFD indices.
   const px = ome?.pixels ?? {};
   const sizeZ = intAttr(px, "SizeZ", 1, 1);
   const sizeT = intAttr(px, "SizeT", 1, 1);
@@ -371,7 +385,7 @@ export async function virtualizeTiff(
   if (planeIfd.some((i) => i < 0 || i >= tiff.ifds.length)) reject("OME-XML planes do not match the TIFF's images");
   const planes = planeIfd.map((i) => tiff.ifds[i]);
 
-  // §3.4: pyramid levels.
+  // conventions/tiff/README.md §4.2: pyramid levels.
   const levels: Level[] = [];
   if (ifd0.subIfds.length > 0) {
     const s = ifd0.subIfds.length;
@@ -396,9 +410,9 @@ export async function virtualizeTiff(
     if (!l.ifds.every((i) => sameFormat(i, ifd0))) reject("pyramid levels differ in sample format or compression");
   }
 
-  // §3.5: data type and codecs.
+  // conventions/tiff/README.md §4.3: data type and codecs.
   const contig = f.spp > 1 && f.planar === 1;
-  // §3.6: pixel size and position.
+  // conventions/tiff/README.md §4.4: pixel size and position.
   const sizes: Record<string, number> = {};
   const units: Record<string, string> = {};
   let centre: Record<string, number> | undefined;
@@ -485,7 +499,7 @@ export async function virtualizeTiff(
     codecs.unshift({ name: "transpose", configuration: { order: stored } });
   }
 
-  // §3.6: output.
+  // conventions/tiff/README.md §4.4: the arrays; profiles/tiff.md §3.3: their chunks.
   const data = new DataSources();
   const entries: EntryDesc[] = [];
   const meta: EntryDesc[] = [];
@@ -566,7 +580,7 @@ export async function virtualizeTiff(
     });
     datasets.push({ path: String(li), coordinateTransformations: [{ type: "scale", scale }] as unknown[] });
   }
-  // The same translation at every level (§2.3).
+  // The same translation at every level (conventions §5).
   if (units.x !== undefined && units.y !== undefined) {
     if (centre !== undefined) {
       corner = { x: centre.x - base.width * (sizes.x ?? 1) / 2, y: centre.y - base.height * (sizes.y ?? 1) / 2 };
@@ -583,7 +597,7 @@ export async function virtualizeTiff(
     bytes: json({
       zarr_format: 3,
       node_type: "group",
-      attributes: {
+      attributes: declare({
         ome: {
           version: "0.5",
           multiscales: [{
@@ -592,10 +606,9 @@ export async function virtualizeTiff(
             datasets,
           }],
         },
-      },
+      }, "tiff", url, source),
     }),
   });
-  if (raw !== undefined) meta.push({ key: "OME/METADATA.ome.xml", bytes: raw.slice(), compress: true });
   return {
     sources: data.table(url),
     entries: [...entries, ...meta],

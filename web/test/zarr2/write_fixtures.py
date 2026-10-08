@@ -277,6 +277,18 @@ def main() -> None:
     d = store("zarr2_reject_no_root_metadata")
     array(d, "x", arr((2, 2), "|u1"), [2, 2], write_chunks=False)
 
+    # The virtualization convention (VIRTUALIZE.md conventions §2): every copied attribute,
+    # another convention's included, goes under vzip_virtualized.zarr2 on its node.
+    # `v` was itself virtualized (it carries a vzip declaration and the key), and
+    # `bad` a zarr_conventions that is not an array: both are copied as they are.
+    proj = {"uuid": "f17cb550-5864-4468-aeb7-f3180cfb622f", "name": "proj:"}
+    d = store("zarr2_conventions")
+    group(d, "", {"zarr_conventions": [proj], "proj:code": "EPSG:4326"})
+    array(d, "x", arr((2, 2), "|u1"), [2, 2], attrs={"zarr_conventions": [proj], "proj:code": "EPSG:4326"})
+    group(d, "v", {"zarr_conventions": [{"uuid": "48e9ac4e-1156-4a62-955e-20467d9c2700"}],
+                   "vzip_virtualized": {"profile": "tiff", "version": 1}})
+    group(d, "bad", {"zarr_conventions": proj})
+
     total = sum(f.stat().st_size for f in OUT.rglob("*") if f.is_file())
     print(f"{sum(1 for _ in OUT.iterdir())} stores, {total} bytes")
 

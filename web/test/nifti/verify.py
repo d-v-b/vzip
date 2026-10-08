@@ -5,7 +5,7 @@ by web/conformance/virtualize.ts (the browser code, run under Node). The
 array is read through the reference reader and zarr-python and must equal
 nibabel's unscaled data (`img.dataobj.get_unscaled()`), with nibabel's
 (x, y, z, t, dimension 5) axes put in the output's order (t, c, z, y, x), and
-a colour type's samples as the channel axis. A nontrivial scaling must be
+a color type's samples as the channel axis. A nontrivial scaling must be
 recorded as nibabel reads it. `nifti_reject_*` files must be rejected.
 
 Usage: uv run python web/test/nifti/verify.py [<dir of .nii files>]
@@ -13,6 +13,8 @@ Usage: uv run python web/test/nifti/verify.py [<dir of .nii files>]
 
 from __future__ import annotations
 
+import base64
+import io
 import subprocess
 import sys
 import tempfile
@@ -34,16 +36,16 @@ def expected(img) -> tuple[np.ndarray, list[str]]:
     """nibabel's raw voxels as a (t, c, z, y, x) array, and the axes present."""
     n = int(img.header["dim"][0])
     data = np.asarray(img.dataobj.get_unscaled())
-    colour = data.dtype.names is not None
-    if colour:
+    color = data.dtype.names is not None
+    if color:
         data = np.stack([data[name] for name in data.dtype.names], axis=-1)
     else:
         data = data[..., np.newaxis]  # the samples
     sizes = list(data.shape[:-1]) + [1] * (7 - data.ndim + 1)
     data = data.reshape(sizes[:5] + [data.shape[-1]])  # x, y, z, t, k, samples
-    # Colour samples are the channel axis; dimension 5 is otherwise.
-    data = data[..., 0, :] if colour else data[..., 0]
-    axes = (["t"] if n >= 4 else []) + (["c"] if n >= 5 or colour else []) + (["z"] if n >= 3 else []) + ["y", "x"]
+    # Color samples are the channel axis; dimension 5 is otherwise.
+    data = data[..., 0, :] if color else data[..., 0]
+    axes = (["t"] if n >= 4 else []) + (["c"] if n >= 5 or color else []) + (["z"] if n >= 3 else []) + ["y", "x"]
     full = data.transpose(3, 4, 2, 1, 0)  # t, c, z, y, x
     drop = tuple(i for i, a in enumerate("tczyx") if a not in axes)
     return full.squeeze(axis=drop), axes
@@ -65,6 +67,54 @@ def load(nii: Path, tmp: str):
     copy = Path(tmp) / nii.name
     copy.write_bytes(hdr.binaryblock + data[len(hdr.binaryblock):])
     return nib.load(copy)
+
+
+def as_json(v):
+    """A header value as conventions/README.md §6 writes it, from nibabel's numpy value."""
+    if isinstance(v, np.ndarray) and v.dtype.kind != "S":
+        return [as_json(x) for x in v.tolist()]
+    if isinstance(v, (bytes, np.bytes_)):
+        b = bytes(v).split(b"\0", 1)[0]
+        try:
+            return b.decode("utf-8")
+        except UnicodeDecodeError:
+            return b.decode("latin-1")
+    v = v.item() if hasattr(v, "item") else v
+    if isinstance(v, float):
+        return "NaN" if v != v else "Infinity" if v == float("inf") else "-Infinity" if v == float("-inf") else v
+    return v if abs(v) <= 2**53 - 1 else str(v)
+
+
+def header_problems(nii: Path, meta: dict) -> list[str]:
+    """Every recorded header field and extension against nibabel's reading of the raw header."""
+    data = nii.read_bytes()
+    two = data[4:7] == b"n+2"
+    klass = nib.Nifti2Header if two else nib.Nifti1Header
+    raw = klass.from_fileobj(io.BytesIO(data), check=False)
+    want = {}
+    for name in raw.structarr.dtype.names:
+        if name == "eol_check":  # nibabel splits NIfTI-2's char magic[8]; the text stops at its NUL
+            continue
+        want[name] = as_json(raw.structarr[name][()] if raw.structarr[name].shape == () else raw.structarr[name])
+    problems = []
+    if list(meta["header"]) != list(want):
+        problems.append(f"header fields {list(meta['header'])} != nibabel's {list(want)}")
+    for name, value in want.items():
+        if meta["header"].get(name) != value:
+            problems.append(f"header {name} {meta['header'].get(name)!r} != nibabel's {value!r}")
+    if meta["nifti_version"] != (2 if two else 1) or meta["byte_order"] != ("little" if raw.endianness == "<" else "big"):
+        problems.append(f"version or byte order {meta['nifti_version']}, {meta['byte_order']}")
+    exts = [(e.get_code(), e._raw) for e in raw.extensions] if raw.extensions else []
+    if data[raw.structarr.itemsize] != 0:  # the extender says extensions follow
+        got = [(e["ecode"], base64.b64decode(e["edata"])) for e in meta.get("extensions", [])]
+        exts = [(c, r) for c, r in exts]
+        ok = len(got) == len(exts) and all(c == wc and d[:len(r)] == r and not d[len(r):].strip(b"\0")
+                                           for (c, d), (wc, r) in zip(got, exts))
+        if not ok:
+            problems.append(f"extensions {[(c, len(d)) for c, d in got]} != nibabel's {[(c, len(r)) for c, r in exts]}")
+    elif "extensions" in meta:
+        problems.append("extensions recorded, the extender says none")
+    return problems
 
 
 def main(fixtures: Path) -> int:
@@ -96,14 +146,16 @@ def main(fixtures: Path) -> int:
                 problems.append(f"dtype {got.dtype} != {want.dtype}")
             if got.shape != want.shape or not np.array_equal(got, want, equal_nan=got.dtype.kind == "f"):
                 problems.append(f"voxels differ ({got.shape} vs {want.shape})")
+            meta = root.attrs["vzip_virtualized"]["nifti"]  # conventions/nifti/README.md §5
             slope, inter = img.dataobj.slope, img.dataobj.inter  # the header's are reset on load
-            recorded = root.attrs.get("nifti")
-            # nibabel keeps a colour type's scl_slope but cannot apply it; NIfTI does not scale colour.
+            recorded = meta.get("scaling")
+            # nibabel keeps a color type's scl_slope but cannot apply it; NIfTI does not scale color.
             if img.get_data_dtype().names is None and (slope, inter) != (1, 0):
-                if recorded != {"scl_slope": slope, "scl_inter": inter}:
+                if recorded != {"slope": slope, "inter": inter}:
                     problems.append(f"scaling {recorded} != nibabel's {(slope, inter)}")
             elif recorded is not None:
                 problems.append(f"scaling {recorded} recorded, nibabel has none")
+            problems += header_problems(nii, meta)
             failures += bool(problems)
             print(f"{nii.name:44s} {'ok' if not problems else problems} ({arr.nchunks} chunks, axes {axes})")
     print(f"\n{failures} failures")

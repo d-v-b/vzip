@@ -3,6 +3,7 @@
 // chunk object). Shared by the N5 (§9), Zarr v2 (§10) and OME-Zarr (§11) profiles.
 
 import { isUriReference } from "../uri.ts";
+import { declare, type Profile } from "./common.ts";
 import type { ArchiveDesc, EntryDesc } from "../writer.ts";
 
 /** The store input is rejected for a reason no single store profile owns (§1.4–§1.6). */
@@ -498,7 +499,7 @@ export function parentOf(path: string): string {
   return i < 0 ? "" : path.slice(0, i);
 }
 
-/** Paths in classification order: by number of segments, then by key (§9.1, §10.1). */
+/** Paths in classification order: by number of segments, then by key (conventions/n5/README.md §2, conventions/zarr2/README.md §2). */
 export function byDepth(paths: Iterable<string>): string[] {
   return [...paths].sort((a, b) => depth(a) - depth(b) || compareKeys(a, b));
 }
@@ -527,7 +528,7 @@ export function implicitGroups(nodes: Iterable<string>): Set<string> {
   return out;
 }
 
-/** Is `s` a decimal integer without leading zeros below `limit` (§9.3, §10.2)? */
+/** Is `s` a decimal integer without leading zeros below `limit` (conventions/n5/README.md §3.1, conventions/zarr2/README.md §3)? */
 export function canonicalIndex(s: string, limit: number): boolean {
   return /^(0|[1-9][0-9]{0,16})$/.test(s) && Number(s) < limit;
 }
@@ -554,6 +555,29 @@ export function findChunks(objects: Map<string, number>, arrays: Map<string, (re
 }
 
 export const docKey = (path: string) => join(path, "zarr.json");
+
+/** Declares the profile's convention on the root node of `docs` (conventions §2). */
+/** Declares the profile's convention (conventions §2). Each document's `attributes`
+ * holds, until then, the attributes copied from the source; they move into the
+ * property `vzip_virtualized` (as its member named after the profile), and the
+ * node's attributes are the member `ome` that `omes` gives for its path, if
+ * any, and the convention's members. The root always declares the convention;
+ * any other node only when it has copied attributes. */
+export function declareNodes(
+  docs: Map<string, Json>,
+  profile: Profile,
+  url: string,
+  omes: Map<string, Json> = new Map(),
+): void {
+  for (const [key, doc] of docs) {
+    const path = key.slice(0, key.length - "zarr.json".length).replace(/\/$/, "");
+    const node = doc as { [k: string]: Json };
+    const target: { [k: string]: Json } = omes.has(path) ? { ome: omes.get(path)! } : {};
+    const attributes = declare(target, profile, path === "" ? url : undefined,
+      node.attributes as { [k: string]: Json }) as { [k: string]: Json };
+    docs.set(key, { ...node, attributes });
+  }
+}
 
 export interface StoreResult {
   docs: Map<string, Json>;

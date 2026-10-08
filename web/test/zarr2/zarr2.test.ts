@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { directoryStore } from "../../conformance/directory_store.ts";
+import { declare } from "../../src/virtualize/common.ts";
 import { virtualizeStore } from "../../src/virtualize/index.ts";
 import { StoreError } from "../../src/virtualize/store.ts";
 import { Zarr2Error } from "../../src/virtualize/zarr2/virtualize.ts";
@@ -52,12 +53,13 @@ test("virtualizes the synthetic Zarr v2 stores", async () => {
   assert.deepEqual(h.entries.filter((e) => "ranges" in e).map((e) => e.key), [
     "a/b/zero_d/0", "a/c/0/0", "a/c/1/0", "g/h/0", "sp ace/é/x y/0.0",
   ]);
-  // Attributes are copied unchanged, OME-NGFF 0.4 ones included (the root does not declare 0.4, §1.4).
+  // Attributes are copied unchanged under the convention (conventions §2), OME-NGFF 0.4 ones included
+  // (the root does not declare 0.4, §1.4).
   const o = await virtualize("zarr2_ome_attrs");
   assert.equal(o.format, "zarr2");
   for (const path of ["0", "0/labels/cells", "has_ome"]) {
     const zattrs = JSON.parse(fs.readFileSync(`${FIXTURES}zarr2_ome_attrs/${path}/.zattrs`, "utf8"));
-    assert.deepEqual(doc(o, `${path}/zarr.json`).attributes, zattrs, path);
+    assert.deepEqual(doc(o, `${path}/zarr.json`).attributes, declare({}, "zarr2", undefined, zattrs), path);
   }
   assert.ok(!("dimension_names" in doc(o, "0/1/zarr.json")));
 });

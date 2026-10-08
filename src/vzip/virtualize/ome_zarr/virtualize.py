@@ -11,7 +11,7 @@ from vzip.virtualize.store import Store, StoreOutput, as_int, canonical_index, i
 from vzip.virtualize.zarr2.virtualize import hierarchy_output, read_hierarchy
 
 OME_KEYS = ("multiscales", "omero", "labels", "image-label", "plate", "well", "bioformats2raw.layout")
-VERSIONED = ("omero", "image-label", "plate", "well")  # whose own `version` is dropped (§11.4)
+VERSIONED = ("omero", "image-label", "plate", "well")  # whose own `version` is dropped (conventions/ome-zarr/README.md §5)
 LABEL_TYPES = {"int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64"}
 _KINDS = re.compile(r"^t?o?s{2,3}$")
 _HEX6 = re.compile(r"^[0-9A-Fa-f]{6}$")
@@ -19,7 +19,7 @@ _ALNUM = re.compile(r"^[A-Za-z0-9]+$")
 
 
 def rel_path(p) -> bool:
-    """A relative path (§11.2): one or more segments separated by `/`, none empty, `.` or `..`."""
+    """A relative path (conventions/ome-zarr/README.md §3): one or more segments separated by `/`, none empty, `.` or `..`."""
     return isinstance(p, str) and p != "" and all(s not in ("", ".", "..") for s in p.split("/"))
 
 
@@ -81,7 +81,7 @@ def declares_04(store: Store) -> bool:
 
 
 def resolve(base: str, rel: str) -> str | None:
-    """`rel` resolved against the group path `base` (§11.3, image-label `source`), or None above the root."""
+    """`rel` resolved against the group path `base` (conventions/ome-zarr/README.md §4, image-label `source`), or None above the root."""
     segs = base.split("/") if base else []
     for s in rel.split("/"):
         if s in ("", "."):
@@ -96,7 +96,7 @@ def resolve(base: str, rel: str) -> str | None:
 
 
 def _transforms(where: str, ts, n: int) -> list:
-    """The scale of a valid list of coordinate transformations (§11.3, rule I5)."""
+    """The scale of a valid list of coordinate transformations (conventions/ome-zarr/README.md §4, rule I5)."""
     if not isinstance(ts, list) or len(ts) not in (1, 2) or not all(isinstance(t, dict) for t in ts):
         raise Rejected(f"{where}: coordinateTransformations is not one or two transformation objects")
     s = ts[0]
@@ -120,7 +120,7 @@ def _version(where: str, obj: dict) -> None:
 
 
 def virtualize_ome_zarr(store: Store) -> StoreOutput:
-    h = read_hierarchy(store)  # §11.1: every rule of §10.1–§10.3
+    h = read_hierarchy(store)  # conventions/ome-zarr/README.md §2: every rule of conventions/zarr2/README.md §2–§3
     attrs = h.groups
     arrays = h.arrays
     for path in sorted(attrs):
@@ -131,7 +131,7 @@ def virtualize_ome_zarr(store: Store) -> StoreOutput:
     ome_groups = sorted(p for p in attrs if p in series_groups or any(k in attrs[p] for k in OME_KEYS))
     images = {p for p in attrs if "multiscales" in attrs[p]}
 
-    # §11.3 Images.
+    # conventions/ome-zarr/README.md §4 Images.
     levels: list[tuple[str, int, int, str, list[str]]] = []  # (image, multiscale, dataset, array, axis names)
     multiscales: dict[str, list[dict]] = {}
     for g in sorted(images):
@@ -183,7 +183,7 @@ def virtualize_ome_zarr(store: Store) -> StoreOutput:
             if "coordinateTransformations" in m:
                 _transforms(w, m["coordinateTransformations"], n)
 
-    # §11.3 omero.
+    # conventions/ome-zarr/README.md §4 omero.
     for g in ome_groups:
         if "omero" not in attrs[g]:
             continue
@@ -199,7 +199,7 @@ def virtualize_ome_zarr(store: Store) -> StoreOutput:
             if not isinstance(win, dict) or not all(is_number(win.get(k)) for k in ("min", "max", "start", "end")):
                 raise Rejected(f"{w}: a channel window does not have numbers min, max, start and end")
 
-    # §11.3 Labels.
+    # conventions/ome-zarr/README.md §4 Labels.
     label_images: set[str] = set()
     kept: dict[tuple[str, int], int] = {}  # (label image, multiscale) -> datasets kept, when fewer than all
     for g in ome_groups:
@@ -259,7 +259,7 @@ def virtualize_ome_zarr(store: Store) -> StoreOutput:
                 if arrays[level]["data_type"] not in LABEL_TYPES:
                     raise Rejected(f"{level}: label data type {arrays[level]['data_type']} is not an integer type")
 
-    # §11.3 Plates and wells.
+    # conventions/ome-zarr/README.md §4 Plates and wells.
     wells = {p for p in attrs if "well" in attrs[p]}
     well_images: dict[str, list[dict]] = {}
     for g in sorted(wells):
@@ -344,7 +344,7 @@ def virtualize_ome_zarr(store: Store) -> StoreOutput:
                     elif len(ids) > 1:
                         raise Rejected(f"{join(g, p)}: an image has no acquisition, and the plate has several")
 
-    # §11.3 Collections (bioformats2raw.layout).
+    # conventions/ome-zarr/README.md §4 Collections (bioformats2raw.layout).
     for g in collections:
         a = attrs[g]
         if as_int(a["bioformats2raw.layout"]) != 3:
@@ -360,7 +360,7 @@ def virtualize_ome_zarr(store: Store) -> StoreOutput:
             if numbered != list(range(len(numbered))) or not numbered:
                 raise Rejected(f"{g or '/'}: the images are not numbered consecutively from 0")
 
-    # §11.3 I8 and §11.5: the axis names of the levels the output keeps.
+    # conventions/ome-zarr/README.md §4 I8 and conventions/ome-zarr/README.md §6: the axis names of the levels the output keeps.
     names: dict[str, list[str]] = {}  # level array -> axis names
     for g, i, j, target, axis_names in levels:
         if j >= kept.get((g, i), j + 1):
@@ -369,8 +369,8 @@ def virtualize_ome_zarr(store: Store) -> StoreOutput:
             raise Rejected(f"{target} is a level of images with axes {names[target]} and {axis_names}")
     dropped = sum(len(multiscales[g][i]["datasets"]) - n for (g, i), n in kept.items())
 
-    # §11.4, §11.5 Output.
-    groups = {}
+    # conventions/ome-zarr/README.md §5, conventions/ome-zarr/README.md §6 Output.
+    groups, omes = {}, {}
     for path, a in attrs.items():
         if path not in ome_groups:
             groups[path] = a
@@ -387,9 +387,8 @@ def virtualize_ome_zarr(store: Store) -> StoreOutput:
             elif k in VERSIONED:
                 v = {x: y for x, y in v.items() if x != "version"}
             ome[k] = v
-        out = {k: v for k, v in a.items() if k not in keys}
-        out["ome"] = ome
-        groups[path] = out
+        groups[path] = {k: v for k, v in a.items() if k not in keys}
+        omes[path] = ome
     docs = {}
     for path, doc in arrays.items():
         if path in names:
@@ -398,7 +397,7 @@ def virtualize_ome_zarr(store: Store) -> StoreOutput:
         docs[path] = doc
     xml = [(k, store.objects[k]) for k in (join(join(c, "OME"), "METADATA.ome.xml") for c in collections)
            if k in store.objects]
-    out, chunks = hierarchy_output(store, h, groups, docs, xml)
+    out, chunks = hierarchy_output(store, h, groups, docs, "ome-zarr", xml, omes)
     nonempty = sum(1 for _, n in chunks if n > 0)
     out.summary = {
         "groups": len(attrs) + len(h.implicit), "arrays": len(arrays), "chunks": nonempty,

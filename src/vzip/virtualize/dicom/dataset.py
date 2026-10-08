@@ -153,7 +153,7 @@ class Walker:
 
     def fragments(self, pos: int, limit: int, little: bool) -> tuple[list[tuple[int, int, int]], int]:
         """The items of a fragment sequence at `pos`, as (item offset, data
-        offset, data length), and where the sequence ends (§6.6)."""
+        offset, data length), and where the sequence ends (§6.5)."""
         order = "<" if little else ">"
         items = []
         while True:

@@ -13,6 +13,7 @@ Usage: uv run python web/test/ims/verify.py [<file.ims> ...]
 
 from __future__ import annotations
 
+import math
 import subprocess
 import sys
 import tempfile
@@ -65,11 +66,57 @@ def image_size(group) -> tuple[int, ...]:
     return tuple(int(b"".join(group.attrs[f"ImageSize{a}"].tolist()).split(b"\0")[0]) for a in "ZYX")
 
 
+def attrs_json(obj) -> dict:
+    """h5py's attributes of `obj`, as conventions/ims/README.md §5 writes them."""
+    def text(b: bytes) -> str:
+        b = b.split(b"\0", 1)[0]
+        try:
+            return b.decode("utf-8")
+        except UnicodeDecodeError:
+            return b.decode("latin-1")
+
+    def number(v):
+        v = v.item()
+        if isinstance(v, float) and not math.isfinite(v):
+            return "NaN" if math.isnan(v) else "Infinity" if v > 0 else "-Infinity"
+        return v
+
+    out = {}
+    for name in sorted(obj.attrs.keys(), key=lambda n: n.encode("utf-8", "surrogateescape")):
+        v = np.asarray(obj.attrs[name])
+        if v.dtype.kind == "S":
+            flat = v.reshape(-1).tolist()
+            out[name] = text(b"".join(flat)) if v.dtype.itemsize == 1 else [text(b) for b in flat]
+        elif v.dtype.kind in "iuf":
+            out[name] = [number(x) for x in v.reshape(-1)]
+    return out
+
+
+def header_problems(root, path: Path) -> list[str]:
+    """The source metadata's attributes against h5py's."""
+    meta = root.attrs["vzip_virtualized"]["ims"]
+    problems = []
+    with h5py.File(path, "r") as f:
+        if meta["root"] != attrs_json(f):
+            problems.append("root attributes differ")
+        info = f.get("DataSetInfo")
+        for name, attrs in meta["DataSetInfo"].items():
+            if attrs is not None and attrs != attrs_json(info[name]):
+                problems.append(f"DataSetInfo/{name} attributes differ")
+        if info is not None and set(meta["DataSetInfo"]) != set(info.keys()):
+            problems.append("DataSetInfo groups differ")
+        for p, attrs in meta["DataSet"].items():
+            if attrs != attrs_json(f[f"DataSet/{p}"]):
+                problems.append(f"DataSet/{p} attributes differ")
+    return problems
+
+
 def check(path: Path, out: Path) -> list[str]:
     """The differences between the archive at 'out' and h5py's reading of 'path'."""
     problems = []
     root = zarr.open_group(VZipStore(str(out)), mode="r", zarr_format=3)
     levels = root.attrs["ome"]["multiscales"][0]["datasets"]
+    problems += header_problems(root, path)
     with h5py.File(path, "r") as f:
         for r in range(len(levels)):
             arr = root[str(r)]

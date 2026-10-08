@@ -14,8 +14,9 @@ import math
 import struct
 
 from vzip.virtualize.common import (
-    MAX_PAYLOAD, Output, Reader, Rejected, array_json, centred, group_json, image_ome, payload_size, transpose_codec,
+    MAX_PAYLOAD, Output, Reader, Rejected, array_json, centred, root_json, image_ome, payload_size, transpose_codec,
 )
+from vzip.virtualize.tiff.tags import STRUCTURE, Entry, Translator
 
 MAX_IFDS = 100000
 MAX_SAFE = 2**53 - 1
@@ -33,6 +34,9 @@ TAGS = {
     65426: (INTEGER_TYPES, False), 65432: (INTEGER_TYPES, False),
 }
 CHUNK = 1024  # target chunk size in pixels
+# Besides TIFF's, McuStarts and McuStartsHighBytes locate the strips' restart
+# markers (conventions/ndpi/README.md §5).
+NDPI_STRUCTURE = STRUCTURE | {65426, 65432}
 
 
 def detect(read: Reader, size: int) -> int | None:
@@ -51,10 +55,10 @@ def detect(read: Reader, size: int) -> int | None:
     return v if 65420 in tags else None
 
 
-def read_ifds(read: Reader, size: int, first: int) -> list[dict[int, list]]:
-    """The main chain's IFDs, as {tag: values} (§4)."""
+def read_ifds(read: Reader, size: int, first: int) -> tuple[list[dict[int, list]], list[list[Entry]]]:
+    """The main chain's IFDs, as {tag: values} (§4), and every entry of each."""
     seen: set[int] = set()
-    ifds = []
+    ifds, entries = [], []
     offset = first
     while offset:
         if offset < 16 or offset > MAX_SAFE:
@@ -68,8 +72,15 @@ def read_ifds(read: Reader, size: int, first: int) -> list[dict[int, list]]:
         body = read(offset + 2, 12 * n + 8 + 4 * n)
         nxt = struct.unpack("<Q", body[12 * n : 12 * n + 8])[0]
         tags: dict[int, list] = {}
+        mine: list[Entry] = []
         for i in range(n):
             tag, typ, count = struct.unpack("<HHI", body[12 * i : 12 * i + 8])
+            low, high = struct.unpack("<I", body[12 * i + 8 : 12 * i + 12])[0], struct.unpack("<I", body[12 * n + 8 + 4 * i : 12 * n + 12 + 4 * i])[0]
+            if typ in SIZES and count * SIZES[typ] <= 4:
+                mine.append(Entry(tag, typ, count, inline=body[12 * i + 8 : 12 * i + 12],
+                                  value=(low + (high << 32),) if count == 1 and typ in (4, 13) else None))
+            else:
+                mine.append(Entry(tag, typ, count, offset=low + (high << 32)))
             if tag not in TAGS or tag in tags:
                 continue  # unused, or a duplicate (the first is used)
             allowed, scalar = TAGS[tag]
@@ -92,10 +103,11 @@ def read_ifds(read: Reader, size: int, first: int) -> list[dict[int, list]]:
                 raise Rejected(f"tag {tag} has a value above 2^53 - 1")
             tags[tag] = values
         ifds.append(tags)
+        entries.append(mine)
         offset = nxt
     if not ifds:
         raise Rejected("no images")
-    return ifds
+    return ifds, entries
 
 
 def _values(data: bytes, typ: int, count: int) -> list:
@@ -157,7 +169,10 @@ def jpeg_header(header: bytes):
 
 
 def virtualize_ndpi(url: str, read: Reader, size: int, first: int) -> Output:
-    ifds = read_ifds(read, size, first)
+    ifds, entries = read_ifds(read, size, first)
+    # The source metadata (conventions/ndpi/README.md §5): every IFD's tags.
+    translate = Translator(read, size, "<", NDPI_STRUCTURE)
+    source = {"ifds": [{"tags": translate.tags(e)} for e in entries]}
     levels = []
     for tags in ifds:
         mag = _one(tags, 65421, "Magnification")
@@ -180,7 +195,7 @@ def virtualize_ndpi(url: str, read: Reader, size: int, first: int) -> Output:
     if not levels:
         raise Rejected("no NDPI levels")
 
-    # Scale (§4).
+    # Scale (conventions/ndpi/README.md §4).
     base = levels[0]
     unit_code = _one(base["tags"], 296, "ResolutionUnit", 2)
     per_unit = {3: 10000.0, 2: 25400.0}.get(unit_code)
@@ -212,14 +227,15 @@ def virtualize_ndpi(url: str, read: Reader, size: int, first: int) -> Output:
             chunk_shape = _intervals(out, li, read, tags, starts, s0, n, w, h)
         out.json(f"{li}/zarr.json", array_json([3, h, w], "uint8", chunk_shape, codecs, axes))
         scales.append([1, (py or 1) * (base["h"] / h), (px or 1) * (base["w"] / w)])
-    # Position (§4): the image's centre, from the slide's centre in nm.
+    # Position (conventions/ndpi/README.md §4): the image's centre, from the slide's centre in nm.
     translation = None
     offset_x, offset_y = base["tags"].get(65422), base["tags"].get(65423)
     if px is not None and py is not None and offset_x and offset_y:
         corner = centred(offset_x[0] / 1000, offset_y[0] / 1000, base["w"], base["h"], px, py)
         translation = [0, corner["y"], corner["x"]]
-    out.json("zarr.json", group_json(image_ome(axes, units, scales, None,
-                                               [translation] * len(levels) if translation else None)))
+    out.json("zarr.json", root_json(image_ome(axes, units, scales, None,
+                                               [translation] * len(levels) if translation else None), "ndpi", url,
+                                    source))
     out.summary = {"axes": axes, "levels": [[3, lv["h"], lv["w"]] for lv in levels], "references": len(out.refs),
                    "codec": "imagecodecs_jpeg"}
     return out

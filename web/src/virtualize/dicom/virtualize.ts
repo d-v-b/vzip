@@ -2,7 +2,7 @@
 // §6): its frames, native or JPEG/JPEG 2000 encapsulated, become Zarr chunks
 // that reference the file.
 
-import { type ByteReader, MAX_PAYLOAD, payloadSize } from "../common.ts";
+import { type ByteReader, declare, MAX_PAYLOAD, payloadSize } from "../common.ts";
 import {
   type Dataset,
   DicomError,
@@ -18,13 +18,14 @@ import {
   Walker,
 } from "./dataset.ts";
 import type { Range } from "../../protobuf.ts";
+import { sourceJson } from "./source.ts";
 import type { ArchiveDesc, EntryDesc } from "../../writer.ts";
 
 export { DicomError };
 
 type Codec = "jpeg" | "jpeg2k" | null;
 
-// Transfer syntaxes (§6.2): the dataset's encoding, and the codec of
+// Transfer syntaxes (conventions/dicom/README.md §2.1): the dataset's encoding, and the codec of
 // encapsulated frames (null for native pixel data).
 const SYNTAXES = new Map<string, [Encoding, Codec]>([
   ["1.2.840.10008.1.2", [IMPLICIT_LE, null]],
@@ -35,14 +36,14 @@ const SYNTAXES = new Map<string, [Encoding, Codec]>([
   ["1.2.840.10008.1.2.4.91", [EXPLICIT_LE, "jpeg2k"]],
 ]);
 const WHOLE_SLIDE = "1.2.840.10008.5.1.4.1.1.77.1.6";
-// Photometric interpretations by pixel data and samples per pixel (§6.5).
+// Photometric interpretations by pixel data and samples per pixel (conventions/dicom/README.md §3).
 const MONOCHROME = ["MONOCHROME1", "MONOCHROME2"];
 const PHOTOMETRIC: Record<string, string[]> = {
   "null 1": MONOCHROME, "null 3": ["RGB"],
   "jpeg 1": MONOCHROME, "jpeg 3": ["RGB", "YBR_FULL", "YBR_FULL_422"],
   "jpeg2k 1": MONOCHROME, "jpeg2k 3": ["RGB", "YBR_ICT", "YBR_RCT"],
 };
-// SOI and the Adobe APP14 marker, without its last byte, the colour transform (§6.6).
+// SOI and the Adobe APP14 marker, without its last byte, the color transform (profiles/dicom.md §6.5).
 const ADOBE = [0xff, 0xd8, 0xff, 0xee, 0x00, 0x0e, 0x41, 0x64, 0x6f, 0x62, 0x65, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00];
 const DECIMAL = /^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$/;
 const INTEGER = /^([+-]?)([0-9]+)$/;
@@ -59,9 +60,9 @@ export function isDicom(head: Uint8Array): boolean {
   return head.length >= 132 && latin1(head.subarray(128, 132)) === "DICM";
 }
 
-// ---- attribute values (§6.4)
+// ---- attribute values (conventions/dicom/README.md §2.2)
 
-/** Reads the attributes of a dataset by their kind (§6.4). */
+/** Reads the attributes of a dataset by their kind (conventions/dicom/README.md §2.2). */
 class Values {
   read: ByteReader;
   ds: Dataset;
@@ -177,9 +178,11 @@ export async function virtualizeDicom(
 
   // §6.3
   const [top] = await walker.dataset(start, fileSize, false, encoding, 0, true);
+  // The source metadata (conventions/dicom/README.md §5).
+  const source = await sourceJson(read, fileSize, start, encoding);
   const pixel = top.get(PIXEL_DATA)!;
 
-  // §6.4: the Pixel Measures item of the Shared Functional Groups, if any.
+  // conventions/dicom/README.md §2.2: the Pixel Measures item of the Shared Functional Groups, if any.
   let measures: Dataset | undefined;
   const shared = top.get(0x52009229);
   if (shared?.items?.length) {
@@ -219,7 +222,7 @@ export async function virtualizeDicom(
     fg.set(tag, inItem ?? atTop);
   }
 
-  // §6.5
+  // conventions/dicom/README.md §3
   const spp = need(sppValue, "Samples per Pixel");
   const photometric = need(photometricValue, "Photometric Interpretation");
   const rows = need(rowsValue, "Rows");
@@ -266,7 +269,7 @@ export async function virtualizeDicom(
     if (n !== across * down) reject(`${n} frames for ${down} by ${across} tiles`);
   }
 
-  // §6.6: each frame's ranges.
+  // profiles/dicom.md §6.5: each frame's ranges.
   const planarNative = codec === null && spp === 3 && planar === 1;
   const frameSize = rows * columns * spp * (bitsAllocated / 8);
   const frameRanges: Ranges[] = [];
@@ -332,7 +335,7 @@ export async function virtualizeDicom(
     }
   }
 
-  // §6.7
+  // conventions/dicom/README.md §4; profiles/dicom.md §6.6: the chunk references
   const axes: string[] = [];
   if (spp === 3) axes.push("c");
   if (!wholeSlide && n > 1) axes.push("z");
@@ -421,7 +424,7 @@ export async function virtualizeDicom(
       bytes: json({
         zarr_format: 3,
         node_type: "group",
-        attributes: {
+        attributes: declare({
           ome: {
             version: "0.5",
             multiscales: [{
@@ -430,7 +433,7 @@ export async function virtualizeDicom(
             }],
             omero: { channels },
           },
-        },
+        }, "dicom", url, source),
       }),
     },
     {

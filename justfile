@@ -122,6 +122,27 @@ compare-mutants count="10" seed="0" *args:
     uv run python conformance/virtualize/compare.py conformance/results/mutants-out \
         --fixtures conformance/results/mutants {{args}}
 
+# On main after a merge: tag each convention's version as virtualize-<profile>-v<N> at HEAD (VIRTUALIZE.md §2.4)
+tag-conventions:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    branch="$(git rev-parse --abbrev-ref HEAD)"
+    if [ "$branch" != "main" ]; then
+        echo "tag-conventions: HEAD is on '$branch'; the convention tags are made on main" >&2
+        exit 1
+    fi
+    tags="$(uv run python -c 'from vzip.virtualize.common import PROFILES
+    for p, (_, v, _) in PROFILES.items(): print(f"virtualize-{p}-v{v}")')"
+    for tag in $tags; do
+        if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag exists (at $(git rev-list -n 1 "$tag")), kept"
+        else
+            git tag -a "$tag" -m "VIRTUALIZE.md convention ${tag#virtualize-}"
+            echo "$tag created at $(git rev-parse HEAD)"
+        fi
+    done
+    echo "push them with: git push origin --tags"
+
 # Virtualize an image file (TIFF, NDPI, ND2, DICOM, NIfTI or IMS; a URL or a path), or an N5,
 # Zarr v2 or OME-Zarr 0.4 store (a URL ending in "/"), into a vzip archive
 virtualize src out:

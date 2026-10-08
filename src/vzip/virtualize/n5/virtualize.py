@@ -19,7 +19,6 @@ from vzip.virtualize.store import (
 
 DATA_TYPES = {"uint8": 1, "int8": 1, "uint16": 2, "int16": 2, "uint32": 4, "int32": 4, "float32": 4,
               "uint64": 8, "int64": 8, "float64": 8}
-ARRAY_KEYS = ("dimensions", "blockSize", "dataType", "compression", "compressionType", "n5")
 BLOSC_NAMES = ("blosclz", "lz4", "lz4hc", "snappy", "zlib", "zstd")
 SHUFFLES = {0: "noshuffle", 1: "shuffle", 2: "bitshuffle"}
 UNIT_NAMES = set(UNITS.values())
@@ -27,7 +26,7 @@ MAX_BLOCK = 2**31 - 1
 
 
 def blosc_codec(c: dict, typesize: int, shuffles: dict) -> dict:
-    """The Zarr v3 blosc codec of an n5-blosc or numcodecs Blosc configuration (§9.2, §10.3)."""
+    """The Zarr v3 blosc codec of an n5-blosc or numcodecs Blosc configuration (conventions/n5/README.md §3, conventions/zarr2/README.md §3.1)."""
     cname, clevel, shuffle = c.get("cname"), as_int(c.get("clevel"), 0, 9), as_int(c.get("shuffle"))
     blocksize = as_int(c.get("blocksize", 0), 0, MAX_BLOCK)
     if cname not in BLOSC_NAMES:
@@ -62,7 +61,7 @@ def compressor(compression: dict, b: int) -> dict | None:
 
 
 def dataset(path: str, doc: dict) -> dict:
-    """A dataset's zarr.json (§9.2)."""
+    """A dataset's zarr.json (conventions/n5/README.md §3)."""
     dims, block, dtype = doc.get("dimensions"), doc.get("blockSize"), doc.get("dataType")
     if not isinstance(dims, list) or not 1 <= len(dims) <= 32 or any(as_int(d, 0) is None for d in dims):
         raise Rejected(f"{path}: dimensions {str(dims)[:80]} is not 1 to 32 sizes")
@@ -94,11 +93,11 @@ def dataset(path: str, doc: dict) -> dict:
         "chunk_key_encoding": {"name": "v2", "configuration": {"separator": "/"}},
         "fill_value": 0,
         "codecs": [{"name": "n5_default", "configuration": {"codecs": inner}}],
-        "attributes": {k: v for k, v in doc.items() if k not in ARRAY_KEYS},
+        "attributes": dict(doc),  # the whole document, as source metadata (conventions/n5/README.md §5)
     }
 
 
-# ---------------------------------------------------------------- multiscales (§9.5)
+# ---------------------------------------------------------------- multiscales (conventions/n5/README.md §4)
 
 AXIS_TYPES = {"x": "space", "y": "space", "z": "space", "t": "time", "c": "channel"}
 
@@ -277,7 +276,7 @@ def virtualize_n5(store: Store) -> StoreOutput:
             candidates[""] = "candidate"
         elif key.endswith("/attributes.json"):
             candidates[key[: -len("/attributes.json")]] = "candidate"
-    # §9.1: classify from the root down; a candidate's kind needs its document.
+    # conventions/n5/README.md §2: classify from the root down; a candidate's kind needs its document.
     docs: dict[str, dict] = {}
     kinds: dict[str, str] = {}
     datasets: set[str] = set()
@@ -311,8 +310,9 @@ def virtualize_n5(store: Store) -> StoreOutput:
     for path in nodes:
         if kinds[path] == "group":
             groups[path] = {"zarr_format": 3, "node_type": "group",
-                            "attributes": {k: v for k, v in docs[path].items() if k != "n5"}}
+                            "attributes": dict(docs[path])}
     images = []
+    omes: dict[str, dict] = {}
     named: dict[str, list[str]] = {}
     for g in sorted(groups):
         attrs = docs[g]
@@ -326,8 +326,8 @@ def virtualize_n5(store: Store) -> StoreOutput:
             continue
         ome, levels, axes = found
         if any(named.get(lv, axes) != list(axes) for lv in levels):
-            continue  # a level of an earlier image with other axis names (§9.5)
-        groups[g]["attributes"]["ome"] = ome
+            continue  # a level of an earlier image with other axis names (conventions/n5/README.md §4)
+        omes[g] = ome
         images.append({"path": g, "convention": convention})
         for lv in levels:
             named.setdefault(lv, list(axes))
@@ -342,6 +342,7 @@ def virtualize_n5(store: Store) -> StoreOutput:
         out.docs[doc_key(path)] = doc
     for path, doc in arrays.items():
         out.docs[doc_key(path)] = doc
+    out.declare("n5", omes)
 
     tests = {}
     for path, a in arrays.items():

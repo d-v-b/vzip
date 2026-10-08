@@ -94,3 +94,49 @@ def test_virtualizes_the_synthetic_files():
 def test_rejects(name, message):
     with pytest.raises(Rejected, match=message):
         virtualize(str(FIXTURES / name), url="https://data.test/x")
+
+
+def test_value_json():
+    """Each VR's translation (conventions/dicom/README.md §5)."""
+    import struct
+
+    from vzip.virtualize.dicom.source import value_json
+
+    cases = [
+        ("CS", b"ORIGINAL\\PRIMARY ", True, {"vr": "CS", "Value": ["ORIGINAL", "PRIMARY"]}),
+        ("UI", b"1.2.3\0", True, {"vr": "UI", "Value": ["1.2.3"]}),
+        ("LO", b" a\\\\b ", True, {"vr": "LO", "Value": ["a", None, "b"]}),
+        ("LT", b" two\\lines ", True, {"vr": "LT", "Value": [" two\\lines"]}),
+        ("PN", b"Doe^Jane==ja^ne", True, {"vr": "PN", "Value": [{"Alphabetic": "Doe^Jane", "Phonetic": "ja^ne"}]}),
+        ("DS", b"0.50\\1e999\\x ", True, {"vr": "DS", "Value": [0.5, "1e999", "x"]}),
+        ("IS", b"+12\\-9007199254740993", True, {"vr": "IS", "Value": [12, "-9007199254740993"]}),
+        ("SH", b"caf\xe9", True, {"vr": "SH", "Value": ["café"]}),  # not UTF-8: ISO 8859-1
+        ("AT", struct.pack("<4H", 0x0028, 0x0010, 0x7FE0, 0x0010), True, {"vr": "AT", "Value": ["00280010", "7FE00010"]}),
+        ("US", struct.pack(">2H", 1, 65535) + b"\x01", False, {"vr": "US", "Value": [1, 65535]}),
+        ("FD", struct.pack("<2d", 1.5, float("nan")), True, {"vr": "FD", "Value": [1.5, "NaN"]}),
+        ("UV", struct.pack("<Q", 2**64 - 1), True, {"vr": "UV", "Value": ["18446744073709551615"]}),
+        ("OB", b"\x00\x01", True, {"vr": "OB", "InlineBinary": "AAE="}),
+        ("ST", b"", True, {"vr": "ST"}),
+    ]
+    for vr, data, little, expected in cases:
+        assert value_json(vr, data, little) == expected, vr
+
+
+def test_a_malformed_sequence_that_the_profile_does_not_walk_has_no_value():
+    import struct
+
+    from vzip.virtualize.dicom.dataset import EXPLICIT_LE
+    from vzip.virtualize.dicom.source import Translator
+
+    def el(group, element, vr, value):
+        if vr in ("SQ", "OB", "UN", "UT"):
+            return struct.pack("<HH2sHI", group, element, vr.encode(), 0, len(value)) + value
+        return struct.pack("<HH2sH", group, element, vr.encode(), len(value)) + value
+
+    bad_items = struct.pack("<HHI", 0x0008, 0x0016, 4) + b"oops"  # not an item tag
+    good = el(0x0010, 0x0010, "PN", b"Doe^Jane")
+    blob = el(0x0008, 0x1140, "SQ", bad_items) + good
+    t = Translator(lambda o, n: blob[o:o + n], len(blob))
+    out, _ = t.dataset(0, len(blob), True, EXPLICIT_LE, 0)
+    assert out == {"00081140": {"vr": "SQ"}, "00100010": {"vr": "PN", "Value": [{"Alphabetic": "Doe^Jane"}]}}
+    assert t.used == len(b"Doe^Jane")  # the failed sequence's values used none of the budget

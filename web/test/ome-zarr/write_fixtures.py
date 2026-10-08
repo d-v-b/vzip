@@ -6,7 +6,7 @@ properties and source; a label image with an extra level), a plate with wells, f
 at the root, bioformats2raw collections (numbered images with a series and
 OME-XML, and a plate), F order and both separators, missing and empty
 chunks; and the inputs the profile rejects (`ome_zarr_reject_*`, one per
-rule of §11.3).
+rule of conventions/ome-zarr/README.md §4).
 
 Each array is one chunk, except level 0 of ome_zarr_image_2d (three chunks:
 present, empty and missing), so that each store is a handful of objects.
@@ -198,7 +198,7 @@ def main() -> None:
     group(d, "labels/unlisted")  # an intermediate group, not listed: not an OME group
 
     # A label image with one more level than its image (as omero-zarr writes them): the extra
-    # level is dropped from the 0.5 multiscales and stays a plain array (§11.3, L7).
+    # level is dropped from the 0.5 multiscales and stays a plain array (conventions/ome-zarr/README.md §4, L7).
     d = store("ome_zarr_labels_extra_level")
     labelled(d, label_levels=3)
 
@@ -234,7 +234,7 @@ def main() -> None:
     image(d, "A/1/0", "tczyx", (1, 2, 1, 4, 4), 2)
     put(d / "OME/METADATA.ome.xml", b'<OME xmlns="http://www.openmicroscopy.org/Schemas/OME/2016-06"/>\n')
 
-    # ------------------------------------------------------------ rejected, one per rule of §11.3
+    # ------------------------------------------------------------ rejected, one per rule of conventions/ome-zarr/README.md §4
 
     def reject(name: str, attrs_root=None, *, ms=None, shape=(4, 6), axes="yx", levels=1, setup=None):
         """A store whose root is an image of `levels` levels, with multiscale `ms` (default valid)

@@ -12,6 +12,9 @@ Usage: uv run python web/test/nd2/verify.py
 
 from __future__ import annotations
 
+import base64
+import math
+import re
 import subprocess
 import sys
 import tempfile
@@ -59,6 +62,45 @@ class ZlibCodec(BytesBytesCodec):
 register_codec("zlib", ZlibCodec)
 
 
+def lv_norm(v):
+    """The nd2 package's decoding of an LV value, as conventions/nd2/README.md §5 writes it."""
+    if isinstance(v, dict):
+        if v and all(re.fullmatch(r"i[0-9]{10}", k) for k in v):
+            return [lv_norm(x) for x in v.values()]
+        return {k: lv_norm(x) for k, x in v.items()}
+    if isinstance(v, (bytes, bytearray)):
+        return list(v)
+    if isinstance(v, (list, tuple)):
+        return [lv_norm(x) for x in v]
+    if isinstance(v, float) and not math.isfinite(v):
+        return "NaN" if math.isnan(v) else "Infinity" if v > 0 else "-Infinity"
+    return v
+
+
+def chunk_problems(path: Path, source: dict) -> list[str]:
+    """Every metadata chunk against the nd2 package's chunk map and decoder."""
+    import nd2 as nd2lib
+
+    problems = []
+    with nd2lib.ND2File(path) as f:
+        r = f._rdr
+        names = [k for k in r.chunkmap if not k.startswith(b"ImageDataSeq|")]
+        if [k.decode("latin-1") for k in names] != list(source["chunks"]):
+            return [f"chunks {list(source['chunks'])} vs {names}"]
+        for k in names:
+            ours = source["chunks"][k.decode("latin-1")]
+            if "lv" in ours:
+                try:
+                    theirs = lv_norm(r._decode_chunk(k, strip_prefix=False))
+                except UnicodeDecodeError:
+                    continue  # nd2 cannot decode unpaired surrogates, which ours replace
+                if ours["lv"] != theirs:
+                    problems.append(f"{k!r}: {str(ours['lv'])[:80]} vs {str(theirs)[:80]}")
+            elif ours.get("data") != base64.b64encode(r._load_chunk(k)).decode():
+                problems.append(f"{k!r}: data differs")
+    return problems
+
+
 def main() -> int:
     fixtures = HERE.parent / "fixtures" / "nd2"
     server = Server(fixtures)
@@ -77,6 +119,11 @@ def main() -> int:
                 failures += 1
                 print(f"{nd2.name:34s} FAILED: {p.stderr.strip()[-300:]}")
                 continue
+            root = zarr.open_group(VZipStore(str(out)), mode="r", zarr_format=3)
+            meta = chunk_problems(nd2, root.attrs["vzip_virtualized"]["nd2"])
+            if meta:
+                failures += 1
+                print(f"{nd2.name:34s} CHUNKS: {meta[:3]}")
             expected = {k.replace("|", "/"): v for k, v in np.load(nd2.with_suffix(".npz")).items()}
             root = zarr.open_group(VZipStore(str(out)), mode="r", zarr_format=3)
             problems, chunks = [], 0

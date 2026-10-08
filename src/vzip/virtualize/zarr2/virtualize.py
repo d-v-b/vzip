@@ -31,7 +31,7 @@ SHUFFLES = {0: "noshuffle", 1: "shuffle", 2: "bitshuffle", -1: "auto"}
 
 
 def data_type(dtype) -> tuple[str, int, str]:
-    """(Zarr data type, size b, byte order character) of a .zarray dtype (§10.2)."""
+    """(Zarr data type, size b, byte order character) of a .zarray dtype (conventions/zarr2/README.md §3)."""
     m = _DTYPE.match(dtype) if isinstance(dtype, str) else None
     if m is None or (m.group(2), int(m.group(3))) not in TYPES:
         raise Rejected(f"dtype {str(dtype)[:60]} is not supported")
@@ -79,7 +79,7 @@ def compressor(c, b: int) -> dict | None:
 
 
 def array(path: str, z, attrs: dict) -> tuple[dict, str]:
-    """An array's zarr.json and its dimension separator (§10.2)."""
+    """An array's zarr.json and its dimension separator (conventions/zarr2/README.md §3)."""
     if not isinstance(z, dict):
         raise Rejected(f"{path}/.zarray is not a JSON object")
     if as_int(z.get("zarr_format")) != 2:
@@ -126,7 +126,7 @@ def array(path: str, z, attrs: dict) -> tuple[dict, str]:
 
 @dataclass
 class Hierarchy:
-    """A Zarr v2 hierarchy read by §10.1–§10.2: each array's zarr.json and
+    """A Zarr v2 hierarchy read by conventions/zarr2/README.md §2–§3: each array's zarr.json and
     separator, each explicit group's attributes, and the implicit groups."""
 
     arrays: dict[str, dict] = field(default_factory=dict)
@@ -136,7 +136,7 @@ class Hierarchy:
 
 
 def read_hierarchy(store: Store) -> Hierarchy:
-    """The nodes of a Zarr v2 store (§10.1), each document read and checked."""
+    """The nodes of a Zarr v2 store (conventions/zarr2/README.md §2), each document read and checked."""
     objects = store.objects
     candidates: dict[str, str] = {}
     for key in objects:
@@ -170,7 +170,7 @@ def read_hierarchy(store: Store) -> Hierarchy:
 
 
 def chunk_objects(store: Store, h: Hierarchy) -> list[tuple[str, int]]:
-    """Every chunk object of every array (§10.2), sizes 0 included, in key order."""
+    """Every chunk object of every array (conventions/zarr2/README.md §3), sizes 0 included, in key order."""
     tests = {}
     for path, a in h.arrays.items():
         g = grid(a["shape"], a["chunk_grid"]["configuration"]["chunk_shape"])
@@ -188,12 +188,15 @@ def chunk_objects(store: Store, h: Hierarchy) -> list[tuple[str, int]]:
     return find_chunks(store.objects, tests)
 
 
-def hierarchy_output(store: Store, h: Hierarchy, groups: dict[str, dict], arrays: dict[str, dict],
-                     extra: list[tuple[str, int]] = ()) -> tuple[StoreOutput, list[tuple[str, int]]]:
+def hierarchy_output(store: Store, h: Hierarchy, groups: dict[str, dict], arrays: dict[str, dict], profile: str,
+                     extra: list[tuple[str, int]] = (), omes: dict[str, dict] | None = None,
+                     ) -> tuple[StoreOutput, list[tuple[str, int]]]:
     """The output of a hierarchy: a zarr.json per node (explicit groups with the
-    attributes `groups` gives, arrays as `arrays` gives) and an entry per nonempty
-    chunk object, plus the whole objects `extra` (§1.4). Returns the output and
-    every chunk object."""
+    copied attributes `groups` gives, arrays as `arrays` gives, their
+    `attributes` the copied ones) and an entry per nonempty chunk object, plus
+    the whole objects `extra` (§1.4). Returns the output and every chunk
+    object. The copied attributes go under `profile`'s convention, and the
+    groups `omes` names get the member `ome` it gives (conventions §2)."""
     out = StoreOutput(store.url)
     for path in h.implicit:
         out.docs[doc_key(path)] = dict(GROUP_IMPLICIT, attributes={})
@@ -201,6 +204,7 @@ def hierarchy_output(store: Store, h: Hierarchy, groups: dict[str, dict], arrays
         out.docs[doc_key(path)] = {"zarr_format": 3, "node_type": "group", "attributes": attrs}
     for path, doc in arrays.items():
         out.docs[doc_key(path)] = doc
+    out.declare(profile, omes)
     chunks = chunk_objects(store, h)
     out.chunks = sorted([(k, n) for k, n in chunks if n > 0] + [(k, n) for k, n in extra if n > 0])
     out.check_keys()
@@ -209,7 +213,7 @@ def hierarchy_output(store: Store, h: Hierarchy, groups: dict[str, dict], arrays
 
 def virtualize_zarr2(store: Store) -> StoreOutput:
     h = read_hierarchy(store)
-    out, chunks = hierarchy_output(store, h, h.groups, h.arrays)
+    out, chunks = hierarchy_output(store, h, h.groups, h.arrays, "zarr2")
     out.summary = {
         "groups": len(h.groups) + len(h.implicit), "arrays": len(h.arrays), "chunks": len(out.chunks),
         "emptyChunks": len(chunks) - len(out.chunks), "objects": len(store.objects),

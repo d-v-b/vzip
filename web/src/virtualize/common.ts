@@ -109,3 +109,89 @@ export function toRange(p: Part): Range {
   const [source, offset, length] = p.length === 3 ? p : [0, ...p];
   return { source, offset: BigInt(offset), length: BigInt(length) };
 }
+
+// ---- the virtualization conventions (conventions §2)
+
+/** The key of the virtualization convention's property (conventions §2). */
+export const CONVENTION_KEY = "vzip_virtualized";
+
+export type Profile = "tiff" | "ndpi" | "nd2" | "dicom" | "nifti" | "ims" | "n5" | "zarr2" | "ome-zarr";
+
+/** Each profile's convention: its fixed UUID, its current version and its name in the description. */
+export const PROFILES: Record<Profile, [uuid: string, version: number, title: string]> = {
+  tiff: ["48e9ac4e-1156-4a62-955e-20467d9c2700", 1, "TIFF"],
+  ndpi: ["6cac71ef-dbb2-4acd-b60c-00389aa4238a", 1, "NDPI"],
+  nd2: ["59612f14-e314-4207-ba00-8f422ba71490", 1, "ND2"],
+  dicom: ["acf17198-e5a5-48d3-8187-22ec4bb40ea5", 1, "DICOM"],
+  nifti: ["06e5809d-4d54-4b72-afd0-6bf61a7b4c85", 1, "NIfTI"],
+  ims: ["5067a535-8261-4b25-a93c-1985ed333bde", 1, "IMS"],
+  n5: ["ad5d4c39-c69e-48f7-a3ef-4cc8c607d416", 1, "N5"],
+  zarr2: ["8e792619-d671-4687-ab51-752885dd3ee6", 1, "Zarr v2"],
+  "ome-zarr": ["b74ea302-65bb-49ae-b81f-f9bb52cd4eed", 1, "OME-Zarr"],
+};
+export const UUIDS = new Set(Object.values(PROFILES).map(([uuid]) => uuid));
+
+/** The Convention Metadata Object of a profile's convention. */
+export function convention(profile: Profile): { [k: string]: string } {
+  const [uuid, version, title] = PROFILES[profile];
+  const tag = `virtualize-${profile}-v${version}`;
+  return {
+    uuid,
+    schema_url: `https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/${tag}/conventions/${profile}/schema.json`,
+    spec_url: `https://github.com/d-v-b/vzip/blob/${tag}/conventions/${profile}/README.md`,
+    name: CONVENTION_KEY,
+    description: `The Zarr layout of a ${title} source virtualized by vzip, and the source's metadata`,
+  };
+}
+
+/** A node's attributes (conventions §2): `attributes`, the members the target formats
+ * define (such as `ome`), and the profile's convention when the node is the
+ * root (`url`, the source URL, is given) or has source-specific metadata
+ * (`own` is a nonempty object): its metadata object in `zarr_conventions`,
+ * and the property `vzip_virtualized`, which holds `own` as its member named
+ * after the profile. */
+export function declare(
+  attributes: { [k: string]: unknown },
+  profile: Profile,
+  url: string | undefined,
+  own?: object,
+): { [k: string]: unknown } {
+  const value: { [k: string]: unknown } = url === undefined
+    ? {}
+    : { profile, version: PROFILES[profile][1], source: { url } };
+  if (own !== undefined && Object.keys(own).length > 0) value[profile] = own;
+  if (Object.keys(value).length === 0) return { ...attributes };
+  return { ...attributes, zarr_conventions: [convention(profile)], [CONVENTION_KEY]: value };
+}
+
+/** A number as source metadata (conventions/README.md §6). */
+export function jsonNumber(v: number | bigint): number | string {
+  const max = BigInt(Number.MAX_SAFE_INTEGER);
+  if (typeof v === "bigint") return v <= max && v >= -max ? Number(v) : v.toString();
+  if (Number.isNaN(v)) return "NaN";
+  if (!Number.isFinite(v)) return v > 0 ? "Infinity" : "-Infinity";
+  return v;
+}
+
+/** Bytes as text: UTF-8 if valid, else ISO 8859-1 (conventions/README.md §6). */
+export function decodeText(b: Uint8Array): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(b);
+  } catch {
+    let s = "";
+    for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+    return s;
+  }
+}
+
+/** A fixed-size character field: its bytes up to the first NUL, as text. */
+export function jsonText(b: Uint8Array): string {
+  const nul = b.indexOf(0);
+  return decodeText(nul < 0 ? b : b.subarray(0, nul));
+}
+
+export function base64(b: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+  return btoa(s);
+}
