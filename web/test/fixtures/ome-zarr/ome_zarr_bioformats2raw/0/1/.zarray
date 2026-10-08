@@ -6,9 +6,9 @@
     3
   ],
   "chunks": [
-    1,
     2,
-    2
+    3,
+    3
   ],
   "dtype": "|u1",
   "compressor": null,

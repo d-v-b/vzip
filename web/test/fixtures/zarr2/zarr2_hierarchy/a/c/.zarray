@@ -6,7 +6,7 @@
   ],
   "chunks": [
     2,
-    2
+    4
   ],
   "dtype": "<u2",
   "compressor": null,

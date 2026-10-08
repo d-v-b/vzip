@@ -348,6 +348,8 @@ export async function virtualizeN5(store: Store): Promise<StoreResult & { summar
     }
     if (found === undefined) continue;
     const [ome, levels, axes] = found;
+    // A level of an earlier image with other axis names (§9.5).
+    if (levels.some((lv) => named.has(lv) && JSON.stringify(named.get(lv)) !== JSON.stringify(axes))) continue;
     (groups.get(g)!.attributes as { [k: string]: Json }).ome = ome;
     images.push({ path: g, convention });
     for (const lv of levels) if (!named.has(lv)) named.set(lv, axes.slice());

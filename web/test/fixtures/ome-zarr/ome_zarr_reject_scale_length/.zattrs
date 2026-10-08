@@ -22,18 +22,6 @@
             {
               "type": "scale",
               "scale": [
-                1.0,
-                1.0
-              ]
-            }
-          ]
-        },
-        {
-          "path": "1",
-          "coordinateTransformations": [
-            {
-              "type": "scale",
-              "scale": [
                 2,
                 2,
                 2

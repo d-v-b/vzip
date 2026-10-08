@@ -27,57 +27,62 @@ def n5(*inner):
 #         {group path: ome multiscale (without datasets) or None}, (first chunk key, size) or None)
 CASES = {
     "n5_compressions": (
-        {"arrays": 8, "groups": 1, "images": []},
+        {"arrays": 8, "groups": 1, "images": [], "chunks": 10},
         {
-            "raw_u16": ([10, 7], [4, 3], "uint16", n5(T(2), BIG), None),
-            "gzip_i32_padded": ([9, 5, 3], [4, 2, 2], "int32",
+            "raw_u16": ([10, 7], [10, 4], "uint16", n5(T(2), BIG), None),
+            "gzip_i32_padded": ([9, 5, 3], [5, 6, 3], "int32",
                                 n5(T(3), BIG, {"name": "gzip", "configuration": {"level": 1}}), None),
-            "zlib_f64": ([6, 6], [4, 4], "float64", n5(T(2), BIG, {"name": "zlib", "configuration": {"level": 1}}), None),
-            "zstd_f32": ([5, 9], [3, 4], "float32",
+            "zlib_f64": ([6, 6], [6, 6], "float64", n5(T(2), BIG, {"name": "zlib", "configuration": {"level": 1}}), None),
+            "zstd_f32": ([5, 9], [6, 9], "float32",
                          n5(T(2), BIG, {"name": "zstd", "configuration": {"level": 0, "checksum": False}}), None),
-            "blosc_u8": ([8, 6, 5], [4, 4, 4], "uint8", n5(T(3), ONE, {"name": "blosc", "configuration": {
+            "blosc_u8": ([8, 6, 5], [8, 6, 5], "uint8", n5(T(3), ONE, {"name": "blosc", "configuration": {
                 "cname": "lz4", "clevel": 5, "shuffle": "shuffle", "typesize": 1, "blocksize": 0}}), None),
-            "blosc_i16_bitshuffle": ([7, 7], [4, 4], "int16", n5(T(2), BIG, {"name": "blosc", "configuration": {
+            "blosc_i16_bitshuffle": ([7, 7], [8, 8], "int16", n5(T(2), BIG, {"name": "blosc", "configuration": {
                 "cname": "zstd", "clevel": 3, "shuffle": "bitshuffle", "typesize": 2, "blocksize": 0}}), None),
-            "blosc_u64_noshuffle_noblocksize": ([5, 3], [2, 2], "uint64", n5(T(2), BIG, {
+            "blosc_u64_noshuffle_noblocksize": ([5, 3], [5, 3], "uint64", n5(T(2), BIG, {
                 "name": "blosc", "configuration": {"cname": "zlib", "clevel": 1, "shuffle": "noshuffle",
                                                    "typesize": 8, "blocksize": 0}}), None),
-            "legacy_gzip_i8": ([6, 4], [3, 3], "int8", n5(T(2), ONE, {"name": "gzip", "configuration": {"level": 1}}),
+            "legacy_gzip_i8": ([6, 4], [6, 4], "int8", n5(T(2), ONE, {"name": "gzip", "configuration": {"level": 1}}),
                                None),
         },
         {"": None}, ("blosc_i16_bitshuffle/0/0", None)),
-    "n5_root_dataset": ({"arrays": 1, "groups": 0}, {"": ([11, 3, 2], [5, 2, 2], "uint16", None, None)}, {},
+    "n5_root_dataset": ({"arrays": 1, "groups": 0, "chunks": 1}, {"": ([11, 3, 2], [11, 3, 2], "uint16", None, None)}, {},
                         ("0/0/0", None)),
     "n5_hierarchy": (
-        {"arrays": 3, "groups": 6, "chunks": 9, "emptyChunks": 1},
-        {"a/b/sparse": ([8, 8], [3, 3], "uint16", None, None), "c/d/e": ([3], [2], "float32", None, None),
-         "f g/h é": ([4, 2], [2, 2], "uint8", None, None)},
-        {"": None, "a": None, "a/b": None, "c": None, "c/d": None, "f g": None}, ("a/b/sparse/0/0", 30)),
+        {"arrays": 3, "groups": 6, "chunks": 3, "emptyChunks": 1},
+        {"a/b/sparse": ([8, 8], [3, 8], "uint16", None, None), "c/d/e": ([3], [4], "float32", None, None),
+         "f g/h é": ([4, 2], [4, 2], "uint8", None, None)},
+        {"": None, "a": None, "a/b": None, "c": None, "c/d": None, "f g": None}, ("a/b/sparse/0/0", 60)),
     "n5_cosem": (
         {"images": [{"path": "em/fibsem-uint8", "convention": "cosem"}]},
-        {"em/fibsem-uint8/s1": ([6, 5, 4], [4, 4, 4], "uint8", None, ["x", "y", "z"])},
+        {"em/fibsem-uint8/s1": ([6, 5, 4], [12, 10, 8], "uint8", None, ["x", "y", "z"])},
         {"em/fibsem-uint8": {"name": "em/fibsem-uint8", "axes": [
             {"name": "x", "type": "space", "unit": "nanometer"}, {"name": "y", "type": "space", "unit": "nanometer"},
             {"name": "z", "type": "space", "unit": "nanometer"}]}}, None),
     "n5_cosem_array_transforms": (
-        {"images": [{"path": "img", "convention": "cosem"}]}, {"img/s0": ([12, 10, 8], [5, 5, 5], "uint8", None,
+        {"images": [{"path": "img", "convention": "cosem"}]}, {"img/s0": ([12, 10, 8], [12, 10, 8], "uint8", None,
                                                                            ["x", "y", "z"])},
         {"img": {"axes": [{"name": a, "type": "space", "unit": "micrometer"} for a in "xyz"]}}, None),
     "n5_viewer_scales": (
         {"images": [{"path": "setup0/timepoint0", "convention": "n5-viewer"}]}, {},
         {"setup0/timepoint0": {"axes": [{"name": a, "type": "space", "unit": "micrometer"} for a in "xyz"]}}, None),
     "n5_viewer_downsampling": (
-        {"images": [{"path": "g", "convention": "n5-viewer"}]}, {"g/s2": ([4, 3], [4, 4], "uint16", None, ["x", "y"])},
+        {"images": [{"path": "g", "convention": "n5-viewer"}]}, {"g/s2": ([4, 3], [13, 9], "uint16", None, ["x", "y"])},
         {"g": {"axes": [{"name": "x", "type": "space"}, {"name": "y", "type": "space"}]}}, None),
     "n5_viewer_time_first": (
-        {"images": [{"path": "t", "convention": "n5-viewer"}]}, {"t/s1": ([2, 2, 3, 3], [1, 4, 4, 4], "float32", None,
+        {"images": [{"path": "t", "convention": "n5-viewer"}]}, {"t/s1": ([2, 2, 3, 3], [2, 4, 6, 6], "float32", None,
                                                                            ["t", "z", "y", "x"])},
         {"t": {"axes": [{"name": "t", "type": "time"}] + [{"name": a, "type": "space", "unit": "nanometer"}
                                                            for a in "zyx"]}}, None),
     "n5_multiscales_unrecognized": (
-        {"images": [], "arrays": 4}, {"bad_scale/s0": ([12, 10, 8], [6, 6, 6], "uint8", None, None)},
+        {"images": [], "arrays": 4}, {"bad_scale/s0": ([12, 10, 8], [12, 10, 8], "uint8", None, None)},
         {"bad_scale": None, "bad_axes": None, "four_d": None, "dotdot": None}, None),
-    "n5_edge_varlength_block": ({"chunks": 4}, {"v": ([4, 4], [2, 2], "uint8", n5(T(2), ONE), None)}, {}, None),
+    # Two recognized groups share a level with different axis names: the first keeps its image.
+    "n5_shared_levels": (
+        {"images": [{"path": "a", "convention": "cosem"}]}, {"a/b/s0": ([3, 4, 5], [3, 4, 5], "uint8", None,
+                                                                         ["x", "y", "z"])},
+        {"a": {"axes": [{"name": c, "type": "space", "unit": "nanometer"} for c in "xyz"]}, "a/b": None}, None),
+    "n5_edge_varlength_block": ({"chunks": 2}, {"v": ([4, 4], [2, 4], "uint8", n5(T(2), ONE), None)}, {}, None),
 }
 
 # The scales and translations of the COSEM and n5-viewer images, level by level.
@@ -145,8 +150,12 @@ def test_virtualizes_the_synthetic_stores():
     assert out.docs["c/zarr.json"]["attributes"] == {"kind": "explicit group"}
     assert out.docs["a/zarr.json"] == {"zarr_format": 3, "node_type": "group", "attributes": {}}
     assert "a/b/sparse/0/zarr.json" not in out.docs and "docs/zarr.json" not in out.docs
-    assert [k for k, _ in out.chunks if k.startswith("a/b/sparse/")] == [
-        "a/b/sparse/0/0", "a/b/sparse/0/2", "a/b/sparse/1/1", "a/b/sparse/1/2", "a/b/sparse/2/0"]
+    # The missing block (1/0) and the empty one (2/0) have no entry.
+    assert [k for k, _ in out.chunks if k.startswith("a/b/sparse/")] == ["a/b/sparse/0/0"]
+    # Block keys follow the grid in N5 dimension order (two blocks along the second, two along the first).
+    _, out = virtualize(str(FIXTURES / "n5_compressions"), url=URL.format("n5_compressions"))
+    assert [k for k, _ in out.chunks if k.startswith(("raw_u16/", "gzip_i32_padded/"))] == [
+        "gzip_i32_padded/0/0/0", "gzip_i32_padded/1/0/0", "raw_u16/0/0", "raw_u16/0/1"]
     _, out = virtualize(str(FIXTURES / "n5_root_dataset"), url=URL.format("n5_root_dataset"))
     assert out.docs["zarr.json"]["attributes"] == {"resolution": [1.5, 2, 3], "name": "root"}
     _, out = virtualize(str(FIXTURES / "n5_multiscales_unrecognized"), url=URL.format("x"))

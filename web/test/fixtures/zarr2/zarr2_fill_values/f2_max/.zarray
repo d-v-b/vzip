@@ -1,12 +1,12 @@
 {
   "zarr_format": 2,
   "shape": [
-    4,
+    3,
     4
   ],
   "chunks": [
-    3,
-    3
+    2,
+    4
   ],
   "dtype": "<f2",
   "compressor": null,

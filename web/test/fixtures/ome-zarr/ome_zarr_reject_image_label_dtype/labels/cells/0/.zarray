@@ -7,8 +7,8 @@
   ],
   "chunks": [
     1,
-    4,
-    5
+    8,
+    10
   ],
   "dtype": "<f4",
   "compressor": null,

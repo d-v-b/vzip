@@ -23,7 +23,7 @@ const key = (path: string) => (path ? `${path}/zarr.json` : "zarr.json");
 // store: summary members, {group path: [attribute names besides `ome`, members of `ome` besides
 // `version`, or null when the group is not an OME group]}, {array path: dimension_names or null}
 const CASES: [string, object, { [p: string]: [string[], string[] | null] }, { [p: string]: string[] | null }][] = [
-  ["ome_zarr_image_2d", { images: 1, chunks: 6, emptyChunks: 1 }, { "": [["_creator"], ["multiscales"]] },
+  ["ome_zarr_image_2d", { images: 1, chunks: 2, emptyChunks: 1 }, { "": [["_creator"], ["multiscales"]] },
     { "0": ["y", "x"], "1": ["y", "x"] }],
   ["ome_zarr_image_3d_translation", { images: 1, arrays: 3 }, { "": [[], ["multiscales"]] }, { "2": ["z", "y", "x"] }],
   ["ome_zarr_image_5d_omero", { images: 1, groups: 2 },
@@ -65,6 +65,8 @@ test("virtualizes the synthetic OME-Zarr 0.4 stores as 0.5", async () => {
       assert.deepEqual(doc(v, key(path)).dimension_names ?? null, names, `${name} ${path}`);
     }
   }
+  const i = await virtualize("ome_zarr_image_2d");
+  assert.deepEqual(i.entries.filter((e) => "ranges" in e).map((e) => e.key), ["0/0.0", "1/0.0"]);
   const l = await virtualize("ome_zarr_labels");
   assert.deepEqual(doc(l, "labels/zarr.json").attributes, { ome: { version: "0.5", labels: ["cells"] } });
   assert.deepEqual(doc(l, "labels/cells/zarr.json").attributes.ome["image-label"].source, { image: "../../" });
@@ -121,7 +123,7 @@ const REJECTIONS: [string, RegExp][] = [
   ["plate_field_count", /field_count 0 is not a positive integer/],
   ["plate_version", /plate: version "0.3" is not 0.4/],
   ["well_image_path", /image path "f-0" is not alphanumeric/],
-  ["well_image_missing", /B\/2\/7 is not an image/],
+  ["well_image_missing", /A\/1\/7 is not an image/],
   ["well_image_duplicate", /image paths are not unique/],
   ["well_acquisition", /acquisition 5 is not one of the plate's/],
   ["well_acquisition_missing", /an image has no acquisition, and the plate has several/],

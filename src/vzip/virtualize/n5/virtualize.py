@@ -325,6 +325,8 @@ def virtualize_n5(store: Store) -> StoreOutput:
         if found is None:
             continue
         ome, levels, axes = found
+        if any(named.get(lv, axes) != list(axes) for lv in levels):
+            continue  # a level of an earlier image with other axis names (§9.5)
         groups[g]["attributes"]["ome"] = ome
         images.append({"path": g, "convention": convention})
         for lv in levels:

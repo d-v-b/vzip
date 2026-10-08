@@ -19,6 +19,7 @@ from vzip.virtualize.store import (
     StoreLimit,
     listing_endpoint,
     object_url,
+    open_store,
     parse_json,
     parse_listing,
 )
@@ -190,6 +191,15 @@ def test_lists_over_http():
     store = HttpStore("http://h/b/s/", opener=opener(pages))
     assert store.objects == {"attributes.json": 10, "x/0": 1, "x/1": 0}
     assert (store.requests, store.listed) == (2, 7)
+
+
+def test_reads_from_the_listed_location_when_renamed():
+    # --url names the store in the output; objects are still read where it was listed.
+    pages = {"http://h/b/?list-type=2&prefix=s%2F": listing(obj("s/attributes.json", "2")),
+             "http://h/b/s/attributes.json": b"{}"}
+    store = open_store("http://h/b/s/", "https://data.example/s/", opener=opener(pages))
+    assert store.url == "https://data.example/s/"
+    assert store.read("attributes.json") == b"{}"
 
 
 @pytest.mark.parametrize("pages,error", [

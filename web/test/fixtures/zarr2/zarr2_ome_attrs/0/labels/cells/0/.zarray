@@ -6,9 +6,9 @@
     10
   ],
   "chunks": [
-    1,
+    2,
     8,
-    8
+    10
   ],
   "dtype": "<u4",
   "compressor": {

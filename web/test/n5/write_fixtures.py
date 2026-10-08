@@ -5,6 +5,12 @@ blocks, missing and empty blocks, explicit and implicit groups, a dataset at
 the root, nodes inside datasets, COSEM and n5-viewer multiscales, and the
 inputs the profile rejects (`n5_reject_*`, one per rejection rule).
 
+Most datasets are one block (an edge block, truncated or padded, where the
+block size is larger than the dimensions), so that each container is a
+handful of objects; only the datasets that test the block grid have two or
+three blocks. Each rejection is the smallest container that breaks its rule:
+one attributes.json at the root, with no block.
+
 Blocks are written by hand here (header, column-major big-endian elements,
 compression), as Java N5 writes them; web/test/n5/verify.py reads them back
 with its own block reader.
@@ -67,7 +73,7 @@ def block_bytes(block: np.ndarray, compression: dict, mode: int = 0) -> bytes:
 
 def dataset(root: Path, path: str, data: np.ndarray, block: list[int], compression: dict, *,
             dtype: str | None = None, padded: bool = False, skip: set = frozenset(), extra: dict | None = None,
-            legacy: bool = False) -> None:
+            legacy: bool = False, write_blocks: bool = True) -> None:
     """Writes `data` (indexed in N5 dimension order) as the dataset at `path`."""
     d = root / path if path else root
     attrs = {"dimensions": list(data.shape), "blockSize": block, "dataType": dtype or str(data.dtype)}
@@ -77,6 +83,8 @@ def dataset(root: Path, path: str, data: np.ndarray, block: list[int], compressi
         attrs["compression"] = compression
     attrs.update(extra or {})
     write_json(d / "attributes.json", attrs)
+    if not write_blocks:
+        return
     grid = [-(-s // b) for s, b in zip(data.shape, block)]
     for idx in np.ndindex(*grid):
         if idx in skip:
@@ -137,45 +145,49 @@ def main() -> None:
         shutil.rmtree(OUT)
     OUT.mkdir(parents=True)
 
-    # Compressions, data types, truncated (Java N5) and padded edge blocks.
+    # Compressions, data types, truncated (Java N5) and padded edge blocks. raw_u16 is two
+    # blocks along its second dimension (a truncated edge block), gzip_i32_padded two along
+    # its first (a padded edge block); the others are one block, truncated where the block
+    # size is larger than the dimensions.
     d = store("n5_compressions", {"n5": "4.0.0", "note": "compressions"})
-    dataset(d, "raw_u16", arr((10, 7), "u2"), [4, 3], RAW)
-    dataset(d, "gzip_i32_padded", arr((9, 5, 3), "i4"), [4, 2, 2], GZIP, padded=True)
-    dataset(d, "zlib_f64", arr((6, 6), "f8"), [4, 4], {"type": "gzip", "useZlib": True, "level": 6})
-    dataset(d, "zstd_f32", arr((5, 9), "f4"), [3, 4], {"type": "zstd", "level": 3})
-    dataset(d, "blosc_u8", arr((8, 6, 5), "u1"), [4, 4, 4],
+    dataset(d, "raw_u16", arr((10, 7), "u2"), [10, 4], RAW)
+    dataset(d, "gzip_i32_padded", arr((9, 5, 3), "i4"), [5, 6, 3], GZIP, padded=True)
+    dataset(d, "zlib_f64", arr((6, 6), "f8"), [6, 6], {"type": "gzip", "useZlib": True, "level": 6})
+    dataset(d, "zstd_f32", arr((5, 9), "f4"), [6, 9], {"type": "zstd", "level": 3})
+    dataset(d, "blosc_u8", arr((8, 6, 5), "u1"), [8, 6, 5],
             {"type": "blosc", "cname": "lz4", "clevel": 5, "shuffle": 1, "blocksize": 0, "nthreads": 1})
-    dataset(d, "blosc_i16_bitshuffle", arr((7, 7), "i2"), [4, 4],
+    dataset(d, "blosc_i16_bitshuffle", arr((7, 7), "i2"), [8, 8],
             {"type": "blosc", "cname": "zstd", "clevel": 3, "shuffle": 2, "blocksize": 0})
-    dataset(d, "blosc_u64_noshuffle_noblocksize", arr((5, 3), "u8"), [2, 2],
+    dataset(d, "blosc_u64_noshuffle_noblocksize", arr((5, 3), "u8"), [5, 3],
             {"type": "blosc", "cname": "zlib", "clevel": 1, "shuffle": 0})
-    dataset(d, "legacy_gzip_i8", arr((6, 4), "i1"), [3, 3], GZIP, legacy=True)
+    dataset(d, "legacy_gzip_i8", arr((6, 4), "i1"), [6, 4], GZIP, legacy=True)
 
     d = store("n5_dtypes", {"n5": "2.5.0"})
     for dt in ("u1", "i1", "u2", "i2", "u4", "i4", "u8", "i8", "f4", "f8"):
         name = {"u": "uint", "i": "int", "f": "float"}[dt[0]] + str(8 * int(dt[1]))
-        dataset(d, name, arr((5, 4), dt), [3, 3], RAW, dtype=name)
+        dataset(d, name, arr((5, 4), dt), [5, 4], RAW, dtype=name)
 
     # A dataset at the root, with user attributes kept.
     d = OUT / "n5_root_dataset"
-    dataset(d, "", arr((11, 3, 2), "u2"), [5, 2, 2], GZIP, extra={"n5": "4.0.0", "resolution": [1.5, 2, 3],
+    dataset(d, "", arr((11, 3, 2), "u2"), [11, 3, 2], GZIP, extra={"n5": "4.0.0", "resolution": [1.5, 2, 3],
                                                                    "name": "root"})
 
     # Implicit groups, a directory that is no node, missing and empty blocks,
     # objects under a dataset that are not chunk keys, and a node inside a dataset.
+    # a/b/sparse is three blocks along its first dimension: present, missing, and empty.
     d = store("n5_hierarchy", {"n5": "4.0.0", "description": "groups"})
-    dataset(d, "a/b/sparse", arr((8, 8), "u2"), [3, 3], RAW, skip={(0, 1), (2, 2), (1, 0)})
-    put(d / "a/b/sparse/2/1", b"")  # an empty block: no entry
+    dataset(d, "a/b/sparse", arr((8, 8), "u2"), [3, 8], RAW, skip={(1, 0)})
+    put(d / "a/b/sparse/2/0", b"")  # an empty block: no entry
     put(d / "a/b/sparse/9/9", b"x")  # outside the grid
-    put(d / "a/b/sparse/01/1", b"x")  # leading zero: not a chunk key
+    put(d / "a/b/sparse/01/0", b"x")  # leading zero: not a chunk key
     write_json(d / "a/b/sparse/0/attributes.json", {"dimensions": [1], "blockSize": [1], "dataType": "uint8",
                                                     "compression": RAW})  # inside a dataset: not a node
     write_json(d / "c/attributes.json", {"kind": "explicit group", "n5": "x"})
-    dataset(d, "c/d/e", arr((3,), "f4"), [2], RAW)
+    dataset(d, "c/d/e", arr((3,), "f4"), [4], RAW)
     put(d / "docs/README.txt", b"not part of the container\n")
     put(d / "c/notes.txt", b"a stray object in a group\n")
     write_json(d / "f g/attributes.json", {"spaces": "in a name"})  # percent-encoded URLs
-    dataset(d, "f g/h é", arr((4, 2), "u1"), [2, 2], RAW)
+    dataset(d, "f g/h é", arr((4, 2), "u1"), [4, 2], RAW)
 
     # COSEM, transforms on the group's multiscales (as on OpenOrganelle).
     d = store("n5_cosem", {"n5": "2.0.0"})
@@ -188,7 +200,7 @@ def main() -> None:
         "multiscales": [{"datasets": datasets, "name": "em/fibsem-uint8"}],
         "pixelResolution": {"dimensions": [4.0, 4.0, 5.24], "unit": "nm"},
         "scales": [[1, 1, 1], [2, 2, 2], [4, 4, 4]]})
-    pyramid(d, "em/fibsem-uint8", 3, base, [4, 4, 4], GZIP,
+    pyramid(d, "em/fibsem-uint8", 3, base, [12, 10, 8], GZIP,
             extra=lambda i: {"transform": datasets[i]["transform"],
                              "pixelResolution": {"dimensions": [4.0, 4.0, 5.24], "unit": "nm"}})
 
@@ -198,7 +210,7 @@ def main() -> None:
     for i in range(2):
         t = {"axes": ["x", "y", "z"], "scale": [1.0 * 2**i, 1.0 * 2**i, 3.0 * 2**i], "units": ["micrometer"] * 3,
              "order": "F"}
-        dataset(d, f"img/s{i}", base[:: 2**i, :: 2**i, :: 2**i], [5, 5, 5], RAW, extra={"transform": t})
+        dataset(d, f"img/s{i}", base[:: 2**i, :: 2**i, :: 2**i], [12, 10, 8], RAW, extra={"transform": t})
 
     # n5-viewer: scales and pixelResolution on the group.
     d = store("n5_viewer_scales", {"n5": "2.1.0"})
@@ -206,7 +218,7 @@ def main() -> None:
         "scales": [[1, 1, 1], [2, 2, 1], [4, 4, 2]],
         "pixelResolution": {"dimensions": [0.25, 0.25, 1.5], "unit": "um"}})
     for i, f in enumerate([[1, 1, 1], [2, 2, 1], [4, 4, 2]]):
-        dataset(d, f"setup0/timepoint0/s{i}", base[:: f[0], :: f[1], :: f[2]], [4, 4, 4], GZIP,
+        dataset(d, f"setup0/timepoint0/s{i}", base[:: f[0], :: f[1], :: f[2]], [12, 10, 8], GZIP,
                 extra={"downsamplingFactors": f} if i else None)
 
     # n5-viewer: no scales; downsamplingFactors on the levels, pixelResolution (an array) on s0.
@@ -215,19 +227,19 @@ def main() -> None:
     plane = arr((13, 9), "u2")
     for i in range(3):
         extra = {"downsamplingFactors": [2**i, 2**i]} if i else {"pixelResolution": [0.5, 0.75]}
-        dataset(d, f"g/s{i}", plane[:: 2**i, :: 2**i], [4, 4], RAW, extra=extra)
+        dataset(d, f"g/s{i}", plane[:: 2**i, :: 2**i], [13, 9], RAW, extra=extra)
 
     # Not recognized: malformed multiscales (the hierarchy stays plain), and a group with `ome`.
     d = store("n5_multiscales_unrecognized", {"n5": "2.0.0"})
     write_json(d / "bad_scale/attributes.json", {"multiscales": [{"datasets": [
         {"path": "s0", "transform": {"axes": ["z", "y", "x"], "scale": [0, 1, 1]}}]}]})
-    dataset(d, "bad_scale/s0", base, [6, 6, 6], RAW)
+    dataset(d, "bad_scale/s0", base, [12, 10, 8], RAW)
     write_json(d / "bad_axes/attributes.json", {"scales": [[1, 1, 1]], "axes": ["x", "x", "y"]})
-    dataset(d, "bad_axes/s0", base, [6, 6, 6], RAW)
+    dataset(d, "bad_axes/s0", base, [12, 10, 8], RAW)
     write_json(d / "has_ome/attributes.json", {"ome": {"version": "0.5", "custom": True}, "scales": [[1, 1, 1]]})
-    dataset(d, "has_ome/s0", base, [6, 6, 6], RAW)
+    dataset(d, "has_ome/s0", base, [12, 10, 8], RAW)
     write_json(d / "four_d/attributes.json", {"scales": [[1, 1, 1, 1]]})
-    dataset(d, "four_d/s0", arr((3, 3, 3, 2), "u1"), [2, 2, 2, 2], RAW)
+    dataset(d, "four_d/s0", arr((3, 3, 3, 2), "u1"), [3, 3, 3, 2], RAW)
     write_json(d / "dotdot/attributes.json", {"multiscales": [{"datasets": [{"path": "../bad_scale/s0"}]}]})
 
     # A 4-D image whose axes put time first: valid for OME-NGFF.
@@ -235,24 +247,29 @@ def main() -> None:
     write_json(d / "t/attributes.json", {"scales": [[1, 1, 1, 1], [1, 2, 2, 2]], "axes": ["t", "z", "y", "x"],
                                          "pixelResolution": {"dimensions": [1, 2, 0.5, 0.5], "unit": "nm"}})
     vol = arr((2, 4, 6, 6), "f4")
-    dataset(d, "t/s0", vol, [1, 4, 4, 4], {"type": "zstd"})
-    dataset(d, "t/s1", vol[:, ::2, ::2, ::2], [1, 4, 4, 4], {"type": "zstd"})
+    dataset(d, "t/s0", vol, [2, 4, 6, 6], {"type": "zstd"})
+    dataset(d, "t/s1", vol[:, ::2, ::2, ::2], [2, 4, 6, 6], {"type": "zstd"})
 
-    # A varlength-mode block: the store is accepted; reading that chunk fails.
+    # Two recognized groups sharing levels with different axis names (§9.5): the
+    # group whose path comes first (COSEM `a`, axes x, y, z) keeps its image; `a/b`
+    # (n5-viewer, axes c, y, x) is left plain, since an array has one set of
+    # dimension names.
+    d = store("n5_shared_levels", {"n5": "2.0.0"})
+    write_json(d / "a/attributes.json", {"multiscales": [{"datasets": [
+        {"path": "b/s0", "transform": cosem_transform([4.0, 4.0, 4.0], [0.0, 0.0, 0.0])}]}]})
+    write_json(d / "a/b/attributes.json", {"scales": [[1, 1, 1]], "axes": ["c", "y", "x"]})
+    dataset(d, "a/b/s0", arr((3, 4, 5), "u1"), [3, 4, 5], RAW)
+
+    # A varlength-mode block next to a default one: the store is accepted; reading that chunk fails.
     d = store("n5_edge_varlength_block", {"n5": "4.0.0"})
-    dataset(d, "v", arr((4, 4), "u1"), [2, 2], RAW)
-    put(d / "v/1/1", block_bytes(arr((2, 2), "u1"), RAW, mode=1))
+    dataset(d, "v", arr((4, 4), "u1"), [2, 4], RAW)
+    put(d / "v/1/0", block_bytes(arr((2, 4), "u1"), RAW, mode=1))
 
-    # Rejections, one per rule.
-    def reject(name: str, attrs, *, root=True, raw: bytes | None = None):
-        d = store(f"n5_reject_{name}", {"n5": "4.0.0"} if root else None)
-        f = d / "x/attributes.json"
-        f.parent.mkdir(parents=True)
-        if raw is not None:
-            f.write_bytes(raw)
-        else:
-            f.write_text(json.dumps(attrs))
-        put(d / "x/0/0", block_bytes(np.zeros((2, 2), "u1"), RAW))
+    # Rejections, one per rule: a dataset at the root (or a root attributes.json that is not
+    # valid), with no block.
+    def reject(name: str, attrs, *, raw: bytes | None = None):
+        doc = json.dumps({"n5": "4.0.0", **attrs}).encode() if raw is None else raw
+        put(store(f"n5_reject_{name}") / "attributes.json", doc)
 
     ok = {"dimensions": [4, 4], "blockSize": [2, 2], "dataType": "uint8", "compression": RAW}
     reject("datatype_string", {**ok, "dataType": "string"})
@@ -284,9 +301,9 @@ def main() -> None:
     reject("json_too_deep", None, raw=json.dumps(ok).encode()[:-1] + b', "deep": ' + b"[" * 300 + b"]" * 300 + b"}")
     reject("json_empty_object", None, raw=b"")
     d = store("n5_reject_reserved_key", {"n5": "4.0.0"})
-    dataset(d, "__vz__/x", arr((2, 2), "u1"), [2, 2], RAW)
+    dataset(d, "__vz__/x", arr((2, 2), "u1"), [2, 2], RAW, write_blocks=False)
     d = store("n5_reject_no_root_attributes")
-    dataset(d, "x", arr((2, 2), "u1"), [2, 2], RAW)
+    dataset(d, "x", arr((2, 2), "u1"), [2, 2], RAW, write_blocks=False)
 
     total = sum(f.stat().st_size for f in OUT.rglob("*") if f.is_file())
     print(f"{sum(1 for _ in OUT.iterdir())} stores, {total} bytes")

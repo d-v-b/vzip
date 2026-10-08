@@ -604,3 +604,9 @@ a data source would save 16 bytes of payload per frame, too little to matter.
 (vzip's Python and browser readers, and the Neuroglancer fork's
 `readSource`), so no reader changed. The round implementations in
 `impls/virtualize/` predate the rule and now differ on JPEG TIFFs and NDPI.
+
+**Review fix (§9.5).** A dataset that is a level of two recognized N5 groups
+whose axis names differ used to keep the first group's names, so the second
+image's `ome` axes contradicted its arrays' `dimension_names` (not valid
+OME-Zarr 0.5). Now the later group is not recognized and stays plain (new
+fixture `n5_shared_levels`).

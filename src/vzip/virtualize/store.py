@@ -445,6 +445,9 @@ class HttpStore(Store):
 
     def __init__(self, url: str, *, max_objects: int | None = None,
                  opener: Callable | None = None) -> None:
+        # Where the store is listed and read; `url`, the store's name in the
+        # output, may be changed afterwards (--url).
+        self.location = url
         self.url = url
         self.endpoint, self.prefix = listing_endpoint(url)
         self.objects = {}
@@ -487,7 +490,7 @@ class HttpStore(Store):
         size = self.objects[key]
         if size == 0:
             return b""
-        url = object_url(self.url, key)
+        url = object_url(self.location, key)
         req = urllib.request.Request(url, headers={"Range": f"bytes=0-{size - 1}", "User-Agent": UA})
 
         def get():
@@ -533,11 +536,12 @@ class DirStore(Store):
         return data
 
 
-def open_store(location: str, url: str | None = None, *, max_objects: int | None = None) -> Store:
-    """The store at an http(s) URL ending in `/` (listed there, and named `url`
-    in the output if given), or a local directory served at `url` (§1.2)."""
+def open_store(location: str, url: str | None = None, *, max_objects: int | None = None,
+               opener: Callable | None = None) -> Store:
+    """The store at an http(s) URL ending in `/` (listed and read there, and
+    named `url` in the output if given), or a local directory served at `url` (§1.2)."""
     if location.startswith(("http://", "https://")):
-        store = HttpStore(location, max_objects=max_objects)
+        store = HttpStore(location, max_objects=max_objects, opener=opener)
         if url is not None:
             check_store_url(url)
             store.url = url

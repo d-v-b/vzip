@@ -42,7 +42,7 @@ CASES = {
         "blosc_autoshuffle_u1": ("uint8", [ONE, blosc("blosclz", 9, "bitshuffle", 1)], ".", 0),
         "blosc_autoshuffle_i2": ("int16", [LE, blosc("lz4hc", 2, "shuffle", 2)], ".", 0),
         "f_order_1d": ("uint32", [LE, ZLIB], ".", 0),
-    }, {"arrays": 10, "groups": 1}),
+    }, {"arrays": 10, "groups": 1, "chunks": 12}),
     "zarr2_dtypes": ({
         "na_b1": ("bool", [ONE], ".", False), "na_i1": ("int8", [ONE], ".", 0), "be_i2": ("int16", [BE], ".", 0),
         "le_u2": ("uint16", [LE], ".", 0), "be_u4": ("uint32", [BE], ".", 0), "be_i8": ("int64", [BE], ".", 0),
@@ -54,12 +54,12 @@ CASES = {
         "null_bool": ("bool", [ONE], ".", False), "true_bool": ("bool", [ONE], ".", True),
         "neg_i1": ("int8", [ONE], ".", -5), "float_fill": ("float64", [LE], ".", 0.5),
         "float_as_int_fill": ("uint16", [LE], ".", 7), "f2_max": ("float16", [LE], ".", 65504),
-    }, {"emptyChunks": 1, "chunks": 20}),
+    }, {"emptyChunks": 1, "chunks": 10}),
     "zarr2_scalar_root": ({"": ("float64", [LE, ZLIB], ".", 0)}, {"arrays": 1, "groups": 0, "chunks": 1}),
     "zarr2_hierarchy": ({
         "a/b/zero_d": ("int32", [LE], ".", 0), "a/c": ("uint16", [LE], "/", 0), "g/h": ("float32", [LE], ".", 0),
         "sp ace/é/x y": ("uint8", [ONE], ".", 0), "empty_shape": ("int16", [LE], ".", 0),
-    }, {"arrays": 5, "groups": 6}),
+    }, {"arrays": 5, "groups": 6, "chunks": 5}),
     "zarr2_ome_attrs": ({"0/0": ("uint16", [LE, blosc("lz4", 5, "shuffle", 2)], "/", 0)}, {"groups": 8}),
 }
 
@@ -80,12 +80,19 @@ def test_virtualizes_the_synthetic_stores():
         keys = [k for k, _ in out.chunks]
         assert keys == sorted(keys) and all(n > 0 for _, n in out.chunks), name
         assert out.refs() == {k: [(i, 0, n)] for i, (k, n) in enumerate(out.chunks)}
-    # Chunk keys follow each array's separator; stray objects, nodes inside arrays and .zmetadata are not used.
+    # Chunk keys follow each array's separator and grid (two chunks, with a partial edge chunk,
+    # along the first axis in C order and along the second in F order).
+    _, out = virtualize(str(FIXTURES / "zarr2_compressors"), url=URL.format("c"))
+    assert [k for k, _ in out.chunks if k.startswith(("raw_c/", "zstd_f_nested/"))] == [
+        "raw_c/0.0", "raw_c/1.0", "zstd_f_nested/0/0/0", "zstd_f_nested/0/1/0"]
+    # A missing chunk and an empty one have no entry.
+    _, out = virtualize(str(FIXTURES / "zarr2_fill_values"), url=URL.format("f"))
+    assert [k for k, _ in out.chunks if k.startswith(("nan/", "inf/"))] == ["inf/1.0", "nan/1.0"]
+    # Stray objects, nodes inside arrays and .zmetadata are not used.
     _, out = virtualize(str(FIXTURES / "zarr2_hierarchy"), url=URL.format("h"))
     assert [k for k, _ in out.chunks] == [
-        "a/b/zero_d/0", "a/c/0/0", "a/c/0/1", "a/c/1/0", "a/c/1/1", "g/h/0", "g/h/1", "sp ace/é/x y/0.0",
-        "sp ace/é/x y/1.0"]
-    assert out.sources[-1] == "https://data.test/zarr2/h/sp%20ace/%C3%A9/x%20y/1.0"
+        "a/b/zero_d/0", "a/c/0/0", "a/c/1/0", "g/h/0", "sp ace/é/x y/0.0"]
+    assert out.sources[-1] == "https://data.test/zarr2/h/sp%20ace/%C3%A9/x%20y/0.0"
     assert out.docs["a/zarr.json"] == {"zarr_format": 3, "node_type": "group", "attributes": {}}
     assert out.docs["a/c/zarr.json"]["attributes"] == {"_ARRAY_DIMENSIONS": ["y", "x"]}
     assert not {"a/c/inside/zarr.json", "orphan/zarr.json", "ghost/zarr.json", "notes/zarr.json"} & set(out.docs)

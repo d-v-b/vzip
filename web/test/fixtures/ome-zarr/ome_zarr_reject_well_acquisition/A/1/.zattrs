@@ -4,11 +4,7 @@
     "images": [
       {
         "path": "0",
-        "acquisition": 0
-      },
-      {
-        "path": "1",
-        "acquisition": 1
+        "acquisition": 5
       }
     ]
   }

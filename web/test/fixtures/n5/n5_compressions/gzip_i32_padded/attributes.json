@@ -5,9 +5,9 @@
   3
  ],
  "blockSize": [
-  4,
-  2,
-  2
+  5,
+  6,
+  3
  ],
  "dataType": "int32",
  "compression": {
