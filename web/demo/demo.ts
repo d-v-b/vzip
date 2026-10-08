@@ -96,10 +96,16 @@ function neuroglancerState(
   const offset = (img: ShownImage, i: number) => (img.translation?.[i] ?? 0) / scale[i];
   // Start at the first time point (Neuroglancer would pick the middle one),
   // the middle z slice, and the centre of the first image, fitted to the
-  // view. Zooming out shows the other images where they are; starting with
-  // all of them in view would load every one at full resolution.
-  const position = axes.flatMap((a, i) =>
-    a.name === "c" ? [] : [a.name === "t" ? 0 : a.name === "z" ? Math.floor(shape[i] / 2) : offset(images[0], i) + shape[i] / 2]);
+  // view, each where the image's translation places it (an image translated
+  // in z or t would otherwise open outside its data). Zooming out shows the
+  // other images where they are; starting with all of them in view would load
+  // every one at full resolution.
+  const position = axes.flatMap((a, i) => {
+    if (a.name === "c") return [];
+    const at = offset(images[0], i);
+    if (a.name === "t") return [at];
+    return [at + (a.name === "z" ? Math.floor(shape[i] / 2) : shape[i] / 2)];
+  });
   const view = {
     dimensions,
     position,
