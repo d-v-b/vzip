@@ -62,6 +62,7 @@ from vzip.errors import (
     VzipError,
 )
 from vzip.pb import Reference, Source, decode_cd_index, parts
+from vzip.readplan import Batcher, NetEstimate, NetModel, SpanCache, cost_merge_runs, merge_runs
 from vzip.uri import file_path, file_uri
 from vzip.uri import resolve as resolve_reference
 
@@ -354,7 +355,24 @@ class VZipStore(Store):
         resolve: bool = True,
         resolver: Resolver | None = None,
         stats: Stats | None = None,
+        merge_gap: int | str | None = None,
+        batch_window: float | None = None,
+        span_cache: int = 0,
+        net: NetModel | None = None,
     ) -> None:
+        """Read planning for url sources (experimental, see readplan.py):
+
+        - `merge_gap`: reads of a url source at most this many bytes apart
+          are combined into one request (default MERGE_GAP); `"auto"` uses
+          bandwidth × rtt / connections of `net`, and `"cost"` merges the
+          smallest gaps first as long as the modelled time drops. Without
+          `net`, the model is estimated from the reader's own requests.
+        - `batch_window`: if set, the url reads of values requested within
+          this many seconds of each other are planned together, so that
+          neighbouring chunks' ranges share requests.
+        - `span_cache`: bytes of fetched spans (merged gaps included) kept
+          for later reads.
+        """
         super().__init__(read_only=True)
         # spec §6: absolute, lexically normalised, symlinks not resolved
         self.url = url if urlparse(url).scheme else file_uri(url)
@@ -374,6 +392,14 @@ class VZipStore(Store):
         self._fetching: dict[int, asyncio.Future] = {}  # page -> the task reading it
         self._bad_pages: dict[int, str] = {}
         self._file_size = 0
+        self.merge_gap = self.MERGE_GAP if merge_gap is None else merge_gap
+        if isinstance(self.merge_gap, str) and self.merge_gap not in ("auto", "cost"):
+            raise ValueError(f"merge_gap must be a number of bytes, 'auto' or 'cost', not {merge_gap!r}")
+        self._net_fixed = net
+        self._net = NetEstimate(net)
+        self._span_cache = SpanCache(span_cache) if span_cache else None
+        self._batcher = (Batcher(batch_window, self._fetch_run, self._plan_runs, self._span_cache)
+                         if batch_window is not None else None)
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, VZipStore) and other.url == self.url
@@ -661,6 +687,26 @@ class VZipStore(Store):
     # one per image row, would otherwise cost one request per range.
     MERGE_GAP = 1 << 16
 
+    def _plan_runs(self, reads: list[tuple[int, int, int]]) -> list[list[int]]:
+        net = self._net_fixed or self._net.model()
+        if self.merge_gap == "cost":
+            return cost_merge_runs(reads, net)
+        return merge_runs(reads, net.gap() if self.merge_gap == "auto" else self.merge_gap)
+
+    async def _fetch_run(self, source: int, a: int, b: int) -> bytes:
+        """One request for bytes [a, b) of url source `source`, through the
+        span cache."""
+        if self._span_cache is not None:
+            hit = self._span_cache.get(source, a, b)
+            if hit is not None:
+                return hit
+        t = asyncio.get_running_loop().time()
+        data = await self._url_bytes(self._sources[source], a, b)
+        self._net.observe(b - a, asyncio.get_running_loop().time() - t)
+        if self._span_cache is not None:
+            self._span_cache.put(source, a, b, data)
+        return data
+
     async def _ref_bytes(self, ref: Reference, start: int, end: int) -> bytes:
         """Bytes [start, end) of the value described by `ref` (spec §8.3)."""
         for r in parts(ref):  # payload errors: every range, even ones outside [start, end)
@@ -687,16 +733,17 @@ class VZipStore(Store):
                 else:
                     pieces.append((r.source, a, b))
             pos += r.size
-        # Combine nearby reads of each url source, then slice them apart.
+        # Combine nearby reads of each url source, then slice them apart. With
+        # a batch window, the batcher combines them with other values' reads.
         reads = sorted({p for p in pieces if isinstance(p, tuple)}, key=lambda t: (t[0], t[1]))
-        runs: list[list] = []  # [source, a, b]
-        for source, a, b in reads:
-            if runs and runs[-1][0] == source and a - runs[-1][2] <= self.MERGE_GAP:
-                runs[-1][2] = max(runs[-1][2], b)
-            else:
-                runs.append([source, a, b])
+        if self._batcher is not None:
+            runs = [list(r) for r in reads]
+            fetch = self._batcher.read
+        else:
+            runs = self._plan_runs(reads)
+            fetch = self._fetch_run
         coros = [p for p in pieces if not isinstance(p, (bytes, tuple))]
-        coros += [self._url_bytes(self._sources[s], a, b) for s, a, b in runs]
+        coros += [fetch(s, a, b) for s, a, b in runs]
         try:
             done = await asyncio.gather(*coros)
         except ResolutionError:

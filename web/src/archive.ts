@@ -55,6 +55,116 @@ export type RangeFetcher = (
  */
 export const MERGE_GAP = 1 << 16;
 
+/**
+ * Read planning for url sources (experimental; see
+ * experiments/ndpi_access/README.md). The defaults read each value alone,
+ * merging its ranges at most MERGE_GAP apart.
+ */
+export interface ReadOptions {
+  /** Reads of a url source at most this many bytes apart share a request. */
+  mergeGap?: number;
+  /**
+   * If set, the url reads of values requested within this many milliseconds
+   * of each other are planned together, so that neighbouring chunks' ranges
+   * (the rows of an NDPI strip) share requests.
+   */
+  batchWindowMs?: number;
+  /** Bytes of fetched spans (merged gaps included) kept for later reads. */
+  spanCacheBytes?: number;
+}
+
+type Span = { source: number; offset: bigint; end: bigint };
+
+/** Fetched spans of url sources, least recently used evicted past `capacity` bytes. */
+export class SpanCache {
+  private spans = new Map<string, Span & { data: Uint8Array }>(); // insertion order = LRU order
+  private size = 0;
+  readonly capacity: number;
+  constructor(capacity: number) {
+    this.capacity = capacity;
+  }
+
+  get(source: number, offset: bigint, end: bigint): Uint8Array | undefined {
+    for (const [k, s] of this.spans) {
+      if (s.source === source && s.offset <= offset && end <= s.end) {
+        this.spans.delete(k);
+        this.spans.set(k, s);
+        return s.data.subarray(Number(offset - s.offset), Number(end - s.offset));
+      }
+    }
+    return undefined;
+  }
+
+  put(source: number, offset: bigint, end: bigint, data: Uint8Array): void {
+    const k = `${source}:${offset}:${end}`;
+    if (data.length > this.capacity || this.spans.has(k)) return;
+    this.spans.set(k, { source, offset, end, data });
+    this.size += data.length;
+    for (const [old, s] of this.spans) {
+      if (this.size <= this.capacity) break;
+      this.spans.delete(old);
+      this.size -= s.data.length;
+    }
+  }
+}
+
+/** Sorted runs covering `reads`, joining reads of a source at most `gap` bytes apart. */
+export function mergeRuns(reads: Span[], gap: number): Span[] {
+  const sorted = [...reads].sort((x, y) =>
+    x.source - y.source || (x.offset < y.offset ? -1 : x.offset > y.offset ? 1 : 0));
+  const runs: Span[] = [];
+  for (const r of sorted) {
+    const last = runs[runs.length - 1];
+    if (last && last.source === r.source && r.offset - last.end <= BigInt(gap)) {
+      if (r.end > last.end) last.end = r.end;
+    } else {
+      runs.push({ ...r });
+    }
+  }
+  return runs;
+}
+
+type Pending = { read: Span; resolve: (d: Uint8Array) => void; reject: (e: unknown) => void };
+
+/** Collects the reads of a batch window and fetches them as merged runs. */
+class Batcher {
+  private pending: Pending[] = [];
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private window: number;
+  private gap: number;
+  private fetch: (run: Span) => Promise<Uint8Array>;
+  constructor(window: number, gap: number, fetch: (run: Span) => Promise<Uint8Array>) {
+    this.window = window;
+    this.gap = gap;
+    this.fetch = fetch;
+  }
+
+  read(read: Span): Promise<Uint8Array> {
+    return new Promise((resolve, reject) => {
+      this.pending.push({ read, resolve, reject });
+      this.timer ??= setTimeout(() => this.flush(), this.window);
+    });
+  }
+
+  private flush(): void {
+    const batch = this.pending;
+    this.pending = [];
+    this.timer = undefined;
+    const runs = mergeRuns(batch.map((b) => b.read), this.gap).map((run) => ({
+      run,
+      data: this.fetch(run),
+    }));
+    for (const { read, resolve, reject } of batch) {
+      const { run, data } = runs.find(({ run }) =>
+        run.source === read.source && run.offset <= read.offset && read.end <= run.end)!;
+      data.then(
+        (d) => resolve(d.subarray(Number(read.offset - run.offset), Number(read.end - run.offset))),
+        reject,
+      );
+    }
+  }
+}
+
 const U16_ALL = 0xffff;
 const U32_ALL = 0xffffffff;
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -86,6 +196,9 @@ export class Archive {
   sources: Source[];
   entries: Map<string, Entry>;
   private fetchRange: RangeFetcher;
+  private mergeGap: number;
+  private spanCache: SpanCache | undefined;
+  private batcher: Batcher | undefined;
 
   private constructor(
     bytes: Uint8Array,
@@ -93,12 +206,27 @@ export class Archive {
     sources: Source[],
     entries: Map<string, Entry>,
     fetchRange: RangeFetcher,
+    options: ReadOptions,
   ) {
     this.bytes = bytes;
     this.baseUrl = baseUrl;
     this.sources = sources;
     this.entries = entries;
     this.fetchRange = fetchRange;
+    this.mergeGap = options.mergeGap ?? MERGE_GAP;
+    this.spanCache = options.spanCacheBytes ? new SpanCache(options.spanCacheBytes) : undefined;
+    if (options.batchWindowMs !== undefined) {
+      this.batcher = new Batcher(options.batchWindowMs, this.mergeGap, (run) => this.fetchRun(run));
+    }
+  }
+
+  /** One request for a run of a url source, through the span cache. */
+  private async fetchRun(run: Span): Promise<Uint8Array> {
+    const hit = this.spanCache?.get(run.source, run.offset, run.end);
+    if (hit !== undefined) return hit;
+    const data = await this.source({ source: run.source, offset: run.offset, length: run.end - run.offset });
+    this.spanCache?.put(run.source, run.offset, run.end, data);
+    return data;
   }
 
   /** Opens an archive (spec §8.1); `baseUrl` resolves relative `url` sources. */
@@ -107,6 +235,7 @@ export class Archive {
     baseUrl: string,
     fetchRange: RangeFetcher = (url, start, end, pins) =>
       readHttpRange(url, start, end, pins),
+    options: ReadOptions = {},
   ): Promise<Archive> {
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const n = bytes.length;
@@ -235,7 +364,7 @@ export class Archive {
     } catch (e) {
       throw new VzipError("archive", `source table: ${(e as Error).message}`);
     }
-    return new Archive(bytes, baseUrl, sources, entries, fetchRange);
+    return new Archive(bytes, baseUrl, sources, entries, fetchRange, options);
   }
 
   /** The visible entry for `key`, or undefined (spec §8.2). */
@@ -378,16 +507,18 @@ export class Archive {
       at += n;
     }
     // Combine nearby reads of each url source into runs, fetch each run once,
-    // and slice the reads back out of it.
+    // and slice the reads back out of it. With a batch window, each read goes
+    // to the batcher, which combines it with the reads of other values.
     const reads = parts.filter((p): p is Read => !(p instanceof Promise));
     const sorted = [...reads].sort((x, y) =>
       x.source - y.source || (x.offset < y.offset ? -1 : x.offset > y.offset ? 1 : 0));
     const runs: { source: number; offset: bigint; end: bigint; data?: Promise<Uint8Array> }[] = [];
     const runOf = new Map<Read, (typeof runs)[number]>();
+    const gap = BigInt(this.batcher ? -1 : this.mergeGap);
     for (const read of sorted) {
       const last = runs[runs.length - 1];
       const readEnd = read.offset + read.length;
-      if (last && last.source === read.source && read.offset - last.end <= BigInt(MERGE_GAP)) {
+      if (last && last.source === read.source && read.offset - last.end <= gap) {
         if (readEnd > last.end) last.end = readEnd;
       } else {
         runs.push({ source: read.source, offset: read.offset, end: readEnd });
@@ -395,7 +526,7 @@ export class Archive {
       runOf.set(read, runs[runs.length - 1]);
     }
     for (const run of runs) {
-      run.data = this.source({ source: run.source, offset: run.offset, length: run.end - run.offset });
+      run.data = this.batcher ? this.batcher.read(run) : this.fetchRun(run);
     }
     const chunks = await Promise.all(
       parts.map(async (p) => {

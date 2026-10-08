@@ -21,3 +21,6 @@ conformance/results/
 
 # Test scratch output
 impls/typescript/test/.tmp/
+
+# NDPI access benchmark: virtualized slides and extracted layouts
+experiments/ndpi_access/cache/

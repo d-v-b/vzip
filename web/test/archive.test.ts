@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Archive, VzipError } from "../src/archive.ts";
+import { Archive, mergeRuns, type ReadOptions, VzipError } from "../src/archive.ts";
 import { type ArchiveDesc, writeVzip } from "../src/writer.ts";
 
 const utf8 = (s: string) => new TextEncoder().encode(s);
@@ -136,4 +136,42 @@ test("combines nearby reads of a url source into one request", async () => {
     assert.deepEqual(await a.read("v"), expect(c.ranges));
     assert.equal(requests.length, c.requests, requests.join(", "));
   }
+});
+
+test("plans the reads of values requested together, with read options", async () => {
+  // Two chunks of a row-major strip: rows of 4 bytes, each chunk 2 bytes of each row
+  const blob = Uint8Array.from({ length: 64 }, (_, i) => i);
+  const rows = 8;
+  const chunk = (x: number) =>
+    Array.from({ length: rows }, (_, y) => ({ source: 0, offset: BigInt(y * 4 + x), length: 2n }));
+  const bytes = await writeVzip({
+    sources: [{ url: "blob.bin" }],
+    entries: [{ key: "a", ranges: chunk(0) }, { key: "b", ranges: chunk(2) }],
+  });
+  const expect = (x: number) =>
+    Uint8Array.from({ length: 2 * rows }, (_, i) => Math.floor(i / 2) * 4 + x + (i % 2));
+  const cases: { options: ReadOptions; requests: number; again: number }[] = [
+    { options: {}, requests: 2, again: 2 }, // each value alone, rows 2 bytes apart merge
+    { options: { mergeGap: 0 }, requests: 2 * rows, again: 2 * rows },
+    { options: { mergeGap: 0, batchWindowMs: 1 }, requests: 1, again: 1 }, // the rows meet
+    { options: { mergeGap: 0, batchWindowMs: 1, spanCacheBytes: 1 << 10 }, requests: 1, again: 0 },
+    { options: { mergeGap: 0, spanCacheBytes: 1 << 10 }, requests: 2 * rows, again: 0 },
+  ];
+  for (const c of cases) {
+    let n = 0;
+    const a = await Archive.open(bytes, "https://data.test/dir/archive.vzip", async (_u, s, e) => {
+      n++;
+      return { data: blob.subarray(s, e), size: blob.length };
+    }, c.options);
+    assert.deepEqual(await Promise.all([a.read("a"), a.read("b")]), [expect(0), expect(2)]);
+    assert.equal(n, c.requests, JSON.stringify(c.options));
+    n = 0;
+    assert.deepEqual(await Promise.all([a.read("a"), a.read("b")]), [expect(0), expect(2)]);
+    assert.equal(n, c.again, `again ${JSON.stringify(c.options)}`);
+    assert.deepEqual(await a.read("b", 1, 5), expect(2).subarray(1, 5));
+  }
+  assert.deepEqual(
+    mergeRuns([{ source: 0, offset: 10n, end: 12n }, { source: 0, offset: 0n, end: 4n }, { source: 1, offset: 4n, end: 5n }], 6),
+    [{ source: 0, offset: 0n, end: 12n }, { source: 1, offset: 4n, end: 5n }],
+  );
 });
