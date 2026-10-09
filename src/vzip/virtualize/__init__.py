@@ -14,12 +14,14 @@ machinery (§1.4–§1.6). (`tiff/` keeps the IFD reader and tag translator NDPI
 
 Exits with status 3 if the input is rejected.
 
-A file at an http(s) URL is opened under the reader policy (SPEC.md §8.7): a host
-that is, or resolves to, a loopback, private, link-local or special address is
-refused unless the policy has `allow_private_hosts` (`--allow-private-hosts`), and
-a request that would go through a proxy unless `allow_unchecked_proxy`. TIFF, ND2
-and CZI sources are read entirely under it; the other profiles' readers are
-today's, after the policy has admitted the source's first request.
+A file or a store at an http(s) URL is read under the reader policy (SPEC.md
+§8.7): a host that is, or resolves to, a loopback, private, link-local or special
+address is refused unless the policy has `allow_private_hosts`
+(`--allow-private-hosts`), and a request that would go through a proxy unless
+`allow_unchecked_proxy`. TIFF, ND2 and CZI sources, and stores (their listing,
+every object read and every redirect), are read entirely under it; the other file
+profiles' readers are today's, after the policy has admitted the source's first
+request.
 
 Every url source pins its size, and the input file's source its ETag when
 every response for it gave the same strong one (VIRTUALIZE.md §1.2, §1.4).
@@ -57,11 +59,13 @@ __all__ = ["Output", "Rejected", "StoreOutput", "virtualize", "virtualize_store"
 
 
 def virtualize_store(location: str, url: str | None = None, *, max_objects: int | None = None,
-                     checksums: bool = False, workers: int = WORKERS) -> tuple[str, StoreOutput | SafeOutput]:
+                     checksums: bool = False, workers: int = WORKERS,
+                     policy: Policy | None = None) -> tuple[str, StoreOutput | SafeOutput]:
     """(format, output) for the store at `location` (§1.4), its documents read
     by up to `workers` requests at a time; with `checksums`, the output's ranges
-    carry the CRC-32C of their bytes (SPEC.md §5.2)."""
-    store = open_store(location, url, max_objects=max_objects, workers=workers)
+    carry the CRC-32C of their bytes (SPEC.md §5.2). A store at an http(s) URL is
+    listed and read under the reader policy `policy` (default: `Policy()`)."""
+    store = open_store(location, url, max_objects=max_objects, workers=workers, policy=policy)
     try:
         fmt = choose_profile(store)
         if fmt == "safe":
@@ -98,13 +102,14 @@ def virtualize(location: str, url: str | None = None, *, checksums: bool = False
     same strong one and the output names the URL that was read (§1.2). With
     `checksums`, the output's ranges of source 0 carry the CRC-32C of their
     bytes (SPEC.md §5.2), which reads them. `policy` is the reader policy a file
-    at an http(s) URL is read under (default: `Policy()`, private hosts refused).
+    or store at an http(s) URL is read under (default: `Policy()`, private hosts
+    refused).
     For TIFF, ND2 and CZI, `connections` is how many requests run at a time to a
     remote source (default 8), and `byte_cost` the seconds of wall time the read
     planner charges a byte fetched beyond those asked (default 0.1 s per MB).
     A store's documents are read by up to `workers` requests at a time."""
     if is_store(location):
-        return virtualize_store(location, url, checksums=checksums, workers=workers)
+        return virtualize_store(location, url, checksums=checksums, workers=workers, policy=policy)
     from vzip.ir.planner import open_transport
 
     transport = open_transport(location, policy)

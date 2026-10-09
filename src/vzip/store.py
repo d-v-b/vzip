@@ -147,10 +147,7 @@ class _Pool:
             idle = self._idle.get((scheme, host, port))
             if idle:
                 return idle.pop(), True
-        cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
-        conn = cls(host, port, timeout=60)
-        conn._create_connection = _refuse_unchecked  # connect() must go through _connect
-        return conn, False
+        return new_connection(scheme, host, port), False
 
     def put(self, scheme: str, host: str, port: int | None, conn) -> None:
         with self._lock:
@@ -162,6 +159,14 @@ class _Pool:
 
 
 _POOL = _Pool()
+
+
+def new_connection(scheme: str, host: str, port: int | None, timeout: float = 60):
+    """An unopened connection to `host`, which only `_connect` (checking the address) opens."""
+    cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
+    conn = cls(host, port, timeout=timeout)
+    conn._create_connection = _refuse_unchecked  # connect() must go through _connect
+    return conn
 
 
 # Resolves host names (replaceable in tests).
@@ -232,13 +237,16 @@ def _proxy(url: str) -> str | None:
 
 
 def _send(url: str, headers: dict[str, str], check: Check | None = None,
-          unchecked_proxy: bool = False) -> tuple[int, Message, bytes]:
+          unchecked_proxy: bool = False, pool=None) -> tuple[int, Message, bytes]:
     """One GET of `url`, without following redirects: (status, headers, body).
 
     `check` is applied to the address the request is sent to: when a new
     connection is opened, and again to a reused one's peer. A request that
     would go through a proxy cannot be checked, so with `check` it is
-    refused unless `unchecked_proxy` (spec §8.7 rule 3)."""
+    refused unless `unchecked_proxy` (spec §8.7 rule 3). `pool` keeps the
+    connections alive (default: the reader's, shared by its threads); it
+    has `_Pool`'s `get` and `put`."""
+    pool = _POOL if pool is None else pool
     pu = urlparse(url)
     proxy = _proxy(url)
     if proxy is not None:
@@ -260,7 +268,7 @@ def _send(url: str, headers: dict[str, str], check: Check | None = None,
     target = rest[re.match(r"[^/?#]*", rest).end():].split("#", 1)[0]
     target = target if target.startswith("/") else "/" + target
     for attempt in (0, 1):
-        conn, reused = _POOL.get(pu.scheme, pu.hostname, pu.port)
+        conn, reused = pool.get(pu.scheme, pu.hostname, pu.port)
         try:
             if conn.sock is None:
                 _connect(conn, check)
@@ -280,7 +288,7 @@ def _send(url: str, headers: dict[str, str], check: Check | None = None,
         if r.will_close:
             conn.close()
         else:
-            _POOL.put(pu.scheme, pu.hostname, pu.port, conn)
+            pool.put(pu.scheme, pu.hostname, pu.port, conn)
         return r.status, r.msg, body
     raise AssertionError("unreachable")
 

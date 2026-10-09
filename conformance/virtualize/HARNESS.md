@@ -141,7 +141,9 @@ inputs marked `py-only`, which every implementation but the browser's runs.
 `compare.py` runs three implementations of its own, and compares each output
 with the first's:
 
-- `ref`, the reference: `conformance/virtualize/reference/cli.py`. For TIFF,
+- `ref`, the reference: `conformance/virtualize/reference/cli.py
+  --allow-private-hosts` (which only stores need: its file readers apply no
+  reader policy). For TIFF,
   ND2 and CZI it runs the frozen Python profiles in
   `conformance/virtualize/reference/vzip_reference/` (what `vzip.virtualize`
   shipped before these formats moved to the IR, unchanged but for their import

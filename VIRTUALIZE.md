@@ -169,6 +169,19 @@ implementation MAY also fail, rather than reject, when an input exceeds a
 resource limit that it states (§14); a failure is not an output, so it does
 not affect equivalence.
 
+**Reader policy.** A virtualizer reads a remote input under a reader policy
+([SPEC.md §8.7](SPEC.md#87-reader-policy)) that the application chooses,
+applied to every request it makes for the input: a file's, and a store's
+listing and object reads (§1.4, §1.5), each redirect target checked before it
+is requested. A request the policy refuses is a failure, not a rejection. The
+implementations in this repository default to §8.7's defaults, so they refuse
+loopback, private, link-local and special hosts, and requests through a
+proxy, unless the application allows private hosts or unchecked proxies (the
+same settings, and `--allow-private-hosts` on their command lines). Under
+that policy they read stores, and TIFF, ND2 and CZI files, entirely; the
+Python implementation's other file profiles check only the input's first
+request against it.
+
 **Structure only.** The output MUST NOT depend on the file's pixel data.
 (Reading blocks that happen to include pixel bytes is fine.) Coding
 parameters are structure, not pixel data, and an output may copy them: the

@@ -2,7 +2,9 @@
 // strict JSON reader, and the output of a store profile (one url source per
 // chunk object). Shared by the N5 (§9), Zarr v2 (§10) and OME-Zarr (§11) profiles.
 
-import { isUriReference } from "../uri.ts";
+import { checkAddress, checkPolicy, type Policy, VzipError } from "../archive.ts";
+import { checkedFetch } from "#net";
+import { checkHttpUrl, isUriReference } from "../uri.ts";
 import { CONVENTION_KEY, declare, type Profile, stringifyJson } from "./common.ts";
 import type { ArchiveDesc, EntryDesc } from "../writer.ts";
 
@@ -653,16 +655,113 @@ export async function readDocument(store: Store, key: string, { keep = false } =
 
 export type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 
-/** A store listed by S3 ListObjectsV2 (§1.5). Fails (StoreLimitError) past `maxObjects`. */
+/** Throws a resolution error unless the reader policy (SPEC.md §8.7) lets the store at
+ * `base` request `url`: an http(s) URL (§6.2), allowed by rules 1 and 2, its host as
+ * written (an IP literal, or `localhost`) allowed by rule 3. */
+function allowStoreUrl(policy: Policy, base: string, url: string): void {
+  try {
+    checkHttpUrl(url);
+  } catch (e) {
+    throw new VzipError("resolution", (e as Error).message);
+  }
+  checkPolicy(policy, base, url);
+}
+
+/**
+ * Requests for the store at `base` under the reader policy (SPEC.md §8.7), as an
+ * image file's (`HttpSource`, ir/source.ts): each URL, and each redirect target, is
+ * checked by `checkPolicy`. Under Node (`#net`), unless the policy has
+ * `allowPrivateHosts`, redirects are followed here (at most 5), each target checked
+ * before it is requested; the address each request is sent to is checked, on a new
+ * connection and on a kept-alive one; and a request that would go through a proxy is
+ * refused unless the policy has `allowUncheckedProxy`. In a browser, `fetch` hides
+ * the address it connects to and follows redirects itself, so rule 3 is checked on
+ * hosts as written and on the final URL, and Private Network Access covers the
+ * rest. A refusal is a resolution error (`VzipError`); a network error is thrown as
+ * `fetch` throws it. `check` applies rule 3 to an address (default: `checkAddress`
+ * under `policy`).
+ */
+export function storeFetch(
+  base: string,
+  policy: Policy = {},
+  headers: Record<string, string> = {},
+  check: (url: string, address: string) => void = (u, address) => checkAddress(policy, u, address),
+): Fetch {
+  const allow = (u: string) => allowStoreUrl(policy, base, u);
+  const refusals = new Set<string>();
+  const checked = policy.allowPrivateHosts
+    ? undefined
+    : checkedFetch((u, address) => {
+      try {
+        check(u, address);
+      } catch (e) {
+        refusals.add((e as Error).message);
+        throw e;
+      }
+    }, policy);
+  return async (u, init = {}) => {
+    allow(u);
+    const h = { ...headers, ...(init.headers as Record<string, string> | undefined) };
+    let r: Response;
+    try {
+      r = checked
+        ? await checked(u, { headers: h, ...(init.signal ? { signal: init.signal } : {}) }, allow)
+        : await fetch(u, { ...init, headers: h, redirect: "follow" });
+    } catch (e) {
+      if (e instanceof VzipError || (e as Error).name === "AbortError") throw e;
+      const message = (e as Error).message;
+      if (refusals.has(message)) throw new VzipError("resolution", message);
+      // a network error (fetch's TypeError, a Node socket error) is thrown as is; the
+      // others (a proxy the reader cannot check, a bad redirect) are refusals
+      if (!checked || e instanceof TypeError || typeof (e as { code?: unknown }).code === "string") throw e;
+      throw new VzipError("resolution", `${u}: ${message}`);
+    }
+    if (r.redirected) {
+      try {
+        allow(r.url);
+      } catch (e) {
+        await r.body?.cancel();
+        throw e;
+      }
+    }
+    return r;
+  };
+}
+
+/** A store listed by S3 ListObjectsV2 (§1.5). Fails (StoreLimitError) past `maxObjects`.
+ * Every request (the listing's, each object read's, and each redirect's) is made under
+ * the reader policy `policy` (SPEC.md §8.7; default: private and special hosts refused),
+ * by `storeFetch`; a `fetch` given in its place is still checked by the policy on each
+ * URL as written and on each response's final URL. A refusal is a resolution error
+ * (`VzipError`). */
 export async function openHttpStore(
   url: string,
-  { fetch: f = (u, i) => fetch(u, i), maxObjects = MAX_OBJECTS, concurrency = CONCURRENCY }: {
+  { fetch: given, policy = {}, headers = {}, maxObjects = MAX_OBJECTS, concurrency = CONCURRENCY }: {
     fetch?: Fetch;
+    /** The reader policy (SPEC.md §8.7). */
+    policy?: Policy;
+    /** Extra request headers (such as a `User-Agent` under Node), sent by `storeFetch`. */
+    headers?: Record<string, string>;
     maxObjects?: number;
     /** Documents read at a time (CONCURRENCY). */
     concurrency?: number;
   } = {},
 ): Promise<Store> {
+  const allow = (u: string) => allowStoreUrl(policy, url, u);
+  const send = given ?? storeFetch(url, policy, headers);
+  const f: Fetch = async (u, init) => {
+    allow(u);
+    const r = await send(u, init);
+    if (r.redirected) {
+      try {
+        allow(r.url);
+      } catch (e) {
+        await r.body?.cancel();
+        throw e;
+      }
+    }
+    return r;
+  };
   const [endpoint, prefix] = listingEndpoint(url);
   const store: Store = {
     url,
@@ -678,6 +777,7 @@ export async function openHttpStore(
       try {
         r = await f(u, { headers: { Range: `bytes=0-${size - 1}` } });
       } catch (e) {
+        if (e instanceof VzipError) throw e;
         throw new StoreReadError(`${u}: ${(e as Error).message}`);
       }
       if (r.status !== 200 && r.status !== 206) throw new StoreReadError(`${u}: HTTP ${r.status}`);
@@ -692,6 +792,7 @@ export async function openHttpStore(
       try {
         r = await f(u, { headers: { Range: `bytes=${offset}-${offset + length - 1}` } });
       } catch (e) {
+        if (e instanceof VzipError) throw e;
         throw new StoreReadError(`${u}: ${(e as Error).message}`);
       }
       if (r.status !== 206 && !(r.status === 200 && offset === 0)) throw new StoreReadError(`${u}: HTTP ${r.status}`);
@@ -711,6 +812,7 @@ export async function openHttpStore(
     try {
       r = await f(endpoint + q);
     } catch (e) {
+      if (e instanceof VzipError) throw e;
       throw new StoreReadError(`${endpoint + q}: ${(e as Error).message}`);
     }
     if (r.status === 408 || r.status === 429 || r.status >= 500) {

@@ -56,13 +56,15 @@ export interface HandlerOptions {
   openSource?: (url: string) => Promise<RangeSource>;
   /** Opens an image file as a reader, in place of `openSource` (its requests are not planned as remote ones). */
   openFile?: typeof openHttpFile;
-  /** Lists and reads store inputs (§1.5); defaults to `fetch`. */
+  /** Lists and reads store inputs (§1.5); defaults to `storeFetch` under `policy`. A
+   * fetch given here is still checked by the policy on each URL as written and on each
+   * response's final URL. */
   fetchStore?: (url: string, init?: RequestInit) => Promise<Response>;
   fetchRange?: RangeFetcher;
   fetchArchive?: (url: string) => Promise<Uint8Array>;
   /**
    * The reader policy (spec §8.7) for `.vzip` archives named by URL, and for
-   * the image files the handler virtualizes; the default allows http(s)
+   * the image files and stores the handler virtualizes; the default allows http(s)
    * sources on public hosts. Archives
    * the handler virtualizes itself are read with the same policy, plus
    * `unverifiablePins`: their pins were taken from the responses the handler
@@ -108,7 +110,7 @@ function parseRange(header: string | null, size: number): { start: number; end: 
 export function makeHandler(options: HandlerOptions) {
   const {
     prefix,
-    fetchStore = (u, i) => fetch(u, i),
+    fetchStore,
     fetchRange = (url, start, end, pins, options) => readHttpRange(url, start, end, pins, undefined, options),
     policy = {},
     openSource = options.openFile
@@ -138,7 +140,7 @@ export function makeHandler(options: HandlerOptions) {
         }
         let virtual;
         if (kind === "image" && isStoreUrl(url)) {
-          virtual = await virtualizeStore(await openHttpStore(url, { fetch: fetchStore }));
+          virtual = await virtualizeStore(await openHttpStore(url, { policy, ...(fetchStore ? { fetch: fetchStore } : {}) }));
         } else {
           const source = await openSource(url);
           if (kind === "tiff") {
