@@ -281,8 +281,7 @@ def mirror_problem(path: Path, view: dict, read=None) -> str | None:
     own = (doc[1].get("attributes", {}).get("vzip_virtualized", {}) if doc and doc[0] == "json" else {})
     if not any(isinstance(v, dict) and "ir" in v for v in own.values()):
         return None
-    from vzip.ir.cmirror import canonical_problem, load, view_problem
-    from vzip.ir.mirror import Archive
+    from vzip.ir.cmirror import Archive, canonical_problem, load, view_problem
 
     url = view["sources"][0]
 

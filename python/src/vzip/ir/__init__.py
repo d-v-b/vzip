@@ -3,8 +3,7 @@ takes for TIFF, ND2 and CZI: the Rust core (rust/vzip-ir, the `vzip_ir` module)
 parses, checking each format's source model schema, plans the reads, projects the
 convention's hierarchy and mirrors the IR under `vzip_source`; this package is the
 host: the I/O (`planner.py`), the archive writer (`output.py` into `Output`), and
-the rebuild from an archive (`cmirror.py`). The round-1 Python IR (`model.py`,
-`check.py`, `mirror.py`) remains as the core its tests cover."""
+the rebuild from an archive (`cmirror.py`)."""
 
 from __future__ import annotations
 

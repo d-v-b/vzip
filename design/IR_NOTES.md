@@ -1,5 +1,11 @@
 # IR prototype: notes
 
+These notes are a log of the IR's rounds. The round-1 Python prototype they
+start from (`model.py`, `types.py`, `check.py`, `emit.py`, `mirror.py`) and
+the scripts of round 3's measurements (`experiments/ir_round3/`) are no longer
+in the tree; git history keeps them (for example
+`git show fa64d87:src/vzip/ir/model.py`).
+
 A prototype of design/ARCHITECTURE.md §3 for TIFF and CZI, in Python only. Nothing
 outside `python/src/vzip/ir/` and `python/tests/ir/` changes; the existing profiles are the
 reference the projections reproduce.
@@ -690,8 +696,10 @@ projections are deleted** (`tiff/parse.py`, `tiff/image.py`, `tiff/ome.py`,
 `czi/parse.py`, `czi/image.py`, `czi/xml.py` of round 1): today's profiles are
 the reference every result here is compared against, so an oracle of round 1
 would only repeat them. Round 1's Python core (`model.py`, `check.py`,
-`emit.py`, `mirror.py`, `types.py`) stays, for its tests and for the helpers
-the compact mirror reuses.
+`emit.py`, `mirror.py`, `types.py`) stayed, for its tests and for the helpers
+the compact mirror reused, until the repository was reorganized: then it was
+removed, and the archive reader the mirror reuses (`Archive`) moved to
+`cmirror.py`.
 
 ## 18. Schemas of roles
 
@@ -834,7 +842,8 @@ read of a TIFF or a CZI is a declared batch. Changes:
 
 The probes are written by `python/tests/ir/gen_probes.py` (round 2's
 style; `--small` writes the tests' sizes, which `python/tests/ir` generate at test
-time). The measurements are `design/experiments/ir_round3/`'s scripts (`corpus.py`
+time). The measurements are round 3's scripts, now removed (`experiments/ir_round3/` at
+fa64d87 in git history: `corpus.py`
 through the caching proxy, `measure.py` on local files, `sparse.py` and
 `remote.py` over the range server, `parity.py`, `rebuild.py`, `fuzz.py`,
 `runs.py`), with `VZIP_R3_WORK` naming their work directory (the sparse
@@ -1044,8 +1053,8 @@ moved into the parser with the checks. The source-metadata translators
   Bandwidth is calibrated only from requests of 256 KiB or more, which a
   parser that asks for headers rarely makes.
 - **The Python core of round 1** (`model.py`, `check.py`, `emit.py`,
-  `mirror.py`) is kept for its tests and the mirror's helpers; nothing
-  parses with it any more.
+  `mirror.py`) was kept for its tests and the mirror's helpers; nothing
+  parsed with it any more, and the repository's reorganization removed it.
 - **Pointer IFDs** (EXIF, GPS, private IFD tags) are described for the IR only;
   they are read after the layout, so they add rounds (one per depth) but no
   checks.

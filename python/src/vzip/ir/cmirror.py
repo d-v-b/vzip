@@ -1,31 +1,53 @@
-"""The source mirror of a compact IR (design/ARCHITECTURE.md §3.4): written by the Rust core
+"""The source mirror of a compact IR (ARCHITECTURE.md §3.4): written by the Rust core
 (`rust/vzip-ir/src/mirror.rs`, which documents the table), read back here.
 
-`mirror_compact(ir, out, profile)` adds the mirror's entries under `vzip_source` to
-an Output. `rebuild_from_archive(path, read_source, write)` rebuilds the source
-from an archive alone: the table (its column runs expanded and its invariants
-checked by the Rust checker), whose leaves index the archive's source 0, with no
-format code."""
+`Archive` reads an archive's entries with its references resolved.
+`rebuild_from_archive(path, read_source, write)` rebuilds the source from an archive
+alone: the table (its column runs expanded and its invariants checked by the Rust
+checker), whose leaves index the archive's source 0, with no format code."""
 
 from __future__ import annotations
 
-import json
-
-from vzip.ir.mirror import Archive
-from vzip.virtualize.common import Output
+import struct
+import zipfile
 
 
-def mirror_compact(ir, out: Output, profile: str) -> dict:
-    """Adds the mirror of `ir` to `out`; returns what the table folded."""
-    import vzip_ir
+class Archive:
+    """A vzip archive's entries, references resolved: `read_source(offset, length)`
+    reads the archive's source 0 (the file the archive describes)."""
 
-    t, folded = vzip_ir.mirror(ir, profile)
-    _, entries, refs, _, _, _ = t
-    for k, v in entries:
-        out.bytes_entries[k] = v
-    for k, v in refs:
-        out.refs[k] = list(v)
-    return json.loads(folded)
+    def __init__(self, path: str, read_source) -> None:
+        from vzip.pb import Concat, Range, decode_source_table
+
+        self.z = zipfile.ZipFile(path)
+        self.sources = decode_source_table(self.z.read("__vz__/sources"))
+        self.read_source = read_source
+        self.refs = {}
+        for info in self.z.infolist():
+            ex, p = info.extra, 0
+            while p < len(ex):
+                hid, k = struct.unpack_from("<HH", ex, p)
+                if hid == 0x7A76:
+                    self.refs[info.filename] = [Range.decode(ex[p + 4:p + 4 + k])]
+                elif hid == 0x7A77:
+                    self.refs[info.filename] = list(Concat.decode(ex[p + 4:p + 4 + k]).parts)
+                p += 4 + k
+
+    def get(self, key: str) -> bytes | None:
+        if key in self.refs:
+            out = bytearray()
+            for r in self.refs[key]:
+                if r.data is not None:
+                    out += r.data
+                elif r.source == 0:
+                    out += self.read_source(r.offset, r.length)
+                else:
+                    out += self.sources[r.source].data[r.offset:r.offset + r.length]
+            return bytes(out)
+        try:
+            return self.z.read(key)
+        except KeyError:
+            return None
 
 
 def load(archive: Archive):
