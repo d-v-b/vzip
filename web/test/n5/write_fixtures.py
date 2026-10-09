@@ -30,6 +30,15 @@ from pathlib import Path
 import numcodecs
 import numpy as np
 
+
+def pinned_gzip(data: bytes, level: int = 9) -> bytes:
+    """gzip.compress with modification time 0 and the header's OS byte pinned to 255
+    ("unknown"): zlib writes its build's OS code there (3 on Linux, 19 on macOS), so
+    unpinned fixtures differ between platforms."""
+    out = bytearray(gzip.compress(data, compresslevel=level, mtime=0))
+    out[9] = 255
+    return bytes(out)
+
 OUT = Path(__file__).parents[1] / "fixtures" / "n5"
 RNG = np.random.default_rng(5)
 
@@ -46,7 +55,7 @@ def compress(data: bytes, compression: dict, itemsize: int) -> bytes:
     if t == "gzip":
         if compression.get("useZlib"):
             return zlib.compress(data, 6)
-        return gzip.compress(data, mtime=0)
+        return pinned_gzip(data)
     if t == "zstd":
         return numcodecs.Zstd(level=3).encode(data)
     if t == "blosc":

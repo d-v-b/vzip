@@ -32,6 +32,15 @@ from pathlib import Path
 import numcodecs
 import numpy as np
 
+
+def pinned_gzip(data: bytes, level: int = 9) -> bytes:
+    """gzip.compress with modification time 0 and the header's OS byte pinned to 255
+    ("unknown"): zlib writes its build's OS code there (3 on Linux, 19 on macOS), so
+    unpinned fixtures differ between platforms."""
+    out = bytearray(gzip.compress(data, compresslevel=level, mtime=0))
+    out[9] = 255
+    return bytes(out)
+
 OUT = Path(__file__).parents[1] / "fixtures" / "zarr2"
 RNG = np.random.default_rng(2)
 
@@ -53,7 +62,7 @@ class _Gzip:
         self.level = level
 
     def encode(self, data: bytes) -> bytes:
-        return gzip.compress(data, compresslevel=self.level, mtime=0)
+        return pinned_gzip(data, self.level)
 
 
 def codec(compressor: dict | None):

@@ -24,6 +24,15 @@ from pathlib import Path
 import imagecodecs
 import numpy as np
 
+
+def pinned_gzip(data: bytes, level: int = 9) -> bytes:
+    """gzip.compress with modification time 0 and the header's OS byte pinned to 255
+    ("unknown"): zlib writes its build's OS code there (3 on Linux, 19 on macOS), so
+    unpinned fixtures differ between platforms."""
+    out = bytearray(gzip.compress(data, compresslevel=level, mtime=0))
+    out[9] = 255
+    return bytes(out)
+
 HERE = Path(__file__).parent
 OUT = HERE.parent / "fixtures" / "czi"
 TYPES = {0: ("u1", 1), 1: ("<u2", 1), 2: ("<f4", 1), 3: ("u1", 3), 4: ("<u2", 3), 8: ("<f4", 3), 9: ("u1", 4),
@@ -383,7 +392,7 @@ def accepted() -> dict[str, Czi]:
         Att("FocusPositions", "CZFOC", time_stamps([1.5, 2.5, 3.5], size=12)),
         Att("LookupTables", "CZLUT", b"<LUT/>"),
         Att("Label", "CZI", inner),
-        Att("Profile", "Zip-Comp", gzip.compress(b"<Profile/>", mtime=0)),
+        Att("Profile", "Zip-Comp", pinned_gzip(b"<Profile/>")),
         Att("Odd", "BINARY", b"", schema=b"A2"),
         Att("Changed", "BINARY", b"payload", segment_entry=lambda e: e[:48] + b"Renamed".ljust(80, b"\0")),
         Att("Empty", "BINARY", b""),

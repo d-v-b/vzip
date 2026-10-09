@@ -32,7 +32,7 @@ wasm-test:
 
 # Type-check, then run the Node tests
 test: wasm wasm-test typecheck
-    node --test test/
+    node --test "test/**/*.test.ts"
 
 # Serve the demo locally (default port 8000)
 serve port="8000":

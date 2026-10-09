@@ -16,7 +16,7 @@
   "license": "MIT OR Apache-2.0",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node --test test/",
+    "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc -p ."
   },
   "devDependencies": {

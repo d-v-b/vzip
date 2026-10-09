@@ -7,8 +7,10 @@ valid).
 
 from __future__ import annotations
 
+import os
 import struct
 import subprocess
+import sys
 import zlib
 from pathlib import Path
 
@@ -225,7 +227,13 @@ def validate(path: Path, desc: dict) -> list[str]:
         problems.append("__vz__/index present without page_size")
 
     # ---- third-party tool
-    res = subprocess.run(["unzip", "-tq", str(path)], capture_output=True, text=True)
+    # Debian's and Ubuntu's unzip convert entry names through a code page guessed from
+    # the locale, and then report UTF-8 names as "mismatching local filename"; `-O UTF-8`
+    # under a UTF-8 locale makes that conversion the identity (other builds lack -O)
+    cmd, env = ["unzip", "-tq", str(path)], None
+    if sys.platform.startswith("linux"):
+        cmd, env = ["unzip", "-O", "UTF-8", "-tq", str(path)], {**os.environ, "LC_ALL": "C.UTF-8"}
+    res = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if res.returncode != 0:
         problems.append(f"unzip -t failed: {(res.stdout + res.stderr).strip()[:200]}")
     return problems
