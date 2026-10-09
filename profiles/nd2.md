@@ -39,6 +39,16 @@ the file), not its data.
   the input. The map gives each named chunk's header offset; of duplicate
   names, the last is used. An offset is checked (≤ 2^53 − 1, chunk magic)
   only when that chunk is read.
+- **Inflation limit:** a chunk that the convention's §3 reads
+  (`ImageAttributesLV!`, `ImageMetadataLV!`, `ImageMetadataSeqLV|0!`) and
+  that is a compressed record (the convention §2.2) MUST inflate to at most
+  2^26 bytes (64 MiB, the source metadata's budget, the convention §5.1),
+  else the input is rejected; a virtualizer stops inflating there.
+- **Record budget:** those three chunks, read in that order, hold at most
+  2^20 LV records and byte-array bytes together: each record counts 1, at
+  every depth (a level and each of its records), and a byte array (type 9)
+  counts its length too. A file whose three chunks hold more is rejected; a
+  virtualizer stops decoding there.
 
 ### 5.2 Rejection
 
@@ -57,15 +67,15 @@ rows of `uiWidthBytes` bytes, each holding `uiWidth × uiComp` samples
 then padding. Let `R = uiWidth × uiComp × uiBpcInMemory / 8`;
 `uiWidthBytes` MUST be at least `R`.
 
-- **Uncompressed:** the virtualizer MUST read the headers of the present
-  frames with the lowest and the highest numbers, and reject the file if
-  their name lengths differ, or if either's data length `d` is less than
-  `8 + uiHeight × uiWidthBytes`. It reads no other frame's header: it uses
-  the first one's name length `n` for every frame, and frame `f`'s pixels
-  start at `start = o + 16 + n + 8`, where `o` is its chunk's offset from the
-  chunk map. (Other frames' chunks are not checked, except that their ranges
-  MUST lie within the file, §1.2. A frame chunk's data need not lie within
-  the file; only the ranges taken from it must.) Row `r` of the frame is the range
+- **Uncompressed:** the virtualizer MUST read the header of every present
+  frame (a frame `f < N` that the chunk map names), and reject the file if
+  their name lengths `n` are not all the same, or if any one's data length
+  `d` is less than `8 + uiHeight × uiWidthBytes` (a header without the
+  magic rejects it too, §5.1): the image takes every frame's pixels at the
+  same distance from its chunk's offset. Frame `f`'s pixels start at
+  `start = o + 16 + n + 8`, where `o` is its chunk's offset from the chunk
+  map. (A frame's ranges MUST lie within the file, §1.2; its chunk's data
+  need not.) Row `r` of the frame is the range
   `(0, start + r × uiWidthBytes, R)`.
   - If `uiWidthBytes = R`, the frame is one chunk, the single range
     `(0, start, uiHeight × R)`.
@@ -80,6 +90,12 @@ then padding. Let `R = uiWidth × uiComp × uiBpcInMemory / 8`;
   more than 8.
 
 Let `h` be `uiHeight` except for padded rows, where it is the block height.
+
+**Positions.** Each position is an image of two documents
+([the convention §4.3](../conventions/nd2/README.md#43-output)), whether or not
+any frame is placed at it, and its `omero` lists every component. The number
+of positions `P` (the position loop's count, 1 without one) MUST be at most
+2^16, and `P × uiComp` at most 2^20, else the input is rejected.
 
 ### 5.4 Chunk references
 

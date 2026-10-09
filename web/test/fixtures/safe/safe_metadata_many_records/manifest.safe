@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<xfdu:XFDU xmlns:gml="http://www.opengis.net/gml" xmlns:safe="http://www.esa.int/safe/sentinel/1.1" xmlns:xfdu="urn:ccsds:schema:xfdu:1" version="esa/safe/sentinel/1.1/sentinel-2/msi/archive_l2a_user_product">	<!-- ===================================================================      INFORMATION PACKAGE MAP SECTION      =================================================================== -->	<informationPackageMap>		<xfdu:contentUnit textInfo="SENTINEL-2 MSI L2A User Product" unitType="Product_L2A"/>
+	</informationPackageMap>
+	<dataObjectSection>
+		<dataObject ID="obj_0">
+			<byteStream mimeType="application/octet-stream" size="3114">
+				<fileLocation href="./GRANULE/L2A_T32TNS_A035655_20240103T101328/IMG_DATA/R60m/T32TNS_20240103T101329_B01_60m.jp2" locatorType="URL"/>
+				<checksum checksumName="MD5">6eeaf8718fb6b041ee6015d1aa40bcfe</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_1">
+			<byteStream mimeType="application/octet-stream" size="2845">
+				<fileLocation href="./GRANULE/L2A_T32TNS_A035655_20240103T101328/IMG_DATA/R60m/T32TNS_20240103T101329_SCL_60m.jp2" locatorType="URL"/>
+				<checksum checksumName="MD5">247b277f92fdb1f5895806c222e9f796</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_2">
+			<byteStream mimeType="application/octet-stream" size="4088">
+				<fileLocation href="./GRANULE/L2A_T32TNS_A035655_20240103T101328/MTD_TL.xml" locatorType="URL"/>
+				<checksum checksumName="MD5">7daa711163b0e0a1a486ba31665b7dbd</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_3">
+			<byteStream mimeType="application/octet-stream" size="15777">
+				<fileLocation href="./MTD_MSIL2A.xml" locatorType="URL"/>
+				<checksum checksumName="MD5">1ea0f7b416091c3f25ae36b729e45c33</checksum>
+			</byteStream>
+		</dataObject>
+	</dataObjectSection>
+</xfdu:XFDU>

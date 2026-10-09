@@ -1,9 +1,12 @@
 // Virtualizing a NIfTI-1 or NIfTI-2 single file (.nii) by the NIfTI profile
-// (profiles/nifti.md, §7): the voxel data is one contiguous block, and each
-// z-slice, or each row block of a large one, becomes a Zarr chunk that
-// references it.
+// (profiles/nifti.md, §7): the voxel data is one contiguous block, cut into
+// Zarr chunks of at most 128 KiB as conventions §7 cuts contiguous values, each
+// chunk referencing it.
 
-import { base64, type ByteReader, declare, jsonNumber, jsonText } from "../common.ts";
+import {
+  base64, type ByteReader, declare, emitPlans, gridChunks, jsonNumber, MAX_PAYLOAD_BYTES, type Part, payloadSize,
+  type Plan, rowChunks, SOURCE_NODE, textJson, toRange, stringifyJson,
+} from "../common.ts";
 import type { ArchiveDesc, EntryDesc } from "../../writer.ts";
 
 export class NiftiError extends Error {}
@@ -14,7 +17,8 @@ const reject = (message: string): never => {
 const view = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset, b.byteLength);
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
-const BLOCK_BYTES = 1 << 17; // the most bytes of a row block (conventions/nifti/README.md §4.1)
+const CHUNK_BYTES = 1 << 17; // the most bytes of a chunk of the image (conventions/nifti/README.md §4.1)
+const MAX_CHANNELS = 64; // the most channels given display windows (conventions/nifti/README.md §4.4)
 
 type Kind = "i16" | "i32" | "i64" | "u8" | "f32" | "f64";
 type Field = [offset: number, kind: Kind, count?: number];
@@ -71,7 +75,16 @@ const HEADER_FIELDS: Record<1 | 2, HeaderField[]> = {
     ["intent_code", 504, "i32"], ["intent_name", 508, "s16"], ["dim_info", 524, "u8"], ["unused_str", 525, "s15"],
   ],
 };
-const MAX_EXTENSION_BYTES = 1 << 24; // the most extension data recorded (conventions/nifti/README.md §5)
+const TEXT_CODES = new Set([4, 6, 8, 32, 44]); // AFNI and XCEDE XML, comment, CIFTI XML, MRS JSON: text
+const INLINE = 64; // the most bytes of binary extension data kept as JSON
+const MAX_TEXT = 2 ** 16; // the longest text extension kept as JSON
+const EXTENSIONS_BUDGET = 2 ** 14; // the most bytes of the extensions' JSON on the root
+const LIST_MOST = Math.floor(EXTENSIONS_BUDGET / 12); // the most extensions of an array E in the budget: each is >= 12 bytes
+const SCAN = 2 ** 20; // the bytes read at a time to check that a run is all zero
+const ECODES = `${SOURCE_NODE}/extensions/ecode`;
+const ESIZES = `${SOURCE_NODE}/extensions/esize`;
+const EDATA = `${SOURCE_NODE}/extensions/data`;
+const ECODE_CHUNK = 2 ** 22; // the most values of a chunk of the ecodes (conventions/nifti/README.md §5)
 const SIZES: Record<Kind, number> = { u8: 1, i16: 2, i32: 4, i64: 8, f32: 4, f64: 8 };
 
 // datatype: [Zarr data type, bitpix, samples per voxel] (conventions/nifti/README.md §3).
@@ -101,6 +114,246 @@ export function detectNifti(head: Uint8Array): 1 | 2 | undefined {
 }
 
 const valid = (v: number) => Number.isFinite(v) && v > 0;
+
+/** The esize of a text extension of `length` bytes padded with the fewest NULs: the least
+ * multiple of 16 that is at least length + 8 (conventions/nifti/README.md §5). */
+const textEsize = (length: number) => Math.ceil((length + 8) / 16) * 16;
+
+/** The bytes of `value`'s compact JSON, in UTF-8. */
+const jsonSize = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
+
+/** The extension chain from `start` up to the voxel data `v` (conventions/nifti/README.md §5),
+ * read a block at a time: [its esizes, its ecodes, where it ends]. The chain is kept as two
+ * packed columns, so that memory per extension is 8 bytes. */
+async function readChain(
+  read: ByteReader, little: boolean, start: number, v: number,
+): Promise<[Int32Array, Int32Array, number]> {
+  let esizes = new Int32Array(64);
+  let ecodes = new Int32Array(64);
+  let count = 0;
+  let q = start;
+  chain: while (q + 8 <= v) {
+    const block = await read(q, Math.min(SCAN, v - q));
+    const at = view(block);
+    let p = 0;
+    while (p + 8 <= block.length) {
+      const esize = at.getInt32(p, little);
+      if (esize < 8 || q + p + esize > v) {
+        q += p;
+        break chain;
+      }
+      if (count === esizes.length) {
+        const [s, c] = [new Int32Array(2 * count), new Int32Array(2 * count)];
+        s.set(esizes);
+        c.set(ecodes);
+        [esizes, ecodes] = [s, c];
+      }
+      esizes[count] = esize;
+      ecodes[count++] = at.getInt32(p + 4, little);
+      p += esize;
+    }
+    q += p;
+  }
+  return [esizes.subarray(0, count), ecodes.subarray(0, count), q];
+}
+
+/** The text value of an extension's data, or undefined when it is not a text extension (§5). */
+function extensionText(ecode: number, data: Uint8Array | undefined): [unknown, number] | undefined {
+  if (!TEXT_CODES.has(ecode) || data === undefined) return undefined;
+  const nul = data.indexOf(0);
+  if (nul >= 0 && !data.subarray(nul + 1).every((x) => x === 0)) return undefined;
+  const head = nul < 0 ? data : data.subarray(0, nul);
+  return [textJson(head), head.length];
+}
+
+/** The value of `extensions` and its arrays, for the chain from `start` to `end` (§5). */
+async function extensionsValue(
+  read: ByteReader, little: boolean, endian: "big" | "little", start: number, end: number, esizes: Int32Array,
+  ecodes: Int32Array,
+): Promise<[unknown, Plan[]]> {
+  const count = esizes.length;
+  if (count <= LIST_MOST) { // the array E may fit: build it while its running size does
+    const extensions: Record<string, unknown>[] = [];
+    const plans: Plan[] = [];
+    let size = 1; // the JSON of "[" and of each entry and its separator
+    let at = start + 8;
+    for (let i = 0; i < count && size <= EXTENSIONS_BUDGET; i++) {
+      const n = esizes[i] - 8;
+      const entry: Record<string, unknown> = { ecode: ecodes[i] };
+      const data = n <= MAX_TEXT ? await read(at, n) : undefined;
+      const text = extensionText(ecodes[i], data);
+      if (text !== undefined) {
+        entry.text = text[0];
+        if (n + 8 !== textEsize(text[1])) entry.esize = n + 8; // padded otherwise than with the fewest NULs
+      } else if (n <= INLINE) {
+        entry.edata = base64(data!);
+      } else {
+        const path = `extensions/${i}`;
+        const [rows, chunks] = rowChunks(at, n, 1);
+        plans.push({ path, dataType: "uint8", shape: [n], chunkShape: [rows], dims: ["byte"], chunks });
+        entry.data = `${SOURCE_NODE}/${path}`;
+      }
+      extensions.push(entry);
+      size += jsonSize(entry) + 1;
+      at += n + 8;
+    }
+    // The budget counts the UTF-8 bytes of the compact JSON.
+    if (size <= EXTENSIONS_BUDGET) return [extensions, plans];
+  }
+  // Over the budget: the ecodes, the text extensions that fit, and the others' data as a family.
+  const compact: Record<string, unknown> = { ecode: ECODES, esize: ESIZES, data: EDATA };
+  const inline = new Map<number, unknown>();
+  let size = jsonSize(compact);
+  for (let i = 0, at = start + 8; i < count; at += esizes[i++]) {
+    const least = String(i).length + 2 + 1 + 2 + (inline.size > 0 ? 1 : ',"text":{}'.length); // "i":"" with its separator
+    if (size + least > EXTENSIONS_BUDGET) break; // no later text fits: their indexes are no shorter
+    const n = esizes[i] - 8;
+    if (!TEXT_CODES.has(ecodes[i]) || n > MAX_TEXT) continue;
+    const text = extensionText(ecodes[i], await read(at, n));
+    if (text === undefined) continue;
+    const more = least - 2 + jsonSize(text[0]);
+    if (size + more <= EXTENSIONS_BUDGET) {
+      inline.set(i, text[0]);
+      size += more;
+    }
+  }
+  if (inline.size > 0) compact.text = Object.fromEntries(inline);
+  const k = Math.ceil(count / ECODE_CHUNK);
+  const c = Math.ceil(count / k);
+  const plans: Plan[] = [];
+  for (const [name, column] of [["ecode", ecodes], ["esize", esizes]] as const) {
+    const values = new Uint8Array(k * c * 4);
+    const out = view(values);
+    column.forEach((x, i) => out.setInt32(4 * i, x, little));
+    plans.push({
+      path: `extensions/${name}`, dataType: "int32", shape: [count], chunkShape: [c], dims: ["index"], endian,
+      chunks: new Map(Array.from({ length: k }, (_, j) => [String(j), values.slice(j * c * 4, (j + 1) * c * 4)])),
+    });
+  }
+  plans.push(...await dataFamily("extensions/data", window(read, end), start, esizes, inline)); // always offsets and data
+  return [compact, plans];
+}
+
+const RAGGED_CHUNK = 2 ** 20; // the bytes of a chunk of a family's data, as familyPlans cuts it
+
+/** A range's bytes in a reference of several ranges (payloadSize). */
+const term = (r: Part) => payloadSize([r, r]) / 2;
+
+/** The extensions' data as a family of byte values in its second form (conventions §7), member
+ * i absent when it is in `inline`: the rule of familyPlans, from the packed esizes, so that
+ * memory is 8 bytes per member and one chunk at a time. */
+async function dataFamily(
+  path: string, read: ByteReader, start: number, esizes: Int32Array, inline: Map<number, unknown>,
+): Promise<Plan[]> {
+  const count = esizes.length;
+  const starts = new Float64Array(count + 1);
+  let total = 0;
+  for (let i = 0; i < count; i++) {
+    starts[i] = total;
+    if (!inline.has(i)) total += esizes[i] - 8;
+  }
+  starts[count] = total;
+  const offsets = new Uint8Array(8 * (count + 1));
+  const out = view(offsets);
+  starts.forEach((x, i) => {
+    out.setUint32(8 * i, x % 2 ** 32, true);
+    out.setUint32(8 * i + 4, Math.floor(x / 2 ** 32), true);
+  });
+  // The offsets are copied, and cut as contiguous values (conventions/README.md §7).
+  const [offsetShape, cut] = await gridChunks(0, [count + 1], 8, async (o, n) => offsets.slice(o, o + n));
+  const offsetChunks = new Map<string, Uint8Array>();
+  for (const [key, v] of cut) {
+    offsetChunks.set(key, v instanceof Uint8Array ? v : concat(v.map((r) => (
+      r instanceof Uint8Array ? r : offsets.subarray(r[0], r[0] + r[1])))));
+  }
+  const plans: Plan[] = [{
+    path: `${path}/offsets`, dataType: "int64", shape: [count + 1], chunkShape: offsetShape, dims: ["index"],
+    chunks: offsetChunks,
+  }];
+  if (total === 0) return plans;
+  const sizeC = Math.ceil(total / Math.ceil(total / RAGGED_CHUNK)); // balanced: k = ceil(total / 2^20) chunks
+  const dataChunks = new Map<string, Part[] | Uint8Array>();
+  let first = 0; // the first member that may reach the chunk
+  let source = start; // where its extension is
+  for (let c = 0; c < Math.ceil(total / sizeC); c++) {
+    const lo = c * sizeC;
+    const hi = Math.min(total, (c + 1) * sizeC);
+    while (first < count && (inline.has(first) || starts[first + 1] <= lo)) source += esizes[first++];
+    const ranges: Part[] = [];
+    let fixed = 0; // the payload of the ranges but the last, as payloadSize counts them
+    let copy: Uint8Array | undefined; // the chunk's bytes, once its ranges are over the payload
+    let filled = 0; // how many
+    for (let i = first, o = source; i < count && starts[i] < hi; o += esizes[i++]) {
+      if (inline.has(i) || starts[i + 1] <= lo) continue;
+      const at = starts[i];
+      const begin = o + 8 + Math.max(lo, at) - at;
+      const n = Math.min(hi, starts[i + 1]) - Math.max(lo, at);
+      const last = ranges[ranges.length - 1] as [number, number] | undefined;
+      if (copy !== undefined) {
+        copy.set(await read(begin, n), filled);
+        filled += n;
+      } else if (last !== undefined && last[0] + last[1] === begin) {
+        last[1] += n; // adjacent in the source: one range
+      } else {
+        if (last !== undefined) fixed += term(last);
+        ranges.push([begin, n]);
+      }
+      if (copy === undefined && ranges.length > 1 && fixed + term(ranges[ranges.length - 1]) > MAX_PAYLOAD_BYTES) {
+        copy = new Uint8Array(sizeC); // it stays over: copy it, the padding zero
+        for (const [o, n] of ranges as [number, number][]) {
+          copy.set(await read(o, n), filled);
+          filled += n;
+        }
+      }
+    }
+    const pad = hi - lo < sizeC ? [new Uint8Array(sizeC - (hi - lo))] : [];
+    if (copy !== undefined) {
+      dataChunks.set(String(c), copy);
+      continue;
+    }
+    ranges.push(...pad);
+    if (payloadSize(ranges) > MAX_PAYLOAD_BYTES) {
+      const parts: Uint8Array[] = [];
+      for (const r of ranges) parts.push(r instanceof Uint8Array ? r : await read(r[0], r[1]));
+      dataChunks.set(String(c), concat(parts));
+    } else {
+      dataChunks.set(String(c), ranges);
+    }
+  }
+  plans.push({ path: `${path}/data`, dataType: "uint8", shape: [total], chunkShape: [sizeC], dims: ["byte"], chunks: dataChunks });
+  return plans;
+}
+
+/** Reads of the chain, in increasing order, through a window of SCAN bytes, so that the data
+ * of many short extensions is one read (it ends at the chain's `end`). */
+function window(read: ByteReader, end: number): ByteReader {
+  let start = 0;
+  let data: Uint8Array = new Uint8Array();
+  return async (offset, length) => {
+    if (!(start <= offset && offset + length <= start + data.length)) {
+      start = offset;
+      data = await read(offset, Math.max(length, Math.min(SCAN, end - offset)));
+    }
+    return data.subarray(offset - start, offset - start + length);
+  };
+}
+
+function concat(parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+}
+
+async function allZero(read: ByteReader, start: number, end: number): Promise<boolean> {
+  for (; start < end; start += SCAN) {
+    if (!(await read(start, Math.min(SCAN, end - start))).every((x) => x === 0)) return false;
+  }
+  return true;
+}
 
 export async function virtualizeNifti(
   url: string,
@@ -168,16 +421,6 @@ export async function virtualizeNifti(
   const [X, Y, Z, T, C] = sizes.slice(1, 6).map(Number);
   const v = Number(vox);
 
-  // Row blocks (conventions/nifti/README.md §4.1) and their ranges (profiles/nifti.md §7.2)
-  const row = X * b;
-  let h = 1;
-  for (let d = Math.min(Y, Math.floor(BLOCK_BYTES / row)); d > 1; d--) {
-    if (Y % d === 0) {
-      h = d;
-      break;
-    }
-  }
-
   // conventions/nifti/README.md §4.2
   let scaling: [number, number] | undefined;
   if (!color) {
@@ -228,17 +471,18 @@ export async function virtualizeNifti(
   } else {
     let lo = num("cal_min");
     let hi = num("cal_max");
-    if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) {
+    if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo && C <= MAX_CHANNELS) {
       if (scaling) {
         const [s, i] = scaling;
         const a = (lo - i) / s;
         const c = (hi - i) / s;
         [lo, hi] = a <= c ? [a, c] : [c, a];
-        if (!Number.isFinite(lo) || !Number.isFinite(hi)) reject("the display window is not finite");
       }
-      channels = Array.from({ length: C }, (_, k) => ({
-        label: `C${k}`, color: "FFFFFF", active: true, window: { min: lo, max: hi, start: lo, end: hi },
-      }));
+      if (Number.isFinite(lo) && Number.isFinite(hi)) { // else the scaled window overflowed: none
+        channels = Array.from({ length: C }, (_, k) => ({
+          label: `C${k}`, color: "FFFFFF", active: true, window: { min: lo, max: hi, start: lo, end: hi },
+        }));
+      }
     }
   }
 
@@ -249,18 +493,20 @@ export async function virtualizeNifti(
   if (n >= 3) axes.push("z");
   axes.push("y", "x");
   const shape: Record<string, number> = { t: T, c: color ? samples : C, z: Z, y: Y, x: X };
-  const chunkShape: Record<string, number> = { t: 1, c: samples, z: 1, y: h, x: X };
+  // The voxels in file order: dimension 5 outermost, a color type's samples innermost.
+  const stored = [...(n >= 5 ? ["c"] : []), ...axes.filter((a) => a !== "c"), ...(color ? ["c"] : [])];
+  const [grid, voxelChunks] = await gridChunks(v, stored.map((a) => shape[a]), b / samples, read, CHUNK_BYTES);
+  const chunkShape = Object.fromEntries(stored.map((a, i) => [a, grid[i]]));
   const translation = diagonal ? axes.map((a) => (a === "x" ? offset![0] : a === "y" ? offset![1] : a === "z" ? offset![2] : 0)) : undefined;
   const endian = little ? "little" : "big";
   const codecs: unknown[] = [];
-  if (color) {
-    const stored = axes.filter((a) => a !== "c").concat("c");
+  if (stored.join() !== axes.join()) {
     codecs.push({ name: "transpose", configuration: { order: stored.map((a) => axes.indexOf(a)) } });
   }
   codecs.push(bits / samples > 8 ? { name: "bytes", configuration: { endian } } : { name: "bytes" });
 
   const utf8 = new TextEncoder();
-  const json = (x: unknown) => utf8.encode(JSON.stringify(x, null, 2));
+  const json = (x: unknown) => utf8.encode(stringifyJson(x));
   const ome = {
     version: "0.5",
     multiscales: [{
@@ -275,56 +521,71 @@ export async function virtualizeNifti(
     }],
     ...(channels ? { omero: { channels } } : {}),
   };
-  // The source metadata (conventions/nifti/README.md §5).
+  // The source metadata (conventions/nifti/README.md §5). A float field is a number, or
+  // {"bits": hex} for a negative zero or a NaN other than the canonical one, whose bits
+  // JSON numbers and "NaN" do not keep.
+  const floatJson = (at: number, kind: "f32" | "f64"): unknown => {
+    const bits = kind === "f32" ? BigInt(header.getUint32(at, little)) : header.getBigUint64(at, little);
+    const v = Number(one(at, kind));
+    const canonical = kind === "f32" ? 0x7fc00000n : 0x7ff8000000000000n;
+    if (Object.is(v, -0) || (Number.isNaN(v) && bits !== canonical)) {
+      return { bits: bits.toString(16).padStart(kind === "f32" ? 8 : 16, "0") };
+    }
+    return jsonNumber(v);
+  };
   const headerJson: Record<string, unknown> = {};
+  const headerRest: Record<string, string> = {};
   for (const [name, at, kind, count] of HEADER_FIELDS[version]) {
     if (kind[0] === "s") {
-      headerJson[name] = jsonText(new Uint8Array(header.buffer, header.byteOffset + at, Number(kind.slice(1))));
-    } else if (count === undefined) {
-      headerJson[name] = jsonNumber(one(at, kind as Kind));
+      const raw = new Uint8Array(header.buffer, header.byteOffset + at, Number(kind.slice(1)));
+      const nul = raw.indexOf(0);
+      headerJson[name] = textJson(nul < 0 ? raw : raw.subarray(0, nul));
+      const tail = nul < 0 ? new Uint8Array() : raw.subarray(nul + 1);
+      if (name !== "magic" && tail.some((x) => x !== 0)) headerRest[name] = base64(tail);
     } else {
-      headerJson[name] = Array.from({ length: count }, (_, i) => jsonNumber(one(at + i * SIZES[kind as Kind], kind as Kind)));
+      const k = kind as Kind;
+      const value = (p: number) => (k === "f32" || k === "f64" ? floatJson(p, k) : jsonNumber(one(p, k)));
+      headerJson[name] = count === undefined ? value(at) : Array.from({ length: count }, (_, i) => value(at + i * SIZES[k]));
     }
   }
   const meta: Record<string, unknown> = { nifti_version: version, byte_order: endian, header: headerJson };
-  const extender = await read(length, 1);
-  if (extender[0] !== 0) {
-    const extensions: { ecode: number; edata: string }[] = [];
-    let q = length + 4;
-    let total = 0;
-    let cut = false;
-    while (q + 8 <= v) {
-      const e = view(await read(q, 8));
-      const esize = e.getInt32(0, little);
-      const ecode = e.getInt32(4, little);
-      if (esize < 8 || q + esize > v || total + esize - 8 > MAX_EXTENSION_BYTES) {
-        cut = true;
-        break;
-      }
-      extensions.push({ ecode, edata: base64(await read(q + 8, esize - 8)) });
-      total += esize - 8;
-      q += esize;
-    }
-    meta.extensions = extensions;
-    if (cut) meta.extensions_truncated = true;
+  if (Object.keys(headerRest).length > 0) meta.header_rest = headerRest;
+  const extender = await read(length, 4);
+  if (!(extender[0] <= 1 && extender[1] === 0 && extender[2] === 0 && extender[3] === 0)) {
+    meta.extender = base64(extender);
+  }
+  const extended = extender[0] !== 0;
+  const plans: Plan[] = [];
+  const bytesPlan = (path: string, at: number, n: number): Plan => {
+    const [rows, chunks] = rowChunks(at, n, 1);
+    return { path, dataType: "uint8", shape: [n], chunkShape: [rows], dims: ["byte"], chunks };
+  };
+  let q = length + 4;
+  if (extended) {
+    const [esizes, ecodes, end] = await readChain(read, little, q, v);
+    const [value, more] = await extensionsValue(read, little, endian, q, end, esizes, ecodes);
+    meta.extensions = value;
+    plans.push(...more);
+    q = end;
+  }
+  if (q < v && !(await allZero(read, q, v))) { // bytes the chain does not hold, and not padding
+    if (extended) meta.extensions_truncated = true;
+    plans.push(bytesPlan("unparsed", q, v - q));
+    meta.unparsed = `${SOURCE_NODE}/unparsed`;
+  }
+  const end = v + Number(total);
+  if (end < fileSize) { // after the voxel data
+    plans.push(bytesPlan("trailing", end, fileSize - end));
+    meta.trailing = `${SOURCE_NODE}/trailing`;
   }
   if (nontrivial) meta.scaling = { slope: scaling![0], inter: scaling![1] };
+  if (affine !== null) meta.affine = { form: affine, applied: diagonal !== undefined };
   const attributes = declare({ ome }, "nifti", url, meta);
   const entries: EntryDesc[] = [];
-  const slab = Y * row;
-  for (let k = 0; k < C; k++) {
-    for (let t = 0; t < T; t++) {
-      for (let z = 0; z < Z; z++) {
-        const start = v + ((k * T + t) * Z + z) * slab;
-        for (let j = 0; j < Y / h; j++) {
-          const coords: Record<string, number> = { t, c: k, z, y: j, x: 0 };
-          entries.push({
-            key: `0/c/${axes.map((a) => coords[a]).join("/")}`,
-            ranges: [{ source: 0, offset: BigInt(start + j * h * row), length: BigInt(h * row) }],
-          });
-        }
-      }
-    }
+  for (const [coords, parts] of voxelChunks) { // profiles/nifti.md §7.2
+    const at = coords.split("/");
+    const key = `0/c/${axes.map((a) => at[stored.indexOf(a)]).join("/")}`;
+    entries.push(parts instanceof Uint8Array ? { key, bytes: parts, compress: true } : { key, ranges: parts.map(toRange) });
   }
   const chunks = entries.length;
   entries.push(
@@ -345,12 +606,13 @@ export async function virtualizeNifti(
       }),
     },
   );
+  if (plans.length > 0) entries.push(...emitPlans(plans, declare({}, "nifti", undefined)));
   return {
     sources: [{ url }],
     entries,
     summary: {
       version, byteOrder: endian, sizes: Object.fromEntries(axes.map((a) => [a, shape[a]])), dataType, color,
-      rowBlock: h, chunks, scaling: nontrivial ? { slope: scaling![0], inter: scaling![1] } : null, affine,
+      chunkShape: axes.map((a) => chunkShape[a]), chunks, scaling: nontrivial ? { slope: scaling![0], inter: scaling![1] } : null, affine,
       translation: translation !== undefined, extensions: extender[0] !== 0,
     },
   };

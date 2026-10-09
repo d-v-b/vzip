@@ -1,0 +1,13 @@
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[project]
+name = "vzip-ir"
+version = "0.1.0"
+description = "vzip's IR core and sans-IO parsers (Rust), with Python bindings"
+requires-python = ">=3.12"
+
+[tool.maturin]
+features = ["python"]
+module-name = "vzip_ir"

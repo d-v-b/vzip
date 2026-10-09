@@ -10,9 +10,10 @@
 import fs from "node:fs";
 import { blockReader } from "../src/virtualize/common.ts";
 import { virtualizeImage, virtualizeStore } from "../src/virtualize/index.ts";
+import { keepIntegers } from "../src/virtualize/store.ts";
 import { directoryStore } from "./directory_store.ts";
 
-const REJECTIONS = /^(TiffError|Nd2Error|LVError|DicomError|NiftiError|ImsError|ImageError|StoreError|N5Error|Zarr2Error|OmeZarrError)$/;
+const REJECTIONS = /^(TiffError|Nd2Error|LVError|DicomError|NiftiError|ImsError|ImageError|StoreError|N5Error|Zarr2Error|OmeZarrError|SafeError|CziError)$/;
 const inputs: [string, string][] = JSON.parse(fs.readFileSync(0, "utf8"));
 const decoder = new TextDecoder();
 const results: unknown[] = [];
@@ -27,7 +28,7 @@ for (const [path, url] of inputs) {
     }
     const docs: { [k: string]: unknown } = {};
     for (const e of virtual.entries) {
-      if (e.key.endsWith("zarr.json") && "bytes" in e) docs[e.key] = JSON.parse(decoder.decode(e.bytes));
+      if (e.key.endsWith("zarr.json") && "bytes" in e) docs[e.key] = JSON.parse(decoder.decode(e.bytes), keepIntegers as never); // integers exact
     }
     results.push({ format: virtual.format, docs });
   } catch (e) {

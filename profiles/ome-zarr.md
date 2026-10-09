@@ -16,7 +16,7 @@ conventions/ome-zarr/README.md.
 
 The profile was chosen because the store's root has a `.zarray` or a
 `.zgroup` and the store declares OME-NGFF 0.4 (§1.4). The store is read
-as §10 reads it.
+as §10 reads it, integer literals included.
 
 ### 11.1 Rejection
 
@@ -32,7 +32,10 @@ referencing the whole object through its own `url` source (§1.4). Each
 OME-XML object of [the convention §7](../conventions/ome-zarr/README.md#7-chunks-and-ome-xml)
 is referenced whole in the same way: an entry under its key, with its own
 source, in the order of §1.4 among the chunk entries (an object of size 0
-has no entry).
+has no entry; its key is one of the Zarr v2 convention §5's empty objects'
+keys, as an empty chunk object's is). Every other object of the convention (those of
+[the Zarr v2 convention §5](../conventions/zarr2/README.md#5-other-objects))
+is an entry under `vzip_source/objects/<k>`, escaped as §10.2 says.
 
 ### 11.3 Summary
 
@@ -41,5 +44,6 @@ summary: `groups` (explicit and implicit), `arrays`, `chunks` (chunk
 entries), `emptyChunks` (chunk objects of size 0), `objects` (the store's
 objects), `images`, `labels` (label images), `droppedLabelLevels` (the
 datasets L7 drops, over all label images), `plates`, `wells`, `fields`
-(the images wells list), `omeXml` (OME-XML entries) and `listingRequests`.
+(the images wells list), `omeXml` (OME-XML entries), `otherObjects` (the
+entries under `vzip_source/objects/`) and `listingRequests`.
 

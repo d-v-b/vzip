@@ -1,0 +1,14 @@
+{
+ "dimensions": [
+  4
+ ],
+ "blockSize": [
+  4
+ ],
+ "dataType": "uint8",
+ "compression": {
+  "type": "zstd",
+  "level": -5,
+  "nbWorkers": 2
+ }
+}

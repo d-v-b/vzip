@@ -7,15 +7,15 @@ from __future__ import annotations
 import re
 
 from vzip.virtualize.common import Rejected
-from vzip.virtualize.store import Store, StoreOutput, as_int, canonical_index, is_number, join, parent_of
+from vzip.virtualize.store import Store, StoreOutput, as_int, canonical_index, is_number, join, num, parent_of
 from vzip.virtualize.zarr2.virtualize import hierarchy_output, prefetch, read_hierarchy
 
 OME_KEYS = ("multiscales", "omero", "labels", "image-label", "plate", "well", "bioformats2raw.layout")
 VERSIONED = ("omero", "image-label", "plate", "well")  # whose own `version` is dropped (conventions/ome-zarr/README.md §5)
 LABEL_TYPES = {"int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64"}
-_KINDS = re.compile(r"^t?o?s{2,3}$")
-_HEX6 = re.compile(r"^[0-9A-Fa-f]{6}$")
-_ALNUM = re.compile(r"^[A-Za-z0-9]+$")
+_KINDS = re.compile(r"^t?o?s{2,3}\Z")
+_HEX6 = re.compile(r"^[0-9A-Fa-f]{6}\Z")
+_ALNUM = re.compile(r"^[A-Za-z0-9]+\Z")
 
 
 def rel_path(p) -> bool:
@@ -112,7 +112,7 @@ def _transforms(where: str, ts, n: int) -> list:
         tr = t.get("translation")
         if not (isinstance(tr, list) and len(tr) == n and all(is_number(x) for x in tr)):
             raise Rejected(f"{where}: the translation is not {n} numbers")
-    return s["scale"]
+    return [num(x) for x in s["scale"]]
 
 
 def _version(where: str, obj: dict) -> None:
@@ -371,25 +371,43 @@ def virtualize_ome_zarr(store: Store) -> StoreOutput:
     dropped = sum(len(multiscales[g][i]["datasets"]) - n for (g, i), n in kept.items())
 
     # conventions/ome-zarr/README.md §5, conventions/ome-zarr/README.md §6 Output.
-    groups, omes = {}, {}
+    groups, omes, unversioned = {}, {}, {}
     for path, a in attrs.items():
         if path not in ome_groups:
             groups[path] = a
             continue
         keys = OME_KEYS + (("series",) if path in series_groups else ())
         ome = {"version": "0.5"}
+        restored = set()  # the OME members that the inverse of §5 gives back from `ome`
+        bare = []  # those of them without a version (conventions/ome-zarr/README.md §5, §8)
         for k in keys:
             if k not in a:
                 continue
             v = a[k]
             if k == "multiscales":
+                if not any((path, i) in kept for i in range(len(v))):
+                    if all(m.get("version") == "0.4" for m in v):
+                        restored.add(k)
+                    elif all("version" not in m for m in v):
+                        restored.add(k)
+                        bare.append(k)
                 v = [{x: (y[: kept[(path, i)]] if x == "datasets" and (path, i) in kept else y)
                       for x, y in m.items() if x != "version"} for i, m in enumerate(v)]
             elif k in VERSIONED:
+                if v.get("version") == "0.4":
+                    restored.add(k)
+                elif "version" not in v:
+                    restored.add(k)
+                    bare.append(k)
                 v = {x: y for x, y in v.items() if x != "version"}
+            else:
+                restored.add(k)
             ome[k] = v
-        groups[path] = {k: v for k, v in a.items() if k not in keys}
+        # The attributes A keep what the inverse does not give back (conventions/ome-zarr/README.md §8).
+        groups[path] = {k: v for k, v in a.items() if k not in restored}
         omes[path] = ome
+        if bare:
+            unversioned[path] = bare
     docs = {}
     for path, doc in arrays.items():
         if path in names:
@@ -398,13 +416,14 @@ def virtualize_ome_zarr(store: Store) -> StoreOutput:
         docs[path] = doc
     xml = [(k, store.objects[k]) for k in (join(join(c, "OME"), "METADATA.ome.xml") for c in collections)
            if k in store.objects]
-    out, chunks = hierarchy_output(store, h, groups, docs, "ome-zarr", xml, omes)
+    out, chunks, others = hierarchy_output(store, h, groups, docs, "ome-zarr", xml, omes, unversioned)
     nonempty = sum(1 for _, n in chunks if n > 0)
     out.summary = {
         "groups": len(attrs) + len(h.implicit), "arrays": len(arrays), "chunks": nonempty,
         "emptyChunks": len(chunks) - nonempty, "objects": len(store.objects), "images": len(images),
         "labels": len(label_images), "droppedLabelLevels": dropped, "plates": len(plates), "wells": len(wells),
         "fields": sum(len(v) for v in well_images.values()), "omeXml": sum(1 for _, n in xml if n > 0),
+        "otherObjects": others,
         "listingRequests": store.requests,
     }
     return out

@@ -23,6 +23,8 @@ test("virtualizes the synthetic IMS files", async () => {
     ["ims_small_k.ims", { sizes: { t: 1, c: 5, z: 3, y: 5, x: 6 }, chunks: 133 }],
     ["ims_2d_no_metadata.ims", { sizes: { t: 1, c: 1, z: 1, y: 5, x: 6 }, dataType: "int16", channels: ["Channel 0"] }],
     ["ims_2d_deep_chunks.ims", { sizes: { t: 1, c: 1, z: 1, y: 5, x: 6 }, chunkShape: [4, 8, 8], chunks: 1 }],
+    ["ims_latest_extensible.ims", { sizes: { t: 1, c: 1, z: 2, y: 6, x: 7 }, dataType: "uint16", chunks: 3 }],
+    ["ims_latest_btree2.ims", { sizes: { t: 1, c: 1, z: 2, y: 6, x: 7 }, chunkShape: [1, 2, 2], compressed: [true], chunks: 23 }],
   ];
   for (const [name, expected] of cases) {
     const v = await virtualize(name);
@@ -44,10 +46,10 @@ for (const [name, message] of [
   ["ims_reject_not_imaris.ims", /not an Imaris file/],
   ["ims_reject_shuffle.ims", /filters \[2, 1\]/],
   ["ims_reject_fill_value.ims", /fill value/],
-  ["ims_reject_extensible.ims", /chunk index type 4/],
   ["ims_reject_size_mismatch.ims", /differ in size/],
   ["ims_reject_imagesize_vlen.ims", /ImageSizeX is not a string/],
   ["ims_reject_relative_soft_link.ims", /relative path/],
+  ["ims_reject_raw_edges_image.ims", /a chunk's filter mask is not 0/],
 ] as const) {
   test(`rejects ${name}`, async () => {
     await assert.rejects(virtualize(name), (e) => e instanceof ImsError && message.test(e.message));

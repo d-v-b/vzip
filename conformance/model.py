@@ -31,6 +31,18 @@ def _utf8_key(k: str) -> bytes:
     return k.encode("utf-8")
 
 
+def _recorded_revision(archive_path) -> int | None:
+    """The spec revision the archive's writer recorded in its source table, if any."""
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(archive_path) as z:
+            t = pbref.SourceTable.FromString(z.read(RESERVED + "sources"))
+    except Exception:  # noqa: BLE001 - no table, or one the model's queries reject anyway
+        return None
+    return t.revision if t.HasField("revision") else None
+
+
 class Model:
     def __init__(self, desc: dict, archive_path: Path, index_body: bytes | None = None,
                  http: tuple[str, Path] | None = None):
@@ -43,6 +55,7 @@ class Model:
         self.entries = {e["key"]: e for e in desc["entries"]}
         self.sources = desc.get("sources", [])
         self.mirror = desc.get("mirror", True)
+        self.revision = _recorded_revision(archive_path)
 
     # ------------------------------------------------------------ sources
 
@@ -178,7 +191,8 @@ class Model:
 
     def get_raw(self, key: str) -> list[dict]:
         if key == RESERVED + "sources":
-            return [{"ok": True, "value": pbref.source_table(self.sources).hex()}]
+            # the revision is the writer's to record (SPEC.md §1.3), so it comes from the archive
+            return [{"ok": True, "value": pbref.source_table(self.sources, self.revision).hex()}]
         e = self.entries.get(key)
         if e is None:
             return [{"ok": True, "value": None}]

@@ -13,21 +13,21 @@
 // `id` is the base64url encoding of the URL. Used by the service worker
 // (sw.ts); kept free of service worker APIs so it can run under Node.
 
-import { Archive, type RangeFetcher, VzipError } from "./archive.ts";
+import { Archive, type Policy, type RangeFetcher, VzipError } from "./archive.ts";
 import { HttpResolutionError, openHttpFile, readHttpRange } from "./http.ts";
-import { blockReader, ImageError } from "./virtualize/common.ts";
-import { isStoreUrl, virtualizeImage, virtualizeStore } from "./virtualize/index.ts";
+import { ImageError } from "./virtualize/common.ts";
+import { isStoreUrl, virtualizeSource, virtualizeStore } from "./virtualize/index.ts";
+import { virtualizeIr } from "./virtualize/ir/run.ts";
+import { openHttpSource, type RangeSource, readerSource } from "./virtualize/ir/source.ts";
 import { N5Error } from "./virtualize/n5/virtualize.ts";
 import { openHttpStore, StoreError, StoreLimitError, StoreReadError } from "./virtualize/store.ts";
 import { Zarr2Error } from "./virtualize/zarr2/virtualize.ts";
 import { OmeZarrError } from "./virtualize/ome-zarr/virtualize.ts";
+import { SafeError } from "./virtualize/safe/virtualize.ts";
 import { DicomError } from "./virtualize/dicom/virtualize.ts";
 import { ImsError } from "./virtualize/ims/virtualize.ts";
-import { LVError } from "./virtualize/nd2/lv.ts";
-import { Nd2Error } from "./virtualize/nd2/virtualize.ts";
 import { NiftiError } from "./virtualize/nifti/virtualize.ts";
 import { TiffError } from "./virtualize/tiff/ifd.ts";
-import { virtualizeTiff } from "./virtualize/tiff/virtualize.ts";
 import { writeVzip } from "./writer.ts";
 
 export const ARCHIVE_KEY = "__vz__/archive.vzip";
@@ -52,11 +52,24 @@ export function decodeId(id: string): string {
 export interface HandlerOptions {
   /** Absolute URL that every served path starts with, ending in "/". */
   prefix: string;
+  /** Opens an image file for virtualizing; defaults to `openHttpSource` under `policy`. */
+  openSource?: (url: string) => Promise<RangeSource>;
+  /** Opens an image file as a reader, in place of `openSource` (its requests are not planned as remote ones). */
   openFile?: typeof openHttpFile;
   /** Lists and reads store inputs (§1.5); defaults to `fetch`. */
   fetchStore?: (url: string, init?: RequestInit) => Promise<Response>;
   fetchRange?: RangeFetcher;
   fetchArchive?: (url: string) => Promise<Uint8Array>;
+  /**
+   * The reader policy (spec §8.7) for `.vzip` archives named by URL, and for
+   * the image files the handler virtualizes; the default allows http(s)
+   * sources on public hosts. Archives
+   * the handler virtualizes itself are read with the same policy, plus
+   * `unverifiablePins`: their pins were taken from the responses the handler
+   * has just read, and a cross-origin server may hide the headers that would
+   * check them again.
+   */
+  policy?: Policy;
 }
 
 interface Opened {
@@ -95,9 +108,15 @@ function parseRange(header: string | null, size: number): { start: number; end: 
 export function makeHandler(options: HandlerOptions) {
   const {
     prefix,
-    openFile = openHttpFile,
     fetchStore = (u, i) => fetch(u, i),
-    fetchRange = (url, start, end, pins) => readHttpRange(url, start, end, pins),
+    fetchRange = (url, start, end, pins, options) => readHttpRange(url, start, end, pins, undefined, options),
+    policy = {},
+    openSource = options.openFile
+      ? async (url: string) => {
+        const file = await options.openFile!(url);
+        return readerSource(file.read, file.size, file.etag ? { etag: file.etag } : {});
+      }
+      : (url: string) => openHttpSource(url, { policy }),
     fetchArchive = async (url) => {
       const r = await fetch(url);
       if (!r.ok) throw new HttpResolutionError(`${url}: HTTP ${r.status}`);
@@ -115,21 +134,25 @@ export function makeHandler(options: HandlerOptions) {
         const trimmed = base.endsWith("/") ? base.slice(0, -1) : base;
         const stem = decodeURIComponent(trimmed.slice(trimmed.lastIndexOf("/") + 1)) || "archive";
         if (kind === "archive") {
-          return { archive: await Archive.open(await fetchArchive(url), url, fetchRange), filename: stem };
+          return { archive: await Archive.open(await fetchArchive(url), url, fetchRange, policy), filename: stem };
         }
         let virtual;
         if (kind === "image" && isStoreUrl(url)) {
           virtual = await virtualizeStore(await openHttpStore(url, { fetch: fetchStore }));
         } else {
-          const file = await openFile(url);
-          const read = blockReader(file.read, file.size);
-          virtual = kind === "tiff"
-            ? await virtualizeTiff(url, read, file.size)
-            : await virtualizeImage(url, read, file.size);
+          const source = await openSource(url);
+          if (kind === "tiff") {
+            virtual = await virtualizeIr("tiff", url, source);
+            const etag = source.etag?.();
+            // VIRTUALIZE.md §1.2
+            virtual.sources[0] = { ...virtual.sources[0], size: BigInt(source.size), ...(etag !== undefined ? { etag } : {}) };
+          } else {
+            virtual = await virtualizeSource(url, source);
+          }
         }
         const bytes = await writeVzip(virtual);
         return {
-          archive: await Archive.open(bytes, url, fetchRange),
+          archive: await Archive.open(bytes, url, fetchRange, { ...policy, unverifiablePins: true }),
           filename: `${stem.replace(/\.(ome\.tiff?|tiff?|nd2|n5|zarr)$/i, "")}.vzip`,
         };
       })();
@@ -192,13 +215,13 @@ export function makeHandler(options: HandlerOptions) {
         return response(status, message);
       }
       if (e instanceof TiffError) return response(422, `TIFF: ${message}`);
-      if (e instanceof Nd2Error || e instanceof LVError) return response(422, `ND2: ${message}`);
       if (e instanceof DicomError) return response(422, `DICOM: ${message}`);
       if (e instanceof NiftiError) return response(422, `NIfTI: ${message}`);
       if (e instanceof ImsError) return response(422, `IMS: ${message}`);
       if (e instanceof N5Error) return response(422, `N5: ${message}`);
       if (e instanceof Zarr2Error) return response(422, `Zarr v2: ${message}`);
       if (e instanceof OmeZarrError) return response(422, `OME-Zarr: ${message}`);
+      if (e instanceof SafeError) return response(422, `SAFE: ${message}`);
       if (e instanceof StoreError) return response(422, `store: ${message}`);
       if (e instanceof ImageError) return response(422, message);
       if (e instanceof StoreLimitError) return response(507, message);

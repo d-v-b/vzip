@@ -29,6 +29,8 @@ test("virtualizes the synthetic N5 stores", async () => {
     ["n5_viewer_downsampling", { images: [{ path: "g", convention: "n5-viewer" }] }],
     ["n5_multiscales_unrecognized", { images: [], arrays: 4 }],
     ["n5_shared_levels", { images: [{ path: "a", convention: "cosem" }] }],
+    ["n5_source_metadata", { arrays: 7, otherObjects: 0 }],
+    ["n5_objects", { arrays: 1, chunks: 1, otherObjects: 4 }],
   ];
   for (const [name, expected] of cases) {
     const v = await virtualize(name);
@@ -39,7 +41,8 @@ test("virtualizes the synthetic N5 stores", async () => {
     assert.equal(v.sources.length, refs.length, name);
     for (const [i, e] of refs.entries()) {
       assert.ok("ranges" in e);
-      assert.equal(v.sources[i].url, URL_OF(name) + e.key.replaceAll(" ", "%20").replaceAll("é", "%C3%A9"));
+      const origin = e.key.replace(/^vzip_source\/objects\//, "");
+      assert.equal(v.sources[i].url, URL_OF(name) + origin.replaceAll(" ", "%20").replaceAll("é", "%C3%A9"));
       assert.deepEqual(e.ranges, [{ source: i, offset: 0n, length: (e.ranges[0] as { length: bigint }).length }]);
     }
   }
@@ -50,7 +53,7 @@ test("virtualizes the synthetic N5 stores", async () => {
   assert.deepEqual(zlib.codecs, [{ name: "n5_default", configuration: { codecs: [
     { name: "transpose", configuration: { order: [1, 0] } },
     { name: "bytes", configuration: { endian: "big" } },
-    { name: "zlib", configuration: { level: 1 } },
+    { name: "zlib", configuration: { level: 6 } },
   ] } }]);
   assert.deepEqual(zlib.chunk_key_encoding, { name: "v2", configuration: { separator: "/" } });
   assert.deepEqual(doc(c, "blosc_u8/zarr.json").codecs[0].configuration.codecs.slice(1), [
@@ -73,7 +76,37 @@ test("virtualizes the synthetic N5 stores", async () => {
   // The missing block (1/0) and the empty one (2/0) have no entry.
   assert.deepEqual(h.entries.filter((e) => "ranges" in e && e.key.startsWith("a/b/sparse/")).map((e) => e.key),
     ["a/b/sparse/0/0"]);
+  // The empty block's key is listed with the empty objects (§3.1, §6).
+  assert.deepEqual(doc(h, "vzip_source/zarr.json").attributes.vzip_virtualized, { n5: { empty: ["a/b/sparse/2/0"] } });
   assert.ok(!h.entries.some((e) => e.key === "a/b/sparse/0/zarr.json" || e.key.startsWith("docs/")));
+  // Source metadata (conventions/n5/README.md §5): the attributes and the layout members the Zarr
+  // metadata does not reproduce; the levels are the codecs'; integers beyond 2^53 keep every digit.
+  assert.deepEqual(doc(h, "zarr.json").attributes.vzip_virtualized.n5,
+    { attributes: { description: "groups" }, metadata: { n5: "4.0.0" } });
+  const s = await virtualize("n5_source_metadata");
+  const root = s.entries.find((e) => e.key === "zarr.json")!;
+  assert.ok(new TextDecoder().decode((root as { bytes: Uint8Array }).bytes)
+    .includes('"id":18446744073709551615,"neg":-9007199254740993'));
+  const n5Of = (k: string) => doc(s, k).attributes.vzip_virtualized?.n5;
+  assert.deepEqual(n5Of("zstd_extra/zarr.json"), { metadata: { compression: { nbWorkers: 2 } } });
+  assert.deepEqual(n5Of("both/zarr.json"), { metadata: { n5: "4.0.0", compressionType: "gzip" } });
+  assert.deepEqual(doc(s, "zstd_extra/zarr.json").codecs[0].configuration.codecs[2],
+    { name: "zstd", configuration: { level: -5, checksum: false } });
+  assert.deepEqual(doc(s, "gzip_no_level/zarr.json").codecs[0].configuration.codecs[2],
+    { name: "gzip", configuration: { level: 6 } });
+  assert.deepEqual(doc(s, "layout_only/zarr.json").attributes, {});
+  // Other objects, a dataset nested in a dataset included, are kept whole (conventions/n5/README.md §6).
+  const o = await virtualize("n5_objects");
+  assert.deepEqual(o.entries.filter((e) => "ranges" in e).map((e) => e.key), ["a/0", "vzip_source/objects/README",
+    "vzip_source/objects/a/labels/0", "vzip_source/objects/a/labels/attributes.json", "vzip_source/objects/g/notes.txt"]);
+  // The empty g/empty is listed in vzip_source's source metadata.
+  assert.deepEqual(doc(o, "vzip_source/zarr.json").attributes.vzip_virtualized, { n5: { empty: ["g/empty"] } });
+  // An object named zarr.json is escaped with ~, one to one (conventions/n5/README.md §6).
+  const n = await virtualize("n5_node_names");
+  const kept = n.entries.filter((e) => e.key.startsWith("vzip_source/objects/")).map((e) => e.key);
+  assert.deepEqual(kept, ["vzip_source/objects/a/zarr.json~", "vzip_source/objects/g/zarr.json~~", "vzip_source/objects/zarr.json~"]);
+  assert.deepEqual(n.sources.slice(1).map((x) => x.url), ["a/zarr.json", "g/zarr.json~", "zarr.json"].map((k) => URL_OF("n5_node_names") + k));
+  assert.deepEqual(doc(n, "vzip_source/zarr.json").attributes.vzip_virtualized, { n5: { empty: ["e"] } });
 });
 
 for (const [name, message] of [
@@ -85,6 +118,9 @@ for (const [name, message] of [
   ["n5_reject_dimensions_fraction", /dimensions \[4,2.5\]/],
   ["n5_reject_blocksize_mismatch", /blockSize \[2\]/],
   ["n5_reject_no_compression", /no compression/],
+  ["n5_reject_gzip_level", /gzip level 10/],
+  ["n5_reject_zstd_level", /zstd level 2.5/],
+  ["n5_reject_objects_collision", /the node vzip_source is where/],
 ] as const) {
   test(`rejects ${name}`, async () => {
     await assert.rejects(virtualize(name), (e) => e instanceof N5Error && message.test(e.message));

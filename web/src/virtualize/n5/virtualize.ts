@@ -18,9 +18,13 @@ import {
   isObject,
   join,
   type Json,
+  keepObjects,
+  PathTrie,
+  num,
   parentOf,
   prefetchDocuments,
   readDocument,
+  sourceMetadata,
   type Store,
   show,
   type StoreResult,
@@ -46,6 +50,8 @@ const UNITS: Record<string, string> = {
   ms: "millisecond", min: "minute", h: "hour",
 };
 const UNIT_NAMES = new Set(Object.values(UNITS));
+// The layout members of a dataset's attributes.json: the Zarr array metadata holds them.
+const LAYOUT_KEYS = ["dimensions", "blockSize", "dataType", "compression", "compressionType", "n5"];
 
 /** The Zarr v3 blosc codec of an n5-blosc or numcodecs Blosc configuration (conventions/n5/README.md §3, conventions/zarr2/README.md §3.1). */
 export function bloscCodec(
@@ -69,17 +75,42 @@ export function bloscCodec(
 
 const SHUFFLES = new Map([[0, "noshuffle"], [1, "shuffle"], [2, "bitshuffle"]]);
 
-function compressor(compression: { [k: string]: Json }, b: number): Json | undefined {
+// The levels a compression may have (Java's Deflater level -1, its default, is zlib's level 6),
+// and the levels Java N5 uses when the member is absent.
+const LEVELS: Record<string, [number, number, number]> = { gzip: [-1, 9, 6], zstd: [-131072, 22, 3] };
+
+/** The level of a gzip or zstd compression (conventions/n5/README.md §3). */
+function level(t: string, compression: { [k: string]: Json }): number {
+  const [lo, hi, dflt] = LEVELS[t];
+  if (!has(compression, "level")) return dflt;
+  const v = asInt(compression.level, lo, hi);
+  if (v === undefined) return reject(`${t} level ${show(compression.level).slice(0, 20)} is not an integer from ${lo} to ${hi}`);
+  return v === -1 && t === "gzip" ? 6 : v;
+}
+
+/** The compression's codec, and its members the codec does not carry. */
+function compressor(compression: { [k: string]: Json }, b: number): [Json | undefined, { [k: string]: Json }] {
   const t = compression.type as string;
-  if (t === "raw") return undefined;
-  if (t === "gzip") {
+  let codec: Json | undefined;
+  let carried: string[];
+  if (t === "raw") {
+    codec = undefined;
+    carried = ["type"];
+  } else if (t === "gzip") {
     const z = has(compression, "useZlib") ? compression.useZlib : false;
     if (typeof z !== "boolean") reject(`gzip useZlib ${JSON.stringify(z)} is not a boolean`);
-    return { name: z ? "zlib" : "gzip", configuration: { level: 1 } };
+    codec = { name: z ? "zlib" : "gzip", configuration: { level: level(t, compression) } };
+    carried = ["type", "useZlib", "level"];
+  } else if (t === "zstd") {
+    codec = { name: "zstd", configuration: { level: level(t, compression), checksum: false } };
+    carried = ["type", "level"];
+  } else if (t === "blosc") {
+    codec = bloscCodec(compression, b, SHUFFLES, reject);
+    carried = ["type", "cname", "clevel", "shuffle", "blocksize"];
+  } else {
+    return reject(`N5 compression ${JSON.stringify(t)} is not supported`);
   }
-  if (t === "zstd") return { name: "zstd", configuration: { level: 0, checksum: false } };
-  if (t === "blosc") return bloscCodec(compression, b, SHUFFLES, reject);
-  return reject(`N5 compression ${JSON.stringify(t)} is not supported`);
+  return [codec, without(compression, carried)];
 }
 
 interface ArrayDoc {
@@ -119,18 +150,24 @@ function dataset(path: string, doc: { [k: string]: Json }): ArrayDoc {
     { name: "transpose", configuration: { order: Array.from({ length: n }, (_, i) => n - 1 - i) } },
     b > 1 ? { name: "bytes", configuration: { endian: "big" } } : { name: "bytes" },
   ];
-  const c = compressor(compression, b);
+  const [c, extra] = compressor(compression, b);
   if (c !== undefined) inner.push(c);
+  const meta: { [k: string]: Json } = {};
+  if (has(doc, "n5")) meta.n5 = doc.n5;
+  if (Object.keys(extra).length) meta.compression = extra;
+  if (has(doc, "compression") && has(doc, "compressionType")) meta.compressionType = doc.compressionType; // not read
   return {
     zarr_format: 3,
     node_type: "array",
-    shape: (dims as number[]).slice(),
+    shape: (dims as unknown[]).map((v) => asInt(v)!),
     data_type: dtype as string,
-    chunk_grid: { name: "regular", configuration: { chunk_shape: (block as number[]).slice() } },
+    chunk_grid: { name: "regular", configuration: { chunk_shape: (block as unknown[]).map((v) => asInt(v)!) } },
     chunk_key_encoding: { name: "v2", configuration: { separator: "/" } },
     fill_value: 0,
     codecs: [{ name: "n5_default", configuration: { codecs: inner } }],
-    attributes: { ...doc }, // the whole document, as source metadata (conventions/n5/README.md §5)
+    // The source metadata (conventions/n5/README.md §5): the document without its layout
+    // members, and what of those the zarr.json does not reproduce.
+    attributes: sourceMetadata(without(doc, LAYOUT_KEYS), meta),
   };
 }
 
@@ -181,8 +218,9 @@ function omeMultiscale(
 
 function numbers(v: unknown, n: number, positive = false): number[] | undefined {
   if (!Array.isArray(v) || v.length !== n || !v.every(isNumber)) return undefined;
-  if (positive && !v.every((x) => x > 0)) return undefined;
-  return v as number[];
+  const xs = v.map(num);
+  if (positive && !xs.every((x) => x > 0)) return undefined;
+  return xs;
 }
 
 function strings(v: unknown, n: number): v is string[] {
@@ -301,8 +339,10 @@ function n5Viewer(g: string, attrs: { [k: string]: Json }, ndim: Map<string, num
   const units = axes.map((a) => (AXIS_TYPES[a] === "space" && has(AXIS_TYPES, a) ? u : null));
   const scales = factors.map((f) => f.map((x, j) => r![j] * x));
   if (scales.some((s) => s.some((v) => !Number.isFinite(v)))) reject("a scale is not finite");
+  // A downsampled voxel's center is (f - 1) / 2 source voxels from the origin.
+  const translations = factors.map((f) => f.map((x, j) => ((x - 1) / 2) * r![j]));
   const paths = levels.map((lv) => (g === "" ? lv : lv.slice(g.length + 1)));
-  return [omeMultiscale(null, axes, units, paths, scales, null), levels, axes];
+  return [omeMultiscale(null, axes, units, paths, scales, translations), levels, axes];
 }
 
 // ---------------------------------------------------------------- the profile
@@ -317,6 +357,7 @@ export async function virtualizeN5(store: Store): Promise<StoreResult & { summar
   // conventions/n5/README.md §2: classify from the root down; a candidate's kind needs its document.
   const docs = new Map<string, { [k: string]: Json }>();
   const datasets = new Set<string>();
+  const trie = new PathTrie<true>(); // the datasets, for a lookup linear in the path's length
   const groupPaths: string[] = [];
   const readOrder = byDepth(candidates);
   const isCandidate = new Set(candidates);
@@ -335,12 +376,14 @@ export async function virtualizeN5(store: Store): Promise<StoreResult & { summar
   };
   prefetchDocuments(store, readOrder.map((p) => join(p, "attributes.json")), wanted);
   for (const path of readOrder) {
-    if (insideArray(path, datasets)) continue;
+    if (insideArray(path, trie)) continue;
     const doc = await readDocument(store, join(path, "attributes.json"));
     if (!isObject(doc)) reject(`${join(path, "attributes.json")} is not a JSON object`);
     docs.set(path, doc as { [k: string]: Json });
-    if (has(doc as object, "dimensions")) datasets.add(path);
-    else groupPaths.push(path);
+    if (has(doc as object, "dimensions")) {
+      datasets.add(path);
+      trie.add(path, true);
+    } else groupPaths.push(path);
   }
   const implicit = implicitGroups(docs.keys());
 
@@ -350,7 +393,11 @@ export async function virtualizeN5(store: Store): Promise<StoreResult & { summar
 
   const groups = new Map<string, { [k: string]: Json }>();
   for (const path of groupPaths) {
-    groups.set(path, { zarr_format: 3, node_type: "group", attributes: { ...docs.get(path)! } });
+    const doc = docs.get(path)!;
+    groups.set(path, {
+      zarr_format: 3, node_type: "group",
+      attributes: sourceMetadata(without(doc, ["n5"]), has(doc, "n5") ? { n5: doc.n5 } : {}),
+    });
   }
   const images: Json[] = [];
   const named = new Map<string, string[]>();
@@ -391,12 +438,16 @@ export async function virtualizeN5(store: Store): Promise<StoreResult & { summar
   }
   const all = findChunks(objects, tests);
   const chunks = all.filter(([, n]) => n > 0);
+  const result: StoreResult = { docs: out, chunks };
+  // An empty chunk object has no entry: its key is listed with the empty objects (§6).
+  const used = new Set([...[...docs.keys()].map((p) => join(p, "attributes.json")), ...chunks.map(([k]) => k)]);
+  const others = keepObjects(result, objects, used, [...docs.keys(), ...implicit], reject, store.ignored);
   return {
-    docs: out,
-    chunks,
+    ...result,
     summary: {
       groups: groups.size + implicit.size, arrays: arrays.size, chunks: chunks.length,
-      emptyChunks: all.length - chunks.length, objects: objects.size, images, listingRequests: store.requests,
+      emptyChunks: all.length - chunks.length, objects: objects.size, otherObjects: others, images,
+      listingRequests: store.requests,
     },
   };
 }

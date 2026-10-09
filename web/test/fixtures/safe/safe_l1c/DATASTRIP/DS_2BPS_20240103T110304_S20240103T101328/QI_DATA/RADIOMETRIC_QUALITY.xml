@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Earth_Explorer_File xmlns="http://gs2.esa.int/DATA_STRUCTURE/olqcReport">
+  <Data_Block type="xml">
+    <report date="2024-01-03T11:00:00Z" gippVersion="1.0" globalStatus="PASSED">
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_0" processingStatus="done"/><message contentType="text/plain">Check passed, value 895953</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_1" processingStatus="done"/><message contentType="text/plain">Check passed, value 864797</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_2" processingStatus="done"/><message contentType="text/plain">Check passed, value 819745</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_3" processingStatus="done"/><message contentType="text/plain">Check passed, value 855302</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_4" processingStatus="done"/><message contentType="text/plain">Check passed, value 69515</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_5" processingStatus="done"/><message contentType="text/plain">Check passed, value 811023</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_6" processingStatus="done"/><message contentType="text/plain">Check passed, value 941963</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_7" processingStatus="done"/><message contentType="text/plain">Check passed, value 261446</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_8" processingStatus="done"/><message contentType="text/plain">Check passed, value 169554</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_9" processingStatus="done"/><message contentType="text/plain">Check passed, value 77199</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_10" processingStatus="done"/><message contentType="text/plain">Check passed, value 798958</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_11" processingStatus="done"/><message contentType="text/plain">Check passed, value 946465</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_12" processingStatus="done"/><message contentType="text/plain">Check passed, value 603838</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_13" processingStatus="done"/><message contentType="text/plain">Check passed, value 613791</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_14" processingStatus="done"/><message contentType="text/plain">Check passed, value 788790</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_15" processingStatus="done"/><message contentType="text/plain">Check passed, value 2630</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_16" processingStatus="done"/><message contentType="text/plain">Check passed, value 836422</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_17" processingStatus="done"/><message contentType="text/plain">Check passed, value 910407</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_18" processingStatus="done"/><message contentType="text/plain">Check passed, value 132446</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_19" processingStatus="done"/><message contentType="text/plain">Check passed, value 984803</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_20" processingStatus="done"/><message contentType="text/plain">Check passed, value 849559</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_21" processingStatus="done"/><message contentType="text/plain">Check passed, value 286296</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_22" processingStatus="done"/><message contentType="text/plain">Check passed, value 479049</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_23" processingStatus="done"/><message contentType="text/plain">Check passed, value 813661</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_24" processingStatus="done"/><message contentType="text/plain">Check passed, value 900822</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_25" processingStatus="done"/><message contentType="text/plain">Check passed, value 82407</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_26" processingStatus="done"/><message contentType="text/plain">Check passed, value 657528</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_27" processingStatus="done"/><message contentType="text/plain">Check passed, value 438280</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_28" processingStatus="done"/><message contentType="text/plain">Check passed, value 344698</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_29" processingStatus="done"/><message contentType="text/plain">Check passed, value 817703</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_30" processingStatus="done"/><message contentType="text/plain">Check passed, value 687665</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_31" processingStatus="done"/><message contentType="text/plain">Check passed, value 408733</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="RADIOMETRIC_QUALITY" name="RADIOMETRIC_QUALITY_32" processingStatus="done"/><message contentType="text/plain">Check passed, value 881643</message></check>
+    </report>
+  </Data_Block>
+</Earth_Explorer_File>

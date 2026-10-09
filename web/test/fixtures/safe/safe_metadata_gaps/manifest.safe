@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<xfdu:XFDU xmlns:gml="http://www.opengis.net/gml" xmlns:safe="http://www.esa.int/safe/sentinel/1.1" xmlns:xfdu="urn:ccsds:schema:xfdu:1" version="esa/safe/sentinel/1.1/sentinel-2/msi/archive_l1c_user_product">	<!-- ===================================================================      INFORMATION PACKAGE MAP SECTION      =================================================================== -->	<informationPackageMap>		<xfdu:contentUnit textInfo="SENTINEL-2 MSI L1C User Product" unitType="Product_L1C"/>
+	</informationPackageMap>
+	<dataObjectSection>
+		<dataObject ID="obj_0">
+			<byteStream mimeType="application/octet-stream" size="3116">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/IMG_DATA/T32TNS_20240103T101329_B01.jp2" locatorType="URL"/>
+				<checksum checksumName="MD5">d809715ad3ca12e3d2e068d9921c3321</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_1">
+			<byteStream mimeType="application/octet-stream" size="8438">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/IMG_DATA/T32TNS_20240103T101329_B02.jp2" locatorType="URL"/>
+				<checksum checksumName="MD5">3d91b9e028004c9b0d1377fc081e3861</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_2">
+			<byteStream mimeType="application/octet-stream" size="8455">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/IMG_DATA/T32TNS_20240103T101329_B03.jp2" locatorType="URL"/>
+				<checksum checksumName="MD5">14ae79a2f09f7e156ca80e3130a667ad</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_3">
+			<byteStream mimeType="application/octet-stream" size="8466">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/IMG_DATA/T32TNS_20240103T101329_B04.jp2" locatorType="URL"/>
+				<checksum checksumName="MD5">0e88d8733c37cc19bcfc997eb65cf2de</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_4">
+			<byteStream mimeType="application/octet-stream" size="4088">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/MTD_TL.xml" locatorType="URL"/>
+				<checksum checksumName="MD5">6f15a7543ca6a925451cb064faa4f5b6</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_5">
+			<byteStream mimeType="application/octet-stream" size="12257">
+				<fileLocation href="./MTD_MSIL1C.xml" locatorType="URL"/>
+				<checksum checksumName="MD5">1706f264a14af3340e57467b9aeac12d</checksum>
+			</byteStream>
+		</dataObject>
+	</dataObjectSection>
+</xfdu:XFDU>

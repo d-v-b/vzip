@@ -1,12 +1,12 @@
 # url|name of public TIFF files in the corpus besides IDR idr0096. Aperio SVS
 # whole-slide images from the OpenSlide test data (https://openslide.org/demo/,
 # CC0 1.0), with JPEG and JPEG 2000 tiles.
-https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/CMU-1-Small-Region.svs|svs-CMU-1-Small-Region
-https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/CMU-1.svs|svs-CMU-1
-https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/CMU-1-JP2K-33005.svs|svs-CMU-1-JP2K-33005
-https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/JP2K-33003-1.svs|svs-JP2K-33003-1
+https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/CMU-1-Small-Region.svs|svs-CMU-1-Small-Region|ends-sha256=f59537dca61399c521f19159784abf3db85bd7c47768c02436f7999570dc5423
+https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/CMU-1.svs|svs-CMU-1|ends-sha256=6529febe08a7279c01ca715701e28ee9aaf5d2b4c53d9f856d1631fe0f89fc1f
+https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/CMU-1-JP2K-33005.svs|svs-CMU-1-JP2K-33005|ends-sha256=1cc5dfd2772fcef63684c2be1434963c80cab3e77b263708653d2bf26c6e359d
+https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/JP2K-33003-1.svs|svs-JP2K-33003-1|ends-sha256=0763127e1e0509776334a91459f90e7c4eb00e7e47ccf4fe9256d289b65220f5
 # Hamamatsu NDPI slides from the OpenSlide test data (CC0 1.0); Hamamatsu-1
 # is 6.9 GB, with offsets above 4 GiB.
-https://openslide.cs.cmu.edu/download/openslide-testdata/Hamamatsu/CMU-1.ndpi|ndpi-CMU-1
-https://openslide.cs.cmu.edu/download/openslide-testdata/Hamamatsu/Hamamatsu-1.ndpi|ndpi-Hamamatsu-1
-https://openslide.cs.cmu.edu/download/openslide-testdata/Hamamatsu/Hamamatsu-2.ndpi|ndpi-Hamamatsu-2
+https://openslide.cs.cmu.edu/download/openslide-testdata/Hamamatsu/CMU-1.ndpi|ndpi-CMU-1|ends-sha256=20b33fe928fa55324ca0c783015b841a755370152e8cd76fc81045ca60fb9ed5
+https://openslide.cs.cmu.edu/download/openslide-testdata/Hamamatsu/Hamamatsu-1.ndpi|ndpi-Hamamatsu-1|ends-sha256=6cff1577358b48197b1800728b5ee2b69b092b0e79f6e12b9f3114b3777020ca
+https://openslide.cs.cmu.edu/download/openslide-testdata/Hamamatsu/Hamamatsu-2.ndpi|ndpi-Hamamatsu-2|ends-sha256=94e6491d6a8321ad7dd3304babf42c189f591a8385844fccf382c07ba473c0d3

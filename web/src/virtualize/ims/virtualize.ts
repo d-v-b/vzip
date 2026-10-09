@@ -3,8 +3,8 @@
 // Zarr chunk that references the file.
 
 import type { Range } from "../../protobuf.ts";
-import { type ByteReader, declare } from "../common.ts";
-import { sourceJson } from "./source.ts";
+import { type ByteReader, declare, stringifyJson } from "../common.ts";
+import { sourceTree } from "./source.ts";
 import type { ArchiveDesc, EntryDesc } from "../../writer.ts";
 import { attributeValue, type Datatype, Hdf5, ImsError, latin1, type Links, u, untilNul } from "./hdf5.ts";
 
@@ -12,6 +12,8 @@ export { ImsError } from "./hdf5.ts";
 
 const MAX_LEVELS = 64;
 const MAX_DATASETS = 100000;
+const MAX_CHANNELS = 64; // the most channels the root's omero lists
+const MAX_NAME = 256; // the longest name or label in the root, in UTF-8 bytes
 const DECIMAL = /^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$/;
 const DIGITS = /^[0-9]+$/;
 const TIMESTAMP = /^([0-9]{4})-([0-9]{2})-([0-9]{2}) ([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]+))?$/;
@@ -157,7 +159,7 @@ export async function virtualizeIms(
   let type: ReturnType<typeof dataType> | undefined;
   const levelInfo: Level[] = [];
   const chunkRefs: [number, number, number, number[], [number, number]][] = [];
-  const channelGroups: [string, number][] = []; // for the source metadata
+  const images = new Map<number, Record<string, unknown>>(); // the Data datasets, for the source metadata
   for (let r = 0; r < levels; r++) {
     const links = r === 0 ? level0 : await f.links(await follow(dataset, `ResolutionLevel ${r}`));
     let info: Level | undefined;
@@ -165,7 +167,6 @@ export async function virtualizeIms(
       const timeLinks = r === 0 && t === 0 ? firstTime : await f.links(await follow(links, `TimePoint ${t}`));
       for (let c = 0; c < channels; c++) {
         const channel = await follow(timeLinks, `Channel ${c}`);
-        channelGroups.push([`ResolutionLevel ${r}/TimePoint ${t}/Channel ${c}`, channel]);
         const attrs = await f.attributes(channel);
         const sizes = ["Z", "Y", "X"].map((axis) => {
           const s = text(attrs, `ImageSize${axis}`);
@@ -173,10 +174,12 @@ export async function virtualizeIms(
           if (!(v >= 1 && v <= Number.MAX_SAFE_INTEGER)) reject(`ImageSize${axis} of level ${r} is not a positive integer`);
           return v;
         });
-        const ds = await f.dataset(await follow(await f.links(channel), "Data"));
+        const dataAt = await follow(await f.links(channel), "Data");
+        const ds = await f.dataset(dataAt);
+        images.set(dataAt, { level: r, t, c, shape: [...ds.dims!] });
         const dt = dataType(ds.datatype);
-        if (ds.dims.length !== 3) reject(`a dataset of level ${r} is not 3-dimensional`);
-        if (sizes.some((s, i) => s > ds.dims[i])) reject(`the image of level ${r} is larger than its dataset`);
+        if (ds.dims!.length !== 3) reject(`a dataset of level ${r} is not 3-dimensional`);
+        if (sizes.some((s, i) => s > ds.dims![i])) reject(`the image of level ${r} is larger than its dataset`);
         if (!(ds.filters.length === 0 || (ds.filters.length === 1 && ds.filters[0] === 1))) {
           reject(`unsupported HDF5 filters [${ds.filters.join(", ")}]`);
         }
@@ -206,11 +209,14 @@ export async function virtualizeIms(
   const extMin = [0, 1, 2].map((i) => decimal(text(image, `ExtMin${i}`)));
   const extMax = [0, 1, 2].map((i) => decimal(text(image, `ExtMax${i}`)));
   const unitText = text(image, "Unit");
-  const name = text(image, "Name");
+  const bytes = (s: string) => new TextEncoder().encode(s).length;
+  let name = text(image, "Name");
+  if (name !== undefined && bytes(name) > MAX_NAME) name = undefined;
   const labels: string[] = [], colors: string[] = [], ranges: (number[] | undefined)[] = [];
-  for (let c = 0; c < channels; c++) {
+  for (let c = 0; c < (channels <= MAX_CHANNELS ? channels : 0); c++) {
     const attrs = await metaAttrs(`Channel ${c}`);
-    labels.push(text(attrs, "Name") || `Channel ${c}`);
+    const label = text(attrs, "Name");
+    labels.push(label && bytes(label) <= MAX_NAME ? label : `Channel ${c}`);
     const rgb = decimals(text(attrs, "Color"), 3);
     colors.push(rgb !== undefined && rgb.every((v) => v >= 0 && v <= 1)
       ? rgb.map((v) => Math.floor(v * 255 + 0.5).toString(16).toUpperCase().padStart(2, "0")).join("")
@@ -250,7 +256,7 @@ export async function virtualizeIms(
     ? axes.map((a) => (a === "x" ? extMin[0]! : a === "y" ? extMin[1]! : a === "z" ? extMin[2]! : 0))
     : undefined;
   const utf8 = new TextEncoder();
-  const json = (v: unknown) => utf8.encode(JSON.stringify(v, null, 2));
+  const json = (v: unknown) => utf8.encode(stringifyJson(v));
   const datasets = levelInfo.map((l, r) => {
     const n: Record<string, number> = { z: l.sizes[0], y: l.sizes[1], x: l.sizes[2] };
     const scale = axes.map((a) => a === "t" ? period ?? 1 : a === "c" ? 1 : a in extent ? extent[a] / n[a] : 1);
@@ -273,8 +279,6 @@ export async function virtualizeIms(
     }
     return { label, color: colors[k], active: true, ...window };
   });
-  // The source metadata (conventions/ims/README.md §5).
-  const source = await sourceJson(f, meta, channelGroups);
   const entries: EntryDesc[] = [{
     key: "zarr.json",
     bytes: json({
@@ -288,9 +292,9 @@ export async function virtualizeIms(
             axes: axes.map((a) => ({ name: a, type: types[a], ...(units[a] ? { unit: units[a] } : {}) })),
             datasets,
           }],
-          omero: { channels: omeroChannels },
+          ...(channels <= MAX_CHANNELS ? { omero: { channels: omeroChannels } } : {}),
         },
-      }, "ims", url, source),
+      }, "ims", url),
     }),
   }];
   for (const [r, l] of levelInfo.entries()) {
@@ -324,6 +328,8 @@ export async function virtualizeIms(
     entries.push({ key: `${r}/c/${axes.map((a) => index[a]).join("/")}`, ranges });
     chunks++;
   }
+  // The source metadata node (conventions/ims/README.md §5).
+  for (const e of (await sourceTree(f, f.read, images)).entries()) entries.push(e);
   return {
     sources: [{ url }],
     entries,

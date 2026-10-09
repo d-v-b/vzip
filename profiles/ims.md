@@ -29,7 +29,9 @@ deflate. Imaris 5.5 files have version 1 object headers and symbol-table
 groups. Imaris 10 makes the root group's `DataSet` and `DataSetInfo` soft
 links to `/Workflows/InitialImages/...`. Files written with newer HDF5
 format bounds (superblock version 3, layout versions 4 and 5) index chunks by
-fixed arrays or as a single chunk. Imaris 10 can also compress chunks with LZ4
+fixed arrays or as a single chunk, by extensible arrays or version 2
+B-trees when dimensions are unlimited, and implicitly when chunks are
+allocated early. Imaris 10 can also compress chunks with LZ4
 (filter 32004), alone or after byte shuffling (filter 2); no codec of [conventions §3](../conventions/README.md#3-arrays)
 decodes those, so such files are rejected.
 
@@ -144,7 +146,7 @@ used.
   `2^(G & 3)` bytes; the name, `n` bytes. A link of type 0 is hard: an
   address follows, which MUST be defined. A link of type 1 is soft: a 2-byte
   length `m` follows, then its path, `m` bytes. For any other type nothing
-  more is read.
+  more is read here (the source metadata reads its value, §8.9).
 
 Two links of a group with the same name reject the input.
 
@@ -172,15 +174,16 @@ the input.
 ### 8.4 Version 2 B-trees and fractal heaps
 
 Dense groups and dense attributes keep their links and attribute messages as
-objects of a fractal heap, indexed by a version 2 B-tree.
+objects of a fractal heap, indexed by a version 2 B-tree; datasets of
+several unlimited dimensions index their chunks by one (§8.5).
 
 **Version 2 B-trees.** A tree of type `T` at `a`: the 38 bytes at `a`
 start with `BTHD`, then version 0 and type `T` (byte 5). Its node size `N`
 is the 4 bytes at 6, its record size `R` the 2 bytes at 10, its depth `D`
 the 2 bytes at 12, the root node's address the 8 bytes at 16 (if undefined,
 the tree has no records) and the root's number of records the 2 bytes at 24.
-`R` MUST be 24, 11 or 17 for type 1, 5 or 8, `N` MUST be at least
-`10 + R`, and `D` at most 16.
+`R` MUST be 24, 11 or 17 for type 1, 5 or 8 (§8.5 gives the record sizes
+of types 10 and 11), `N` MUST be at least `10 + R`, and `D` at most 16.
 
 - **Sizes** (exact integer arithmetic): a leaf holds at most
   `M(0) = floor((N − 10) / R)` records, and a record count takes
@@ -294,13 +297,24 @@ message (type 0x0B) (§8.2).
     of `e` bytes, the index type (1 byte), the index's fields, and the index
     address (8 bytes). The index types are:
     - 1, a **single chunk**: if flag bit 1 is set, the chunk's size (8 bytes,
-      a length) and filter mask (4 bytes, which MUST be 0);
+      a length) and filter mask (4 bytes, which MUST be 0, §8.9);
+    - 2, **implicit**: no fields;
     - 3, a **fixed array**: 1 byte, not read (the page bits of the fixed
-      array header are used).
+      array header are used);
+    - 4, an **extensible array**: 5 bytes, not read (the extensible array
+      header's parameters are used);
+    - 5, a **version 2 B-tree**: 6 bytes (node size, split and merge
+      percents), not read (the B-tree header's are used).
 
-    Other index types (implicit, extensible array, version 2 B-tree) reject
-    the input. With filters, flag bit 0 (edge chunks not filtered) rejects
-    the input, and so does a single chunk index without flag bit 1.
+    Other index types reject the input. With filters, flag bit 0 (partial
+    edge chunks not filtered, which `H5Pset_chunk_opts` sets) means that
+    each **partial edge chunk**, one whose grid coordinate `g` along some
+    dimension of size `n` and chunk shape `k` has `(g + 1) × k > n`, is
+    stored unfiltered, whatever filter mask the index records: it is read
+    as a chunk whose filter mask has the bit of every filter of the
+    pipeline set (§8.9), so an image dataset (whose masks MUST be 0) with
+    such a chunk rejects the input. A single chunk index without flag bit
+    1, and an implicit index, with filters reject the input.
   - Other versions reject the input.
 
   The dimensionality `m` MUST be the rank plus 1, and the last dimension
@@ -310,7 +324,13 @@ message (type 0x0B) (§8.2).
 The **chunk grid** has `ceil(n / c)` chunks along each dimension, of size
 `n` and chunk size `c`; the number of chunks, their product, MUST be at
 most 2^53 − 1. A chunk's **byte count** is the product of the chunk shape and
-the datatype's size.
+the datatype's size. Where an index needs it, the **maximum grid** has
+`ceil(m / c)` chunks along each dimension, `m` its maximum size (its size
+when the dataspace has no maximum sizes); a maximum with all 64 bits set is
+**unlimited**, which only the extensible array index allows; any other
+maximum MUST be at least the size and at most 2^53 − 1, and the product of
+the limited dimensions' chunk counts MUST be at most 2^53 − 1. A **row-major
+index** over a grid numbers its coordinates with the last dimension fastest.
 
 **Allocated chunks.** If the index address is undefined, no chunk is
 allocated. Otherwise the index gives the allocated chunks, each with grid
@@ -328,16 +348,22 @@ without filters, the size MUST equal the byte count; the size MUST be at least
 - **Single chunk:** the grid MUST have exactly one chunk. It is the chunk at
   the index address, at coordinates 0, whose size is the layout message's with
   filters, and the byte count without.
-- **Fixed array:** the dataspace's maximum sizes, if present, MUST equal its
-  sizes. The 28 bytes at the index address start with `FAHD` and version 0;
+- **Implicit:** every chunk of the grid is allocated, the byte count in
+  size: the chunk at coordinates `x` is at `a + iB`, `a` the index
+  address, `B` the byte count and `i` the row-major index of `x` over the
+  maximum grid (which MUST have no unlimited dimension). The grid's last chunk
+  MUST lie within the file.
+- **Fixed array:** the maximum grid MUST have no unlimited dimension. The
+  28 bytes at the index address start with `FAHD` and version 0;
   byte 5 is the client ID, which MUST be 1 with filters and 0 without; byte 6
   is the entry size `E`, which MUST be 8 without filters and from 13 to 20
   with; byte 7 is the page bits `g`; the 8 bytes at 8 are the number of
-  entries `n`, which MUST equal the number of chunks; and the 8 bytes at 16
-  are the data block's address `d` (if undefined, no chunk is allocated).
-  The 14 bytes at `d` start with `FADB`, version 0, and the client ID.
-  Entry `i` is the chunk whose coordinates are `i` in row-major order
-  over the grid (the last dimension fastest).
+  entries `n`, which MUST equal the number of chunks of the maximum grid;
+  and the 8 bytes at 16 are the data block's address `d` (if undefined, no
+  chunk is allocated). The 14 bytes at `d` start with `FADB`, version 0,
+  and the client ID. Entry `i` is the chunk whose row-major index over the
+  maximum grid is `i`; an entry whose coordinates lie outside the grid (data
+  beyond the dataspace) is not a chunk of the dataset.
   - If `n ≤ 2^g`, the entries are the `nE` bytes at `d + 14`.
   - Otherwise the entries are in `P = ceil(n / 2^g)` pages. The
     `ceil(P / 8)` bytes at `d + 14` are a bitmap: page `j` is
@@ -349,6 +375,52 @@ without filters, the size MUST equal the byte count; the size MUST be at least
   An entry is the chunk's address (8 bytes; if undefined, the chunk is not
   allocated) and, with filters, its size (the next `E − 12` bytes, a length)
   and its filter mask (the last 4 bytes, which MUST be 0).
+- **Extensible array:** the maximum grid MUST have exactly one unlimited
+  dimension `u`. Let `D` be the product of the other dimensions' maximum
+  chunk counts and `L = G × D`, `G` the grid's chunk count along `u`. The
+  chunk at coordinates `x` is the array's element `x_u × D + j`, `j` the
+  row-major index of the other coordinates over their maximum grid. Elements
+  from `L` on hold no chunk of the grid and are not read; an element whose
+  coordinates lie outside the grid is not a chunk of the dataset. An element
+  is an entry as for a fixed array.
+  - **Header:** the 68 bytes at the index address start with `EAHD` and
+    version 0; byte 5 is the client ID (1 with filters, 0 without), byte 6
+    the element size `E` (8 without filters, 13 to 20 with), byte 7 the
+    maximum index bits `b`, byte 8 the index block's element count `I`,
+    byte 9 the data blocks' minimum element count `M`, byte 10 the super
+    blocks' minimum data block count `P`, byte 11 the page bits `g`, and
+    the 8 bytes at 60 the index block's address (if undefined, no chunk is
+    allocated). `M` and `P` MUST be powers of 2, `b` from `log2(M)` to 64,
+    `g` at most 64, and `2 log2(P)` at most `S = 1 + b − log2(M)`, the
+    number of super blocks. Super block `s` (from 0) has `2^floor(s / 2)`
+    data blocks of `N(s) = 2^floor((s + 1) / 2) × M` elements each; its
+    elements follow those of the super blocks before it, which follow the
+    `I` elements of the index block. Block offsets take `O = ceil(b / 8)`
+    bytes.
+  - **Index block:** the 14 bytes at its address start with `EAIB`, version
+    0 and the client ID; its `I` elements follow, then the addresses of the
+    `2(P − 1)` data blocks of super blocks 0 to `2 log2(P) − 1` in order,
+    then those of super blocks `2 log2(P)` to `S − 1`, 8 bytes each.
+  - **Super block** `s`, at a defined address: the `14 + O` bytes at it
+    start with `EASB`, version 0 and the client ID. When `N(s) > 2^g` its
+    data blocks are **paged**, in `K = N(s) / 2^g` pages each, and
+    `ceil(K / 8)` bytes per data block follow: page `k` of data block `d`
+    is initialized when bit `0x80 >> (q mod 8)` of byte `floor(q / 8)` is
+    set, `q = dK + k`. The addresses of its data blocks follow, 8 bytes
+    each.
+  - **Data block** of `N` elements, at a defined address: the `14 + O`
+    bytes at it start with `EADB`, version 0 and the client ID. Unless it is
+    paged, its elements follow. A paged data block's pages start 4 bytes
+    later, each of `2^g` elements followed by 4 bytes; a page that is not
+    initialized holds no chunk and is not read. A data block of the index
+    block MUST NOT be paged.
+- **Version 2 B-tree:** read as §8.4 says, of type 10 without filters,
+  whose records are `8 + 8k` bytes for rank `k`, or of type 11 with,
+  whose records are from `13 + 8k` to `20 + 8k` bytes. A record is the
+  chunk's address (8 bytes, which MUST be defined); with filters, its size
+  (a length of the record's size minus `12 + 8k` bytes) and filter mask (4
+  bytes, which MUST be 0); then its `k` coordinates (8 bytes each), each
+  less than the grid's chunk count along its dimension.
 
 ### 8.6 Attributes
 
@@ -387,7 +459,7 @@ The input is rejected when a rule of §8.1–§8.6 fails for a structure that
 the convention's §2–§4 read, and when the convention gives it no layout:
 wherever it says that the input is rejected, or that something MUST hold
 and it does not. The source metadata (the convention §5) never rejects the
-input: what it cannot read is `null`.
+input: what it cannot read is `null`, or a member listed as unsupported.
 
 ### 8.8 Chunk references
 
@@ -400,3 +472,95 @@ Chunks in the padding are not output, and unallocated chunks have no entry.
 HDF5 stores edge chunks whole, like Zarr, so a chunk's bytes decode to its
 Zarr chunk. (A single range's payload is at most 21 bytes, within the limit
 of §1.2.)
+
+### 8.9 Source metadata structures
+
+The source metadata (the convention §5) reads, besides §8.1–§8.6:
+
+- **Datasets of every layout.** A layout message of version 3, 4 or 5 of
+  class 0 (compact: the data's size in 2 bytes at byte 2, the data from
+  byte 4), class 1 (contiguous: the address at byte 2, undefined when the
+  storage is not allocated, and the size at byte 10) or class 2 (chunked,
+  as §8.5). Class 3 is a **virtual dataset** (below), whose data is not
+  read. The fill value message's value is its data (none when the
+  message says it has none), which MUST be empty or of the datatype's size.
+- **Datatype messages** of versions 1 to 5 (§8.5 reads versions 1 to 3 for
+  the image; later versions keep the same fields).
+- **The global heap.** A collection at address `a` starts with `GCOL`,
+  version 1, three reserved bytes and the collection's size (8 bytes),
+  which MUST be at least 16 and lie within the file. Its objects follow
+  from byte 16, each with its index (2 bytes), a reference count (2), 4
+  reserved bytes, its size (8) and its data, padded to a multiple of 8
+  bytes; an index of 0 ends them, and of two objects with the same index
+  the first counts. Each element of a variable-length datatype is 16
+  bytes: its length (4 bytes: characters for a string, else elements of
+  the base datatype), the collection's address (8) and the object's index
+  (4); a length of 0 is an empty element.
+- **Filter masks.** A chunk's filter mask (§8.5: in a version 1 B-tree's
+  key, a single chunk's layout message, an array index's entry or a version
+  2 B-tree's record) may be any value: bit `i` set means that the pipeline's
+  filter `i` (from 0, in pipeline order) was not applied to the chunk. A
+  partial edge chunk of a dataset with layout flag bit 0 (§8.5) has every
+  filter's bit set.
+- **Attribute data.** An attribute message lies in the file in one run:
+  in the block of the object header that holds it (§8.2), or as a fractal
+  heap object (§8.4: a managed object within its direct block, a huge object
+  at the address its record gives). Its data is the run's bytes from where
+  §8.6 places it.
+- **Null dataspaces.** A dataset's or an attribute's null dataspace (§8.5)
+  is read as such: it has no data.
+- **Shared datatypes.** A dataset's datatype message with flag bit 1
+  (shared) set, and the datatype of an attribute message with flag bit 0
+  (shared datatype) set, hold a shared message instead of a datatype: byte 0
+  is its version; in version 1 the address is the 8 bytes at byte 8, in
+  version 2, and in version 3 when byte 1 (the type) is 2, the 8 bytes at
+  byte 2; any other shared message leaves the datatype unread. The address
+  MUST be defined; it is a committed datatype's object header (§8.2), whose
+  datatype message (which MUST NOT be shared) is the datatype. An attribute
+  message with flag bit 1 (shared dataspace) set is not read.
+- **Links of other types.** A link message of a type other than 0 and 1
+  (§8.3) has, after its name, a 2-byte length `m` and its value, `m`
+  bytes; when they do not lie within the message the link has no value.
+- **External data files.** The external data files message (type 0x07):
+  byte 0 (the version) MUST be 1; the number of used slots is the 2 bytes at
+  6 and the address of a local heap (§8.3) the 8 bytes at 8; slot `i` is
+  the 24 bytes at `16 + 24i`: the offset of its file name in the heap's
+  data segment (8 bytes; the name runs to the first NUL, which MUST occur
+  within the segment), the offset in that file (8) and the size (8).
+- **Object references.** An object reference (datatype class 7, kind 0) is
+  8 bytes, a little-endian object header address; 0, the undefined address
+  and addresses beyond 2^53 − 1 lead to no object.
+- **Region references.** A region reference (class 7, kind 1, of 12 bytes)
+  is a global heap collection's address (8 bytes) and an object's index
+  (4 bytes); the address 0 or the undefined address is the null reference.
+  The object is an object reference (8 bytes, as above) followed by a
+  serialized selection of that object's dataspace.
+- **Virtual datasets.** In a layout message of version 4 or 5 and class 3,
+  the 8 bytes at 2 are a global heap collection's address and the 4 bytes at
+  10 an object's index; an undefined address has no mappings. The object's
+  byte 0, its version, MUST be 0; its number of mappings is the 8 bytes at 1,
+  and the mappings follow: each is the source file's name and the source
+  dataset's name (each the bytes up to a NUL, which MUST occur within the
+  object), then the source selection and the virtual selection, serialized.
+- **Serialized selections.** A selection starts with its type and version,
+  4 bytes each:
+  - type 0 (none) or 3 (all): version 1, then 8 bytes not read;
+  - type 1 (points): version 1, 8 bytes not read and an encoding size `e`
+    of 4; or version 2 and `e` in 1 byte. Then the rank `k` (4 bytes), the
+    number of points `n` (`e` bytes) and the points, `k` coordinates of `e`
+    bytes each;
+  - type 2 (hyperslab): version 1, 8 bytes not read, no flags and `e = 4`;
+    version 2, its flags (1 byte), 4 bytes not read and `e = 8`; or version
+    3, its flags and `e` (1 byte each). Flags other than bit 0 reject the
+    selection. Then the rank `k` (4 bytes). With flag bit 0 (regular), for
+    each dimension in turn, its start, stride, count and block, `e` bytes
+    each (a count or block with all bits set is unlimited); without, the
+    number of blocks `n` (`e` bytes) and the blocks, each its `k` start
+    coordinates and then its `k` end coordinates, `e` bytes each.
+
+  The rank of points and of a hyperslab without flag bit 0 MUST be at least
+  1, and their number `n` at most the number of bytes after it (so that no
+  count goes unbounded by the selection's bytes).
+
+  Any other type, version or encoding size (other than 2, 4 or 8), and a
+  selection that does not lie within the object, leave it unread.

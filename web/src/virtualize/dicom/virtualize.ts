@@ -2,7 +2,7 @@
 // §6): its frames, native or JPEG/JPEG 2000 encapsulated, become Zarr chunks
 // that reference the file.
 
-import { type ByteReader, declare, MAX_PAYLOAD, payloadSize } from "../common.ts";
+import { type ByteReader, declare, emitPlans, MAX_PAYLOAD, payloadSize, stringifyJson } from "../common.ts";
 import {
   type Dataset,
   DicomError,
@@ -18,7 +18,7 @@ import {
   Walker,
 } from "./dataset.ts";
 import type { Range } from "../../protobuf.ts";
-import { sourceJson } from "./source.ts";
+import { sourceMetadata } from "./source.ts";
 import type { ArchiveDesc, EntryDesc } from "../../writer.ts";
 
 export { DicomError };
@@ -87,6 +87,15 @@ class Values {
     if (el.length % n) reject(`${tagName(tag)} has a length that is not a multiple of ${n}`);
     const v = dv(await this.read(el.value, n));
     return n === 2 ? v.getUint16(0, el.little) : v.getUint32(0, el.little);
+  }
+
+  /** The first value of an AT attribute, as a tag. */
+  async tag(tag: number): Promise<number | undefined> {
+    const el = this.element(tag, ["AT"]);
+    if (el === undefined) return undefined;
+    if (el.length % 4) reject(`${tagName(tag)} has a length that is not a multiple of 4`);
+    const v = dv(await this.read(el.value, 4));
+    return v.getUint16(0, el.little) * 0x10000 + v.getUint16(2, el.little);
   }
 
   async integers64(tag: number): Promise<number[] | undefined> {
@@ -178,8 +187,6 @@ export async function virtualizeDicom(
 
   // §6.3
   const [top] = await walker.dataset(start, fileSize, false, encoding, 0, true);
-  // The source metadata (conventions/dicom/README.md §5).
-  const source = await sourceJson(read, fileSize, start, encoding);
   const pixel = top.get(PIXEL_DATA)!;
 
   // conventions/dicom/README.md §2.2: the Pixel Measures item of the Shared Functional Groups, if any.
@@ -207,6 +214,8 @@ export async function virtualizeDicom(
   const width = await v.decimals(0x00281051);
   const intercept = await v.decimals(0x00281052);
   const slope = await v.decimals(0x00281053);
+  const increment = await v.tag(0x00280009);
+  const frameTime = await v.decimals(0x00181063);
   const totalColumns = await v.integer(0x00480006, "UL");
   const totalRows = await v.integer(0x00480007, "UL");
   const opticalPaths = await v.integer(0x00480302, "UL");
@@ -273,13 +282,28 @@ export async function virtualizeDicom(
   const planarNative = codec === null && spp === 3 && planar === 1;
   const frameSize = rows * columns * spp * (bitsAllocated / 8);
   const frameRanges: Ranges[] = [];
+  let pixelEnd = 0;
+  let pixelExtra: [number, number] | undefined; // native pixel data past the frames, unless one 00 byte
+  // What an Extended Offset Table skips: a family of bytes, its count, and whether it
+  // holds the frames' item headers.
+  let unreferenced: [[number, number, number][], number, boolean] | undefined;
+  // Each fragment's [frame, data length], when a frame has more than one, and whether
+  // the Basic Offset Table is not empty (conventions/dicom/README.md §5).
+  let fragmentLengths: [number, number][] | undefined;
+  let offsetTable = false;
   if (codec === null) {
     if (pixel.length === UNDEFINED) reject("native Pixel Data with an undefined length");
+    if (pixel.value + pixel.length > fileSize) {
+      reject(`Pixel Data's ${pixel.length} bytes run past the end of the ${fileSize}-byte file`);
+    }
     if (pixel.length < n * frameSize) {
       reject(`Pixel Data has ${pixel.length} bytes, less than ${n} frames of ${frameSize}`);
     }
     if (!encoding.little && bitsAllocated === 8 && pixel.vr === "OW") reject("8-bit Pixel Data of VR OW in big endian");
     for (let f = 0; f < n; f++) frameRanges.push([[pixel.value + f * frameSize, frameSize]]);
+    pixelEnd = pixel.value + pixel.length;
+    const extra = pixel.length - n * frameSize;
+    if (extra > 1 || (extra === 1 && (await read(pixelEnd - 1, 1))[0] !== 0)) pixelExtra = [pixel.value + n * frameSize, extra];
   } else {
     if (pixel.length !== UNDEFINED) reject("encapsulated Pixel Data with a defined length");
     if (pixel.value + 8 > fileSize) reject("no Basic Offset Table");
@@ -299,8 +323,46 @@ export async function virtualizeDicom(
       }
       if (botLength !== 0) reject("an Extended Offset Table with a Basic Offset Table");
       fragments = eot.map((o, f) => [[q + o + 8, eotLengths[f]]]);
+      for (const [[o, length]] of fragments) {
+        if (o + length > fileSize) reject(`range [${o}, ${o + length}) outside the ${fileSize}-byte file`);
+      }
+      // Whether each frame's 8 bytes before its data are its item header: an item
+      // tag, and the frame's length. If one is not, the frames' items are their data
+      // alone, and every header is kept with the bytes between them.
+      let headers = true;
+      for (const [f, o] of eot.entries()) {
+        const d = dv(await read(q + o, 8));
+        if (d.getUint16(0, true) !== 0xfffe || d.getUint16(2, true) !== 0xe000 || d.getUint32(4, true) !== eotLengths[f]) {
+          headers = false;
+          break;
+        }
+      }
+      // The bytes between the frames' items, in file order: member k is those before
+      // the k-th (often none). Where Pixel Data ends, without walking its fragments:
+      // after the frame that ends last, at its sequence delimiter if that follows (else
+      // there).
+      // The frames' items, with their headers, MUST NOT overlap.
+      const spans = eot.map((o, f): [number, number] => [q + o, 8 + eotLengths[f]]).sort(([a, m], [b, l]) => a - b || m - l);
+      if (spans.some(([a, m], i) => i + 1 < spans.length && a + m > spans[i + 1][0])) {
+        reject("the Extended Offset Table's frames overlap");
+      }
+      const items = eot.map((o, f): [number, number] => (headers ? [q + o, 8 + eotLengths[f]] : [q + o + 8, eotLengths[f]]))
+        .sort(([a, m], [b, l]) => a - b || m - l);
+      const members: [number, number, number][] = [];
+      pixelEnd = q;
+      for (const [k, [o, length]] of items.entries()) {
+        members.push([k, pixelEnd, Math.max(0, o - pixelEnd)]);
+        pixelEnd = Math.max(pixelEnd, o + length);
+      }
+      if (members.some(([, , m]) => m > 0)) unreferenced = [members, n, !headers];
+      if (pixelEnd + 8 <= fileSize) {
+        const d = dv(await read(pixelEnd, 8));
+        if (d.getUint16(0, true) === 0xfffe && d.getUint16(2, true) === 0xe0dd && d.getUint32(4, true) === 0) pixelEnd += 8;
+      }
     } else {
-      const items = (await walker.fragments(pixel.value, fileSize, true))[0].slice(1);
+      const walked = await walker.fragments(pixel.value, fileSize, true);
+      pixelEnd = walked[1];
+      const items = walked[0].slice(1);
       if (items.length === 0) reject("encapsulated Pixel Data without fragments");
       const botData = dv(await read(pixel.value + 8, botLength));
       const bot = Array.from({ length: botLength / 4 }, (_, i) => botData.getUint32(4 * i, true));
@@ -321,6 +383,10 @@ export async function virtualizeDicom(
       } else {
         return reject(`${items.length} fragments for ${n} frames without an offset table`);
       }
+      offsetTable = bot.length > 0;
+      if (fragments.some((frags) => frags.length > 1)) {
+        fragmentLengths = fragments.flatMap((frags, f) => frags.map(([, length]): [number, number] => [f, length]));
+      }
     }
     for (const [f, frags] of fragments.entries()) {
       let ranges: Ranges = frags.filter(([, length]) => length > 0);
@@ -328,6 +394,10 @@ export async function virtualizeDicom(
       if (codec === "jpeg" && spp === 3) {
         const [o, length] = ranges[0] as [number, number];
         if (length <= 2) reject(`frame ${f}'s first fragment is too short for a JPEG stream`);
+        const soi = await read(o, 2);
+        if (soi[0] !== 0xff || soi[1] !== 0xd8) {
+          reject(`frame ${f}'s first fragment does not start with a JPEG SOI marker (FF D8)`);
+        }
         const prefix = Uint8Array.from([...ADOBE, photometric === "RGB" ? 0 : 1]);
         ranges = [prefix, [o + 2, length - 2], ...ranges.slice(1)];
       }
@@ -336,12 +406,14 @@ export async function virtualizeDicom(
   }
 
   // conventions/dicom/README.md §4; profiles/dicom.md §6.6: the chunk references
+  // The frames are along t when the Frame Increment Pointer is Frame Time or Frame Time Vector.
+  const fa = increment === 0x00181063 || increment === 0x00181065 ? "t" : "z";
   const axes: string[] = [];
   if (spp === 3) axes.push("c");
-  if (!wholeSlide && n > 1) axes.push("z");
+  if (!wholeSlide && n > 1) axes.push(fa);
   axes.push("y", "x");
-  const shape: Record<string, number> = { c: 3, z: n, y: heightPx, x: widthPx };
-  const chunkShape: Record<string, number> = { c: planarNative ? 1 : 3, z: 1, y: rows, x: columns };
+  const shape: Record<string, number> = { c: 3, [fa]: n, y: heightPx, x: widthPx };
+  const chunkShape: Record<string, number> = { c: planarNative ? 1 : 3, [fa]: 1, y: rows, x: columns };
   const codecs: unknown[] = [];
   if (spp === 3 && !planarNative) {
     const stored = axes.filter((a) => a !== "c").concat("c");
@@ -358,18 +430,22 @@ export async function virtualizeDicom(
   const usable = spacing !== undefined && spacing.length === 2 && spacing.every((s) => s !== null && s > 0);
   const between = fg.get(0x00180088);
   const step = between !== undefined && between[0] !== null && between[0] > 0 ? between[0] : undefined;
+  const ft = frameTime?.[0];
+  const period = increment === 0x00181063 && ft !== undefined && ft !== null && ft > 0 ? ft / 1000 : undefined;
   const scale: Record<string, number> = {
     c: 1,
     z: step ?? 1,
+    t: period ?? 1,
     y: usable ? spacing[0]! : 1,
     x: usable ? spacing[1]! : 1,
   };
   const unit: Record<string, string | undefined> = {
     z: step ? "millimeter" : undefined,
+    t: period ? "second" : undefined,
     y: usable ? "millimeter" : undefined,
     x: usable ? "millimeter" : undefined,
   };
-  const type: Record<string, string> = { c: "channel", z: "space", y: "space", x: "space" };
+  const type: Record<string, string> = { c: "channel", t: "time", z: "space", y: "space", x: "space" };
 
   const low = representation === 0 ? 0 : -(2 ** (bitsStored - 1));
   const high = representation === 0 ? 2 ** bitsStored - 1 : 2 ** (bitsStored - 1) - 1;
@@ -393,8 +469,17 @@ export async function virtualizeDicom(
     : [["R", "FF0000"], ["G", "00FF00"], ["B", "0000FF"]].map(([label, color]) => ({ label, color, active: true, window }));
 
   const utf8 = new TextEncoder();
-  const json = (value: unknown) => utf8.encode(JSON.stringify(value, null, 2));
+  const json = (value: unknown) => utf8.encode(stringifyJson(value));
+  // The source metadata (conventions/dicom/README.md §5).
+  const [rootMeta, nodeMeta, plans] = await sourceMetadata(
+    read, fileSize, start, encoding, pixelEnd, pixelExtra, unreferenced, codec !== null && eot !== undefined,
+    fragmentLengths, offsetTable,
+  );
   const entries: EntryDesc[] = [];
+  if (Object.keys(nodeMeta).length > 0 || plans.length > 0) {
+    entries.push(...emitPlans(plans, declare({}, "dicom", undefined, Object.keys(nodeMeta).length > 0 ? nodeMeta : undefined)));
+  }
+  const metadataEntries = entries.length;
   for (const [f, ranges] of frameRanges.entries()) {
     const [row, col] = wholeSlide ? [Math.floor(f / across), f % across] : [0, 0];
     for (let s = 0; s < (planarNative ? 3 : 1); s++) {
@@ -409,7 +494,7 @@ export async function virtualizeDicom(
         }
       }
       if (payloadSize(part) > MAX_PAYLOAD) reject(`frame ${f}'s reference payload exceeds ${MAX_PAYLOAD} bytes`);
-      const coords: Record<string, number> = { c: s, z: f, y: row, x: col };
+      const coords: Record<string, number> = { c: s, [fa]: f, y: row, x: col };
       entries.push({
         key: `0/c/${axes.map((a) => coords[a]).join("/")}`,
         ranges: part.map((r): Range =>
@@ -417,7 +502,7 @@ export async function virtualizeDicom(
       });
     }
   }
-  const references = entries.length;
+  const references = entries.length - metadataEntries; // the frames' chunk references
   entries.push(
     {
       key: "zarr.json",
@@ -433,7 +518,7 @@ export async function virtualizeDicom(
             }],
             omero: { channels },
           },
-        }, "dicom", url, source),
+        }, "dicom", url, rootMeta),
       }),
     },
     {

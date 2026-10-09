@@ -7,7 +7,7 @@ from a listed store is the Zarr v2 profile,
 [profiles/zarr2.md](../../profiles/zarr2.md). The
 [OME-Zarr convention](../ome-zarr/README.md) builds on this one.
 
-Convention version: 1 · UUID: `8e792619-d671-4687-ab51-752885dd3ee6` ·
+Convention version: 0 (until release, README §1) · UUID: `8e792619-d671-4687-ab51-752885dd3ee6` ·
 Schema: [schema.json](schema.json)
 
 This convention gives a layout only to the hierarchies that meet its
@@ -22,13 +22,15 @@ array's chunks are objects at keys `<array>/<chunk key>`. The output is a
 Zarr v3 hierarchy with a node at the path of every Zarr v2 node; each
 array's chunks are its chunk objects, referenced whole, under the same keys
 (the Zarr v3 `v2` chunk key encoding produces exactly the Zarr v2 keys).
-Attributes are copied unchanged, as source metadata (§4).
+Each node's attributes, and the members of its documents that the Zarr v3
+metadata does not reproduce, are its source metadata (§4). Every other
+object of the store, but consolidated metadata, is kept whole (§5).
 
 
 ## 1. Declaration
 
 The root declares the convention by [conventions §2](../README.md#2-attributes),
-with `"profile": "zarr2"`, `"version": 1`, the store's URL (ending in `/`)
+with `"profile": "zarr2"`, `"version": 0`, `"revision": 24` (README §1), the store's URL (ending in `/`)
 as `source.url`, and the root's source metadata (§4), if it has any, as
 the member `"zarr2"`. Every other node that has source metadata declares it
 with `{"zarr2": S}`. Its CMO is:
@@ -36,8 +38,8 @@ with `{"zarr2": S}`. Its CMO is:
 ```json
 {
   "uuid": "8e792619-d671-4687-ab51-752885dd3ee6",
-  "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-zarr2-v1/conventions/zarr2/schema.json",
-  "spec_url": "https://github.com/d-v-b/vzip/blob/virtualize-zarr2-v1/conventions/zarr2/README.md",
+  "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/conventions/zarr2/schema.json",
+  "spec_url": "https://github.com/d-v-b/vzip/blob/main/conventions/zarr2/README.md",
   "name": "vzip_virtualized",
   "description": "The Zarr layout of a Zarr v2 source virtualized by vzip, and the source's metadata"
 }
@@ -63,16 +65,19 @@ is a node.
 A node's documents are read as JSON ([VIRTUALIZE.md §1.6](../../VIRTUALIZE.md#16-json-documents)):
 
 - `.zgroup` MUST be an object whose member `zarr_format` is the integer 2.
-  Its other members are not read.
+  Its other members are kept in the group's source metadata (§4).
 - `.zarray`: §3.
 - `.zattrs`, if the node has one, MUST be an object: the node's
   **attributes**, `{}` if it has none. A `.zattrs` of a directory that is
-  not an array or an explicit group is not read.
+  not an array or an explicit group is not read: it is one of §5's other
+  objects.
 
 **Consolidated metadata.** A `.zmetadata` object (consolidated metadata) is
 never read: nodes come from the listing and documents from their own
 objects, so stale consolidated metadata cannot change the output. (Chunks
 must come from the listing anyway, since `.zmetadata` does not list them.)
+It is kept as an other object (§5), so that consolidated metadata that
+differs from the documents is not lost.
 
 The hierarchy has one `zarr.json` per node, at `<path>/zarr.json`
 (`zarr.json` for the root):
@@ -100,7 +105,8 @@ rejected:
 - `fill_value`: see below; absent is the same as `null`;
 - `dimension_separator`: `"."`, `"/"`, `null` or absent (`"."`).
 
-Other members are not read.
+Other members are not read here; they are kept in the array's source
+metadata (§4).
 
 **Data types.** `dtype` is a NumPy type string: a byte order character
 (`<` little-endian, `>` big-endian, `|` not applicable), a kind and a size
@@ -122,16 +128,25 @@ objects (`O`), void and structured types (`V`, or a list), date-times
 
 - `null`: `F` is `false` for `bool` and 0 for every other type. (Zarr v2's
   null means the value of a missing chunk is undefined; Zarr v3 needs a
-  value, and 0 is what Zarr v2 readers return in practice.)
+  value, and 0 is what Zarr v2 readers return in practice.) The null itself
+  is kept in the source metadata (§4).
 - `bool`: `true` or `false`, which `F` is. Any other value rejects.
 - integer types: an integer ([VIRTUALIZE.md §1.6](../../VIRTUALIZE.md#16-json-documents)) within the type's range; `F` is that
   integer. Any other value rejects, including an integer above 2^53 − 1
   (such as the largest `uint64`).
 - float types: a number whose magnitude is at most the type's largest
   finite value (65504 for `float16`, 3.4028234663852886e38 for `float32`),
-  which `F` is; or one of the strings `"NaN"`, `"Infinity"` and
-  `"-Infinity"`, which `F` is (Zarr v3 writes these special values the same
-  way). Any other value rejects.
+  compared as binary64 ([VIRTUALIZE.md §1.6](../../VIRTUALIZE.md#16-json-documents)),
+  which `F` is, as a binary64 value; or one of the strings `"NaN"`,
+  `"Infinity"` and `"-Infinity"`, which `F` is (Zarr v3 writes these
+  special values the same way). Any other value rejects. A number that is
+  a negative zero (written with a fraction or an exponent, such as `-0.0`)
+  is the one value whose JSON number some JSON writers do not keep (they
+  write `0`): `F` is then the Zarr v3 hex fill of its bits, `"0x8000"` for
+  `float16`, `"0x80000000"` for `float32` and `"0x8000000000000000"` for
+  `float64`. The integer literal `-0` is the integer 0, and gives 0. (Zarr
+  v2 writes NaN as the string `"NaN"`, without a payload, so no other float
+  fill value depends on bits that JSON cannot write.)
 
 **Codecs.** In this order:
 
@@ -160,25 +175,35 @@ objects (`O`), void and structured types (`V`, or a list), date-times
 ```
 
 with no other members, where `s` is the dimension separator and `A` the
-declaration of §1, with the array's attributes as its source metadata (§4),
-or `{}` if it has none. (Zarr v2 has no dimension names; the
+declaration of §1, with the array's source metadata (§4), or `{}` if it
+has none. (Zarr v2 has no dimension names; the
 xarray convention `_ARRAY_DIMENSIONS` stays an attribute.)
 
 ### 3.1 Compressors
 
 The compressor object's `id` selects the codec:
 
-| `id` | codec |
-|---|---|
-| `zlib` | `{"name": "zlib", "configuration": {"level": 1}}` |
-| `gzip` | `{"name": "gzip", "configuration": {"level": 1}}` |
-| `zstd` | `{"name": "zstd", "configuration": {"level": 0, "checksum": false}}` |
-| `blosc` | `{"name": "blosc", "configuration": {"cname": c, "clevel": l, "shuffle": h, "typesize": b, "blocksize": k}}` |
-| anything else, among them `lz4`, `bz2`, `lzma` and `delta` | rejected |
+| `id` | codec | members the codec carries |
+|---|---|---|
+| `zlib` | `{"name": "zlib", "configuration": {"level": L}}` | `id`, `level` |
+| `gzip` | `{"name": "gzip", "configuration": {"level": L}}` | `id`, `level` |
+| `zstd` | `{"name": "zstd", "configuration": {"level": L, "checksum": x}}` | `id`, `level`, `checksum` |
+| `blosc` | `{"name": "blosc", "configuration": {"cname": c, "clevel": l, "shuffle": h, "typesize": b, "blocksize": k}}` | `id`, `cname`, `clevel`, `shuffle`, `blocksize` |
+| anything else, among them `lz4`, `bz2`, `lzma` and `delta` | rejected | |
 
-- The levels of `zlib`, `gzip` and `zstd` only matter when encoding; they
-  are not read from the document, and the codecs carry the fixed levels
-  above. No other member of these compressors is read.
+- `L` is the member `level`. For `zlib` and `gzip` it MUST be an integer
+  from −1 to 9, and `L` is that integer, except that −1 (zlib's default
+  level) is 6, the level it stands for (the Zarr v3 `gzip` and `zlib`
+  codecs take 0 to 9); when the member is absent, `L` is 1, numcodecs'
+  default. For `zstd` it MUST be an integer from −131072 to 22 (zstd's
+  levels, which the Zarr v3 `zstd` codec takes), and `L` is that integer;
+  when it is absent, `L` is 0, numcodecs' default. Any other value rejects
+  the input. (A level only matters when encoding; the codec carries it so
+  that the compressor's configuration can be recovered.)
+- `x` is the `zstd` member `checksum`, which MUST be a boolean; `false`
+  when it is absent.
+- The compressor's members that its codec does not carry (numcodecs writes
+  none, but another writer may) are kept in the source metadata (§4).
 - `blosc` (numcodecs' Blosc): `c` is the member `cname`, one of `blosclz`,
   `lz4`, `lz4hc`, `snappy`, `zlib` and `zstd`; `l` the member `clevel`, an
   integer from 0 to 9; `k` the member `blocksize`, an integer from 0 to
@@ -196,37 +221,161 @@ The compressor object's `id` selects the codec:
 the root) followed by: `0` when `n = 0`; otherwise `i0`, `i1`, …, `i(n−1)`
 joined by `s`, where each `ik` is the decimal form of an integer with `0 ≤ ik
 < ceil(shape[k] / chunks[k])`, without leading zeros. An array with a zero in
-`shape` has no chunk keys. A chunk is present when the store has an object with its key (and the
-object is not empty): its bytes are the whole object, the chunk as Zarr v2
-stored it. Every other object under `D` is not part of the hierarchy. A chunk without an object reads as the fill value, as in Zarr v2.
+`shape` has no chunk keys. The **chunk objects** of the array are the
+store's objects with these keys, whatever their size. A chunk is present
+when its chunk object is not empty: its bytes are the whole object, the
+chunk as Zarr v2 stored it. A chunk without an object reads as the fill
+value, as in Zarr v2. An empty chunk object is one of §5's empty objects:
+its chunk is absent too, and reads as the fill value, and its key is kept
+there. (Zarr v2 readers fail on an empty chunk object, which an interrupted
+write can leave behind, rather than read the fill value; the key records
+that the object was there.) Every other object under `D` is one of §5's
+other objects.
 
 
 ## 4. Source metadata
 
 A node's source metadata `S` ([conventions §2](../README.md#2-attributes)) is
-its attributes (its `.zattrs` document), whole and unchanged: user
-attributes, xarray's `_ARRAY_DIMENSIONS`, and the metadata of other
-conventions (an OME-NGFF version other than 0.4, for example, which the
-[OME-Zarr convention](../ome-zarr/README.md) does not migrate). A node
-without `.zattrs`, or with an empty one, has none. Every member is under
-the key, so none can collide with the conventions of the Zarr v3
-hierarchy; a document that has its own `vzip_virtualized` or
-`zarr_conventions` nests them there.
+the object
 
-The `.zarray` and `.zgroup` documents are not in `S`: §3 carries every
-member of `.zarray` that defines the array's values, and the compressors'
-levels, which only matter when encoding, are the only members it drops.
+```json
+{"attributes": A, "metadata": M}
+```
 
-## 5. Example
+where each member is present only when its value is not empty, and
+the node has source metadata only when `S` has a member. An implicit group
+has none.
 
-An array of the store `https://example.org/h.zarr/`:
+- `A` is the node's attributes (its `.zattrs` document), whole and
+  unchanged: user attributes, xarray's `_ARRAY_DIMENSIONS`, and the
+  metadata of other conventions (an OME-NGFF version other than 0.4, for
+  example, which the [OME-Zarr convention](../ome-zarr/README.md) does not
+  migrate). Every member is under the key, so none can collide with the
+  conventions of the Zarr v3 hierarchy; a document that has its own
+  `vzip_virtualized` or `zarr_conventions` nests them there.
+- `M` holds the members of the node's `.zgroup` or `.zarray` that its
+  `zarr.json` does not reproduce:
+  - for an explicit group, every member of `.zgroup` but `zarr_format`;
+  - for an array, every member of `.zarray` that §3 does not read (any
+    member but `zarr_format`, `shape`, `chunks`, `dtype`, `order`,
+    `compressor`, `filters`, `fill_value` and `dimension_separator`), as
+    written; the member `"fill_value": null` when `fill_value` is `null`
+    or absent (§3 gives `F` = 0 or `false`, which is not Zarr v2's
+    "undefined"); the member `fill_value`, as written, when the array's
+    type is a float type and `fill_value` is an integer literal (no
+    fraction, no exponent) beyond ±(2^53 − 1) (`F` is its binary64 value,
+    which may differ from it, and is not written as an integer); and the member `"compressor"` when the compressor has
+    members that its codec does not carry (§3.1), whose value is the object
+    of those members, and blosc's `shuffle` when it is −1 (which §3.1
+    resolves to a shuffle).
+
+What `S` leaves out, the Zarr v3 metadata holds: `zarr_format`, `shape`,
+`chunks`, the data type, `order`, the fill value, the compressor's `id`
+and the members its codec carries, the filters and the separator. What
+neither keeps is layout: the byte order character of a one-byte type,
+`order` for an array of fewer than two dimensions (whose chunks C and F
+order lay out alike), whether a default level was written (or was −1
+rather than 6), whether no filters were `null`, `[]` or absent, whether the
+compressor was `null` or absent, whether the separator `"."` was written or
+was `null`, whether `fill_value` was `null` or absent, whether zstd's
+`checksum` was `false` or absent, whether blosc's `blocksize` was 0 or
+absent, and the documents' formatting (whitespace, member order, and how a
+number that is not an integer is spelled). So a node's documents are
+recovered from its `zarr.json`: `.zattrs` is `A`, and `.zgroup` or
+`.zarray` is the document that §2 and §3 read back from the Zarr v3
+metadata, with the members of `M` set over it (those of `M.compressor`
+over the compressor object).
+
+Members are copied as [VIRTUALIZE.md §1.6](../../VIRTUALIZE.md#16-json-documents)
+reads them, except that a number written as an integer (a JSON number
+with no fraction and no exponent) is kept exactly, every digit, beyond
+2^53 − 1 too, and is written back so. Any other number is its binary64
+value, and a number whose binary64 value is infinite still rejects the
+input. Where §3 uses a number (a size, a fill value, a level), it uses its
+binary64 value.
+
+## 5. Other objects
+
+An **other object** is an object of the store
+([VIRTUALIZE.md §1.4](../../VIRTUALIZE.md#14-store-inputs)) whose size is not
+0 and which is none of these:
+
+- a document that §2 reads: the `.zgroup` of an explicit group, the
+  `.zarray` of an array, and the `.zattrs` of either;
+- a chunk object of an array (§3.2), whatever its size.
+
+Among them are READMEs and other files a writer put next to the data,
+OME-XML outside the place that [the OME-Zarr convention
+§7](../ome-zarr/README.md#7-chunks-and-ome-xml) gives it, a `.zattrs` of a
+directory that is not a node, documents nested under an array (the
+`.zgroup` or `.zarray` of a candidate inside an array), and the objects
+under an array that are not chunk keys. Each is kept whole: the hierarchy has the key `vzip_source/objects/<k>`, where `k` is the
+object's key, escaped, and its bytes are the object's. (An empty object
+holds nothing, and has no key; §5 lists its key under "Empty objects".)
+
+**Escaping.** A last segment that a Zarr reader would take for a node's
+document must not end a key under `vzip_source/objects/`: when the last
+segment of `k` is `zarr.json`, `.zarray` or `.zgroup` followed by any
+number (zero included) of `~`, one `~` is appended to it. So `zarr.json`
+is kept at `vzip_source/objects/zarr.json~`, `a/.zgroup` at
+`vzip_source/objects/a/.zgroup~`, and `zarr.json~` at
+`vzip_source/objects/zarr.json~~`. The escape is one to one: a key whose
+last segment is one of these names followed by at least one `~` is the
+object's key with one `~` removed, and every other key is the object's.
+No Zarr v3 or Zarr v2 reader then opens a node under `vzip_source/objects/`.
+
+**Empty objects.** The **empty objects** are the store's objects of size
+0, the empty chunk objects (§3.2) among them. The **ignored keys** are the
+relative keys of the listed objects that
+[VIRTUALIZE.md §1.4](../../VIRTUALIZE.md#14-store-inputs) ignores and
+records. Let `K` be the empty objects' keys and `I` the ignored keys, each
+in ascending order of their UTF-8 bytes, and let `E` be the object
+`{"empty": K, "ignored": I}`, each member present only when it is not
+empty. `E` is kept when it is not empty: as the source metadata of the
+group `vzip_source` below, or, when the root is an array, as the archive's
+key `vzip_source/empty.json`, whose bytes are the compact JSON (no
+whitespace) of `E`, in UTF-8.
+
+When there is at least one other object, empty object or ignored key and
+the root is a group, the hierarchy has the group `vzip_source`, a child of
+the root (the source metadata node of
+[conventions §2](../README.md#2-attributes)), whose `zarr.json` is
+`{"zarr_format": 3, "node_type": "group", "attributes": A}`: `A` is `{}`
+when `E` is empty, and otherwise declares the convention, as any other node
+does (§1), with the source metadata `E`. (So the keys of many empty objects
+stay off the root, whose metadata every reader opens.) The directories between it and the
+objects are not nodes and have no `zarr.json`. A hierarchy that then has a
+node (§2) at the path `vzip_source`, or below it, is rejected, since its
+keys would mix with these. When the root is an array, which can have no
+children, there is no `vzip_source` group: the objects' keys, and
+`vzip_source/empty.json`, are plain keys of the archive, which Zarr
+readers do not read as nodes.
+
+## 6. Example
+
+An array of the store `https://example.org/h.zarr/`, whose `.zarray` is
+
+```json
+{
+  "zarr_format": 2,
+  "shape": [4],
+  "chunks": [4],
+  "dtype": "<u2",
+  "compressor": {"id": "blosc", "cname": "lz4", "clevel": 5, "shuffle": 1, "blocksize": 0, "nthreads": 2},
+  "fill_value": 0,
+  "order": "C",
+  "filters": null,
+  "custom": {"x": 1}
+}
+```
+
+and whose `.zattrs` is `{"_ARRAY_DIMENSIONS": ["x"]}`:
 
 ```json
 {
   "zarr_format": 3,
   "node_type": "array",
   "shape": [
-    4,
     4
   ],
   "data_type": "uint16",
@@ -234,7 +383,6 @@ An array of the store `https://example.org/h.zarr/`:
     "name": "regular",
     "configuration": {
       "chunk_shape": [
-        2,
         4
       ]
     }
@@ -242,7 +390,7 @@ An array of the store `https://example.org/h.zarr/`:
   "chunk_key_encoding": {
     "name": "v2",
     "configuration": {
-      "separator": "/"
+      "separator": "."
     }
   },
   "fill_value": 0,
@@ -252,24 +400,43 @@ An array of the store `https://example.org/h.zarr/`:
       "configuration": {
         "endian": "little"
       }
+    },
+    {
+      "name": "blosc",
+      "configuration": {
+        "cname": "lz4",
+        "clevel": 5,
+        "shuffle": "shuffle",
+        "typesize": 2,
+        "blocksize": 0
+      }
     }
   ],
   "attributes": {
     "zarr_conventions": [
       {
         "uuid": "8e792619-d671-4687-ab51-752885dd3ee6",
-        "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-zarr2-v1/conventions/zarr2/schema.json",
-        "spec_url": "https://github.com/d-v-b/vzip/blob/virtualize-zarr2-v1/conventions/zarr2/README.md",
+        "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/conventions/zarr2/schema.json",
+        "spec_url": "https://github.com/d-v-b/vzip/blob/main/conventions/zarr2/README.md",
         "name": "vzip_virtualized",
         "description": "The Zarr layout of a Zarr v2 source virtualized by vzip, and the source's metadata"
       }
     ],
     "vzip_virtualized": {
       "zarr2": {
-        "_ARRAY_DIMENSIONS": [
-          "y",
-          "x"
-        ]
+        "attributes": {
+          "_ARRAY_DIMENSIONS": [
+            "x"
+          ]
+        },
+        "metadata": {
+          "custom": {
+            "x": 1
+          },
+          "compressor": {
+            "nthreads": 2
+          }
+        }
       }
     }
   }

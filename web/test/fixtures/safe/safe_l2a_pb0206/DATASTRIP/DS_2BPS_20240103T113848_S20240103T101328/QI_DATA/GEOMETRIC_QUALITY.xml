@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Earth_Explorer_File xmlns="http://gs2.esa.int/DATA_STRUCTURE/olqcReport">
+  <Data_Block type="xml">
+    <report date="2024-01-03T11:00:00Z" gippVersion="1.0" globalStatus="PASSED">
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_0" processingStatus="done"/><message contentType="text/plain">Check passed, value 612698</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_1" processingStatus="done"/><message contentType="text/plain">Check passed, value 250824</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_2" processingStatus="done"/><message contentType="text/plain">Check passed, value 972985</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_3" processingStatus="done"/><message contentType="text/plain">Check passed, value 946752</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_4" processingStatus="done"/><message contentType="text/plain">Check passed, value 64418</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_5" processingStatus="done"/><message contentType="text/plain">Check passed, value 189320</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_6" processingStatus="done"/><message contentType="text/plain">Check passed, value 199485</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_7" processingStatus="done"/><message contentType="text/plain">Check passed, value 179291</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_8" processingStatus="done"/><message contentType="text/plain">Check passed, value 581913</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_9" processingStatus="done"/><message contentType="text/plain">Check passed, value 349889</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_10" processingStatus="done"/><message contentType="text/plain">Check passed, value 482717</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_11" processingStatus="done"/><message contentType="text/plain">Check passed, value 230541</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_12" processingStatus="done"/><message contentType="text/plain">Check passed, value 951539</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_13" processingStatus="done"/><message contentType="text/plain">Check passed, value 670445</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_14" processingStatus="done"/><message contentType="text/plain">Check passed, value 664094</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_15" processingStatus="done"/><message contentType="text/plain">Check passed, value 115079</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_16" processingStatus="done"/><message contentType="text/plain">Check passed, value 159845</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_17" processingStatus="done"/><message contentType="text/plain">Check passed, value 896309</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_18" processingStatus="done"/><message contentType="text/plain">Check passed, value 315873</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_19" processingStatus="done"/><message contentType="text/plain">Check passed, value 858130</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_20" processingStatus="done"/><message contentType="text/plain">Check passed, value 786272</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_21" processingStatus="done"/><message contentType="text/plain">Check passed, value 2827</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_22" processingStatus="done"/><message contentType="text/plain">Check passed, value 472868</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_23" processingStatus="done"/><message contentType="text/plain">Check passed, value 541466</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_24" processingStatus="done"/><message contentType="text/plain">Check passed, value 467897</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_25" processingStatus="done"/><message contentType="text/plain">Check passed, value 106851</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_26" processingStatus="done"/><message contentType="text/plain">Check passed, value 719482</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_27" processingStatus="done"/><message contentType="text/plain">Check passed, value 257954</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_28" processingStatus="done"/><message contentType="text/plain">Check passed, value 351063</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_29" processingStatus="done"/><message contentType="text/plain">Check passed, value 416896</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_30" processingStatus="done"/><message contentType="text/plain">Check passed, value 298173</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_31" processingStatus="done"/><message contentType="text/plain">Check passed, value 453616</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_32" processingStatus="done"/><message contentType="text/plain">Check passed, value 837943</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_33" processingStatus="done"/><message contentType="text/plain">Check passed, value 468146</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_34" processingStatus="done"/><message contentType="text/plain">Check passed, value 740456</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_35" processingStatus="done"/><message contentType="text/plain">Check passed, value 927516</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_36" processingStatus="done"/><message contentType="text/plain">Check passed, value 218428</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_37" processingStatus="done"/><message contentType="text/plain">Check passed, value 258771</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_38" processingStatus="done"/><message contentType="text/plain">Check passed, value 558137</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_39" processingStatus="done"/><message contentType="text/plain">Check passed, value 187890</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_40" processingStatus="done"/><message contentType="text/plain">Check passed, value 689534</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GEOMETRIC_QUALITY" name="GEOMETRIC_QUALITY_41" processingStatus="done"/><message contentType="text/plain">Check passed, value 670510</message></check>
+    </report>
+  </Data_Block>
+</Earth_Explorer_File>

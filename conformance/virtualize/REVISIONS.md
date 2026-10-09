@@ -711,3 +711,375 @@ conventions stay at version 1: no version had been tagged.
   All nine report 0 failures.
 - **Size:** the root `zarr.json` of CMU-1.svs is 210 KB, most of it the ICC
   profiles of its six IFDs.
+
+## Revision 17: the Sentinel-2 SAFE profile
+
+This revision did not come from a spec round.
+
+**The profile.** VIRTUALIZE.md gains §12, the SAFE profile
+([profiles/safe.md](../../profiles/safe.md)), with its convention
+([conventions/safe/README.md](../../conventions/safe/README.md)), and
+Conformance moves to §13. A Sentinel-2 Level-1C or Level-2A product is read
+as a `.SAFE` directory (a store input, chosen by `manifest.safe` at its root)
+or as a `.SAFE.zip` file (a file input, chosen by the ZIP local header
+signature). It is the first profile that reads a store's objects in ranges,
+and the first whose store output has data sources, so §1.4 states both
+exceptions. The hierarchy is GeoZarr rather than OME-NGFF: one group per
+resolution with the zarr-conventions `proj` and `spatial` members, one array
+per band file, one chunk per JPEG 2000 tile.
+
+**Chunks.** Each chunk is a standalone JPEG 2000 codestream: a literal SIZ
+that keeps the tile where the file places it on the reference grid, the
+file's main header after SIZ (a data source), a literal SOT, and the
+tile-part's body, referenced. An edge tile is padded with tiles of empty
+packets up to the chunk shape. The count of empty packets was checked
+against the PLT markers of every tile of the synthetic band files (and, in
+the design, of 7 real ones), with no mismatch.
+
+**Decisions** on the design's open questions: edge tiles padded; Level-2A
+declares `multiscales` without `derived_from`, Level-1C none, and the JPEG
+2000 resolution levels are not exposed; XML documents are text up to 65536
+bytes, within a 65536-byte budget for `vzip_source`'s source metadata,
+smallest first, and byte arrays past it; the parsed fields are a fixed set,
+labeled a derived convenience; no CF attributes; masks, probabilities and
+the preview kept whole; products before December 2016 rejected; `proj:wkt2`
+from a fixed template for the 120 WGS 84 / UTM zones, equal to pyproj's
+definitions; `proj` and `spatial` on groups only; the Google Cloud mirror's
+`_$folder$` markers dropped as layout, its quicklook kept.
+
+**Results.**
+- **Implementations:** both agree on all 62 synthetic inputs (9 products
+  accepted, 53 rejected, one per rule) and on the 13 public products of
+  `corpus_safe.txt` (12 equivalent, the 2015 product in the old format
+  rejected by both): 75 inputs, 0 divergences.
+- **Independent reader:** `web/test/safe/verify.py` decodes every band
+  array of every synthetic product through zarr-python and compares it with
+  GDAL's JP2OpenJPEG driver, checks each group's transform, shape and CRS
+  against GDAL's, and rebuilds every file of each product from its
+  hierarchy, byte for byte. On the public products it does the same for
+  the 60 m bands, and compares them with GDAL's SENTINEL2 driver.
+- **Cost:** on the public products, a directory-form product takes 857–3126
+  range requests and 6–22 MB of reads, a zip 2358–3141; the archives are
+  1.0–1.13 MB, the root `zarr.json` 3.2–4.0 KB and the largest document
+  (`vzip_source/zarr.json`) at most 64.4 KB. The browser implementation
+  takes 4–83 s per directory-form product, the Python one 10–154 s; the
+  slowest are the Level-1C products, whose true-color image has 1849 tiles
+  of about 17 KB, read one tile-part header after another.
+
+The SAFE profile has not yet been through an independent implementation
+round.
+
+## Revision 18: the Zeiss CZI profile
+
+This revision did not come from a spec round.
+
+**The profile.** VIRTUALIZE.md gains §13, the CZI profile
+([profiles/czi.md](../../profiles/czi.md)), with its convention
+([conventions/czi/README.md](../../conventions/czi/README.md)), and
+Conformance moves to §14. A file whose first 16 bytes are `ZISRAWFILE` and
+six NULs is read as a CZI file (version 1, single file): its file header,
+subblock directory, subblock headers (one coalesced read each), metadata
+segment, attachment directory, and a walk over the segment headers. It is
+the first profile whose pixels are placed by position rather than by index:
+conforming subblocks of one series and pyramid layer that sit on a lattice
+form an image level, and every other placed subblock is a tile.
+
+**Decisions** on the design's open questions:
+- clipped levels (the last column or row narrower) use the zarr-extensions
+  `rectilinear` chunk grid, `{"kind": "inline", "chunk_shapes": [...]}`
+  with `[[H, r − 1], H']` for a clipped axis, which zarr-python 3.4 reads
+  with `array.rectilinear_chunks` set;
+- JPEG XR and Zstd1 hi-lo subblocks are accepted, with
+  `{"name": "imagecodecs_jpegxr"}` and `bytes`,
+  `{"name": "numcodecs.shuffle", "configuration": {"elementsize": 2}}`,
+  `zstd`; their registration and Neuroglancer support are a follow-up;
+- tiles are one array per tile position (series, X and Y Start, logical,
+  stored and coded size, codec form) holding all its planes, a repeated
+  plane starting a further copy, each array recording its position;
+- translations in the global pixel frame; no typed per-subblock columns,
+  no JSON subset of the metadata XML, embedded CZIs kept as bytes;
+  unsupported compressions rejected; the directory as copied typed
+  columns; no time step from TimeStamps; omero windows from the display
+  settings' `Low` and `High`.
+
+**Results.**
+- **Implementations:** both agree on the 71 synthetic files (32 accepted,
+  39 rejected, one per rule; the row-band file and the 2^16 + 1 series
+  rejection, too large to commit, are written at test time) and on the 24
+  public files of `corpus_czi.txt`, all accepted: 95 inputs, 0
+  divergences. The browser implementation makes the same requests within a
+  few (498 for RecognizedCode-27, 1290 for the ZEN 3.9 slide).
+- **Independent readers:** `web/test/czi/verify.py` finds every subblock
+  of every synthetic file in the archive exactly once, decodes it through
+  zarr-python (rectilinear grids included) and by hand, and compares it
+  with czifile; compares each full-resolution level with libCZI's
+  composite (pylibCZIrw); and rebuilds every directory entry, subblock
+  part, the metadata XML, every attachment, the unreferenced segments and
+  the tail from the archive, against the file's bytes. 0 failures.
+  pylibCZIrw 6.1.0 on arm64 leaves all but the first 16 bytes of each row
+  of a Bgr48 hi-lo subblock at 0 (its C code, czifile and the archive
+  agree), and its jxrlib reads neither 24bppRGB nor 32bppBGRA, so those
+  composites are not compared.
+- **Cost** (Python reference, through the harness proxy): about one range
+  request per subblock (498 for RecognizedCode-27's 481 subblocks, 1290 for
+  a 1.4 GB ZEN 3.9 slide of 1272), or a few for files of many small
+  subblocks (31 for the 3575 subblocks of `xzt-scan-lsm980.czi`); 0.1–7.6
+  MB read per file of 1 MB to 2.1 GB. Archives are 29 KB to 1.7 MB, the
+  root `zarr.json` 752–873 bytes, and the largest document at most 1.9 KB
+  (an image's `zarr.json`); the Axioscan Bgr24 files, whose
+  minimal-coverage pyramids are almost all tiles, have about 2150 tile
+  arrays of about 0.8 KB each.
+
+The CZI profile has not yet been through an independent implementation
+round.
+
+## Revision 19: pins, checksums, and version 0 for the conventions
+
+**What prompted it.** An architecture review (ARCHITECTURE.md §2.4, §2.6,
+§4) found that the profiles wrote no pins, so a changed uncompressed
+source silently gave wrong pixels; and that every convention still said
+version 1 after about thirty breaking changes, with `schema_url` and
+`spec_url` naming `virtualize-*` tags that do not exist, so that archives of
+revision 14 and of revision 18 could not be told apart. SPEC.md revision 9
+added the reader side: range checksums, and readers that check them.
+
+**The changes.**
+- **§1.2, §1.4: pins.** Source 0 of a file input pins the file's size, and
+  its ETag when every response for the file (to `HEAD` and to range
+  requests) had the same strong one; a response without one, or a weak one,
+  means no `etag` pin, and two different strong ones mean the file changed
+  while it was read, a failure. A virtualizer that read a local file served
+  at `U` pins no ETag. A store input's url sources, and the SAFE directory
+  form's, pin their objects' listed sizes.
+- **§1.2: checksums.** A virtualizer may, when asked to, record the
+  CRC-32C of every range of a url source (SPEC.md §5.2). It reads every
+  referenced byte, so it is off by default, and it is the one exception to
+  "Structure only".
+- **§1.1:** pins and checksums are not part of the compared output.
+- **Conventions §1, §2: version 0.** Until vzip's first release every
+  convention is version 0, the root property records the revision of this
+  document (`"revision": 19`), and the CMO's URLs name the `main` branch.
+  At the release each convention becomes version 1, tagged
+  `virtualize-<p>-v1`, and from then on each breaking change increments its
+  version and is tagged; the schemas reject other versions.
+
+**Implementations.** Both implementations write the pins and, with
+`--checksums`, the checksums; `tests/test_virtualize_pins.py` and
+`web/test/pins.test.ts` check them. The conventions' schemas were
+regenerated. Every synthetic input gives equivalent outputs in both, as
+before.
+
+## Revision 20: integers compare exactly
+
+**What prompted it.** §1.1 compared every number as its binary64 value,
+while §1.6 copies a number written as an integer with every digit, and
+`compare.py` compared two integers exactly but an integer and a float by
+binary64. So `9007199254740993` and `9007199254740993.0` (binary64
+9007199254740992) were equivalent, and a virtualizer that lost the digit
+§1.6 requires it to keep would conform.
+
+**The changes.**
+- **§1.1:** a number written as an integer (no fraction, no exponent)
+  compares as its exact value, any other number as its binary64 value, and
+  two numbers are equal when their values are mathematically equal. An
+  integer equals a binary64 value only if that value is exactly the
+  integer, not if the integer merely rounds to it. A writer must write a
+  binary64 integer beyond 2^53 − 1 with its exact digits or with a fraction
+  or an exponent.
+- **§1.6** points to §1.1 for the comparison.
+- **Conventions:** the root property records `"revision": 20`.
+
+**Implementations.** `same()` (used by `compare.py`) compares an integer
+and a float by their exact values. The TypeScript virtualizers wrote such
+binary64 values with `JSON.stringify`, which pads them with zeros (the
+`zarr2` fill value -2^64 became `-18446744073709552000`); they now write
+the exact digits (`stringifyJson`). The Python ones write floats with an
+exponent or a fraction already. The conventions' schemas were regenerated.
+
+## Revision 21: the IR mirror is the source metadata of TIFF, ND2 and CZI
+
+**What prompted it.** vzip now virtualizes TIFF, ND2 and CZI through one
+Rust core that parses each file into an IR (intermediate representation)
+whose leaves partition the file, and writes that IR under `vzip_source` as a
+format-free table (the **mirror**) from which the file is rebuilt byte for
+byte. The conventions still described the per-format source metadata that
+the previous implementations wrote, which the archives no longer held.
+
+**The changes.**
+- **conventions/README.md §8 (new): the IR mirror.** Elements, kinds, names,
+  extents and runs; the invariants (coverage, injectivity, parents, aliases,
+  derived spaces); the table (`vzip_source/ir/rows` [8, m],
+  `vzip_source/ir/tables` [k, 7], `vzip_source/ir/shared`, and the
+  description `{"ir": {...}}` that is `vzip_source`'s source metadata); column
+  runs and their four encodings (arithmetic, stored differences, entries of
+  an unsigned array the source holds, an index equal to the start); the
+  record budget (`2^22 + size / 4` expanded rows); the checks and the
+  byte-exact rebuild from source 0; forms and recipes; the type grammar; the
+  view under `vzip_source/tree`, each of whose groups declares the
+  convention with its view document as source metadata.
+- **TIFF, ND2 and CZI conventions §5:** the root's source metadata is
+  unchanged (ND2's root keeps the decoded chunks of at most 16384 bytes of
+  JSON, within 65536 bytes, as before); `vzip_source` is the mirror, and each
+  convention lists its **source model**, the elements of the format's IR.
+  Nothing is left out: layout and dead space are elements (gaps), so the old
+  "not kept" lists are gone. `vzip_source` declares the convention.
+- **§1.1:** for these three profiles, outputs are equivalent when their
+  entries outside `vzip_source/` are, and each mirror is valid and rebuilds
+  the same source; a mirror's table may be folded and encoded in more than
+  one valid way, so its entries are not compared otherwise.
+- **Conventions:** the root property records `"revision": 21`; the
+  schemas were regenerated (the TIFF, ND2 and CZI ones describe the mirror).
+
+**Implementations.** `python -m vzip.virtualize` and the browser code write
+the mirror (rust/vzip-ir). The frozen reference implementations in
+`conformance/virtualize/reference` and `web/conformance/reference` still
+write the previous source metadata (under the current revision number); `compare.py` compares them with the IR
+path outside `vzip_source`, as §1.1 now says.
+
+## Revision 22: the IR mirror is canonical
+
+**What prompted it.** Revision 21 let a producer fold and encode the mirror's
+table in more than one valid way, so mirrors could only be compared by what
+they rebuild, not entry for entry like the rest of an output, and two
+producers could write different archives for one source.
+
+**The changes.**
+- **conventions/README.md §8.8 (new): canonical form.** How a producer
+  derives the one table from the IR: every run expanded (no row of code 0);
+  the elements in canonical order (depth first; siblings by name group, the
+  groups in order of their first byte, then by name index, none last, then
+  by first byte); the derived
+  spaces kept in that order within 2^20 rows; names and types sorted by
+  bytes; shared sources numbered by first use and forms sorted; column runs
+  found outermost first, left to right, at the period (1 to 4) that folds
+  the most siblings, the smaller on a tie; each column at the first encoding
+  that holds it (none when constant, then 3, 0, 2, 1), encoding 2 only for
+  the tiles or strips of a TIFF IFD with at least 16 members; the rows and
+  tables in a fixed order; chunks uncompressed (codec `bytes` alone). A
+  reader still accepts any valid table (runs, `zlib`); a validator flags one
+  that is not canonical, and §8.8 says why.
+- **§8.7, the view:** from the canonical order; sizes as `JSON.stringify`
+  writes them; a value is shown when it is a number, a record, a GUID or XML
+  of at most 1024 bytes (not top-level text or bytes, which parsers need not
+  read; not an ND2 frame's timestamp), so the view no longer depends on what
+  a parser happened to read; the budgets as an exact procedure; no
+  `"$vz": "run"` documents (runs are expanded); a derived element's
+  document has `"$vz": "derived"` and `"$form"`, and a cut document
+  `"$partial": true` (no longer `"$vz": "partial"`, which a derived
+  document's `$vz` could hide).
+- **§1.1:** mirrors are compared entry for entry, like the rest of the
+  output; the validity and rebuild checks stay, as additional checks.
+- **TIFF, ND2 and CZI §5.4** say so; the TIFF example shows the sorted
+  strings and the view's spilled text values.
+- **Conventions:** the root property records `"revision": 22`; the schemas
+  were regenerated (the view's vocabulary).
+
+**Implementations.** The Rust core writes the canonical mirror and checks it
+(`canonical_problem`); `compare.py` flags a non-canonical mirror. The TIFF
+parser holds every numeric value of at most 1024 bytes, which the view
+shows. The frozen reference implementations record revision 20, the one they
+implement, through their own constant; `compare.py` compares their roots as
+if they recorded the current revision (HARNESS.md).
+
+## Revision 23: text in the view, aliases of identical siblings, named array rules, the mirror's budget
+
+**What prompted it.** The user's answers to revision 22's open questions:
+the view should show short text, the canonical form should settle aliases of
+identical siblings, encoding 2 should be a per-format rule rather than a
+TIFF special case, the mirror's row budget should be a specified rejection,
+and validators should check the view as well as the table.
+
+**The changes.**
+- **conventions/README.md §8.7, the view:** text values (`ascii`, `cstr`,
+  `utf16`; not `bytes`) of at most 1024 bytes are shown, by §6's rule: up to
+  the first NUL, a string when UTF-8, else `{"latin1": ...}`; `utf16` a
+  string when UTF-16, else `{"$vz": "utf16", ...}`. A producer reads every
+  shown value. So a TIFF's byte order, ImageDescription and Software, and a
+  CZI's metadata XML and subblock metadata of at most 1024 bytes, are shown.
+- **§8.8, identical siblings:** an alias whose target lies in a sibling
+  identical in every field to an earlier one names the earliest.
+- **§8.8, named array rules:** encoding 2 applies only under a profile's
+  named rule, listed in a table (TIFF: layout tables; ND2 and CZI: none),
+  and the section says how a format adds one.
+- **§8.3 and VIRTUALIZE.md §1.1, the budget:** a source whose canonical
+  mirror would have more than `2^22 + floor(size / 4)` rows is rejected with
+  `budget: the mirror would have more than N rows`.
+- **§8.8, validators** also rebuild the view from the table and the source
+  (re-deriving LV and XML spaces) and compare it member by member.
+- **Conventions:** the root property records `"revision": 23`; the TIFF
+  example shows its text values; the schemas were regenerated.
+
+**Implementations.** The Rust core: a run reads, after its parser, the shown
+values the parser did not; `canonical` retargets aliases; `table` takes the
+profile's array rules; `mirror` rejects past the budget before expanding;
+`view_problem` (also in Python) is the validator's view check, which
+`compare.py` runs on every archive. The frozen reference still records 20.
+
+**Amended within revision 23** (no new revision: no output changed). Three
+clarifications and one rule that changes stored output only for inputs that
+no fixture, probe or corpus file has:
+- §8.7: a shown text value with bytes after its NUL that are not all zero
+  is `{"text": T, "after": {"$vz": "bytes", "b64": A}}`, as a record's `cstr`
+  field is, so the view is lossless. Every fixture, probe and corpus archive
+  is byte-identical with and without the change: none has such a value
+  among the values the view shows (the CZI attachment names that do are
+  record fields, which already had this form). A producer that wrote the
+  old form for such an input wrote what revision 23 left unspecified.
+- §8.8: a derived transform may hold shown values only if validators can
+  derive it again (`nd2-lv-zlib` and `xml-variant` can; `gzip` holds none).
+- The planner's statistics count the batch that reads the shown values a
+  parser did not keep (`fill`); it is empty on every fixture, probe and
+  corpus file, and the tests require it.
+
+## Revision 24: the root is `""`, and every path is its own
+
+**What prompted it.** The user's decision that the IR's root is normative:
+in every single-file format's IR the empty name `""` is reserved for the
+root, which denotes the whole source, as `""` is the whole document in JSON
+Pointer and the root node in Zarr. The core already wrote the root that way,
+but nothing required it, and nothing required paths to be unique: ND2 named
+a list's members `""` and repeated names (an object's repeated keys, chunk
+names that read alike), so the view kept only the first of them and an
+alias's path could name several elements.
+
+**The changes.**
+- **conventions/README.md §8.1:** the root (element 0) is a struct named
+  `""` with no name index, in space 0, with the extent `(0, Z)`, and not a
+  run; its path is `""`. Every other element has a full name that is not
+  empty, and among siblings (a run's members included) no full name equals
+  another's, or another's followed by `/` and more; so every path is its
+  own. These rules hold for every single-file profile, and for any format a
+  later revision moves onto the IR. They are invariants: a table that breaks
+  them is invalid (§8.3), a reader rejects it (§8.4), a validator flags it.
+  Archive keys stay non-empty (SPEC.md §3.3).
+- **§8.7:** the root's document is `tree`'s; an alias's path names its
+  target alone.
+- **§8.8:** siblings no longer tie (their full names differ), so the
+  tie-break by the source model's order and the rule for aliases of
+  identical siblings (revision 23) are gone: no valid IR has such siblings.
+- **ND2 §5.3, names:** a chunk, an LV record or an XML element whose text
+  is not empty, holds no `/` or `~`, is not `header` or `table` in an LV
+  level, and is the first of its siblings with that text keeps it as its
+  name; any other is the text with `%`, `/` and `~` percent-encoded, then
+  `~`, indexed by the number of earlier siblings of that text (a list's
+  members are `~0`, `~1`, …; a repeated `uiWidth` is `uiWidth~1`). The
+  root's `chunks` JSON is unchanged: the projection reads the texts back.
+- **TIFF, ND2 and CZI §5:** the element tables list the root, `""`; the
+  TIFF example says that `names[0]` is the root's name.
+- **Conventions:** the root property records `"revision": 24`; the schemas
+  were regenerated.
+
+**Output.** Every TIFF and CZI output, and every rejection, is unchanged on
+every fixture and probe. ND2 outputs change only under `vzip_source`, where
+a file has lists, repeated names, or chunk or record names with `/` or `~`:
+16 of the 33 accepted ND2 fixtures. (An alias's path in the view is no
+longer cut at 64 levels; no fixture has an alias that deep.)
+
+**Implementations.** The Rust core: `check::names` checks the root and the
+names, and `check` runs it; `canonical` runs it, so `mirror` rejects an IR
+that breaks them and `canonical_problem` calls such a table invalid;
+`ir::source_names` and `ir::source_text` are ND2's naming rule and its
+inverse; the identical-siblings retargeting is removed. Python's
+`vzip_ir.Ir.check` raises Violation, and `vzip_ir.mirror` raises Rejected;
+the browser's run rejects with the message. The frozen reference still
+records 20.

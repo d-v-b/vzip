@@ -10,14 +10,15 @@ DICOM is the format of clinical imaging: CT and MR series from hospital
 PACS, and, increasingly, digital pathology, where a whole-slide image is
 stored as one DICOM file per pyramid level. Large public collections, such as
 the NCI Imaging Data Commons (IDC), serve these files from cloud buckets
-(`storage.googleapis.com/idc-open-data/...`). Researchers who want to analyse
+(`storage.googleapis.com/idc-open-data/...`). Researchers who want to analyze
 a slide or a volume with Zarr tools, or put it next to OME-Zarr data, would
 otherwise have to decode and rewrite every frame.
 
 vzip reads the DICOM header and the frame table and writes an archive in which
 every Zarr chunk is one frame (or one tile of a slide) of the file, still
 JPEG, JPEG 2000 or raw as stored. A 60 MB whole-slide level from the IDC
-becomes a 704 KB archive.
+became a 704 KB archive (at VIRTUALIZE.md revision 16, before the archive
+kept every element of the file).
 
 ## What you get
 
@@ -25,8 +26,10 @@ One OME-Zarr 0.5 image at the archive root, with one array, `0`. A DICOM
 file is one level: a whole-slide pyramid is one file per level, and each file
 gives its own archive.
 
-- **Axes:** `c` for RGB; `z` for a multi-frame image that is not a slide
-  (its frames, whatever they are, along `z`); `y`, `x`.
+- **Axes:** `c` for RGB; for a multi-frame image that is not a slide, its
+  frames along `t` when the Frame Increment Pointer names Frame Time or
+  Frame Time Vector (cine ultrasound, angiography, fluoroscopy), else along
+  `z`, whatever they are; `y`, `x`.
 - **Whole-slide images** (VL Whole Slide Microscopy, `TILED_FULL`): the
   frames are the tiles of the total pixel matrix, so the array has the full
   slide's shape and one tile per chunk.
@@ -34,16 +37,20 @@ gives its own archive.
   stored cells, not rescaled).
 - **Codecs:** `bytes` (either byte order) for native pixel data,
   `imagecodecs_jpeg` for JPEG Baseline, `imagecodecs_jpeg2k` for JPEG 2000;
-  `transpose` first for interleaved RGB. JPEG frames get a colour marker
+  `transpose` first for interleaved RGB. JPEG frames get a color marker
   prepended so they decode to RGB.
-- **Scale:** Pixel Spacing and Spacing Between Slices, in millimetres
+- **Scale:** Pixel Spacing and Spacing Between Slices, in millimeters
   (including from the shared functional groups of enhanced and slide
-  files).
+  files), and Frame Time, in seconds, for frames along `t`.
 - **No translation:** DICOM positions an image in the patient's or the
   slide's frame, which is in general rotated against the image axes.
 - **omero:** a gray or R, G, B channel with the stored value range; for
   grayscale images, the Window Center and Width, converted to stored values.
   `MONOCHROME1` is marked `inverted`.
+- **Metadata:** every element of the file, private ones included, in the
+  DICOM JSON Model under the root's `vzip_virtualized.dicom`; the members
+  that would make the root large, and values kept as arrays, are on
+  `vzip_source`.
 
 ## Try it
 
@@ -89,7 +96,8 @@ uv run python -m vzip.virtualize https://storage.googleapis.com/idc-open-data/76
 {"format": "dicom", "axes": ["c", "y", "x"], "shape": [3, 10592, 22410], "dataType": "uint8", "transferSyntax": "1.2.840.10008.1.2.4.50", "photometric": "RGB", "frames": 4230, "wholeSlide": true, "references": 4230}
 ```
 
-This took 5.4 minutes (see Performance) and wrote a 704 KB archive.
+This took 5.4 minutes (see Performance) and wrote a 704 KB archive, at
+revision 16 ([overview](../README.md#formats)).
 
 ```python
 import zarr
@@ -139,7 +147,7 @@ Supported:
   the YBR forms that JPEG and JPEG 2000 decode to RGB.
 - Encapsulated frames over several fragments, with or without a Basic or
   Extended Offset Table.
-- Whole-slide images organised `TILED_FULL`, one level per file.
+- Whole-slide images organized `TILED_FULL`, one level per file.
 
 Rejected, with the message the command prints:
 
@@ -170,7 +178,7 @@ LUTs, palettes and overlays. The values are the stored ones.
 
 ## How it's verified
 
-`web/test/dicom/verify.py` virtualizes 43 synthetic DICOM files (including
+`web/test/dicom/verify.py` virtualizes 68 synthetic DICOM files (including
 inputs to reject) with the browser code, reads them back through `src/vzip`
 and zarr-python, and compares the pixels with pydicom. `compare.py` checks
 that the Python and browser outputs are equivalent on those files and on the

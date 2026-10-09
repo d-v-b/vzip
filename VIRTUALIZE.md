@@ -1,14 +1,16 @@
 # Virtualizing image files and stores as OME-Zarr in vzip
 
-Profiles version: 0 (**draft**) · Revision: 16
+Profiles version: 0 (**draft**) · Revision: 24
 
 ## 1. Introduction
 
 A **virtualizer** reads the structure of an image file (TIFF, Hamamatsu NDPI,
-Nikon ND2, DICOM, NIfTI or Imaris IMS) or of a chunked array store (N5 or
-Zarr v2, including OME-Zarr 0.4), and writes a vzip archive ([SPEC.md](SPEC.md))
-that presents the pixels as an OME-Zarr dataset, or for a store as a Zarr v3
-hierarchy (for an OME-Zarr 0.4 store, an OME-Zarr 0.5 one). The
+Nikon ND2, DICOM, NIfTI, Imaris IMS or Zeiss CZI), of a chunked array store (N5 or
+Zarr v2, including OME-Zarr 0.4), or of a Sentinel-2 SAFE product (a
+directory or a zip file of JPEG 2000 bands and XML metadata), and writes a
+vzip archive ([SPEC.md](SPEC.md)) that presents the pixels as an OME-Zarr
+dataset, or for a store as a Zarr v3 hierarchy (for an OME-Zarr 0.4 store,
+an OME-Zarr 0.5 one; for a SAFE product, a GeoZarr one). The
 pixels stay where they are: each Zarr chunk is a reference to byte ranges of
 the file, or to a whole object of the store. This document specifies, for
 each supported input format (a **profile**), exactly which archive a
@@ -30,10 +32,12 @@ is a document of its own, numbered as a section of this one:
 | 9 | [N5](profiles/n5.md) | N5 containers (store input), default-mode blocks |
 | 10 | [Zarr v2](profiles/zarr2.md) | Zarr v2 hierarchies (store input) |
 | 11 | [OME-Zarr](profiles/ome-zarr.md) | OME-Zarr 0.4 hierarchies on Zarr v2 (store input), migrated to OME-Zarr 0.5 |
+| 12 | [SAFE](profiles/safe.md) | Sentinel-2 Level-1C and Level-2A products: a `.SAFE` directory (store input) or a `.SAFE.zip` file (file input) |
+| 13 | [CZI](profiles/czi.md) | Zeiss CZI files (ZISRAW, file version 1), with uncompressed, JPEG, JPEG XR and Zstd subblocks, mosaics and pyramids |
 
-§3–§8 read a single file (a **file input**); §9–§11 read a store of many
-objects (a **store input**, §1.4). §12 is informative: the implementations
-and how they are compared.
+§3–§8 and §13 read a single file (a **file input**); §9–§11 read a store of many
+objects (a **store input**, §1.4); §12 reads either. §14 is informative:
+the implementations and how they are compared.
 
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be
 interpreted as described in RFC 2119.
@@ -56,13 +60,40 @@ sources with identical bytes), the same set of keys, and for every key:
   of given bytes ([SPEC.md §5.2](SPEC.md#52-range)), and two ranges are the same only if both are
   source ranges with equal sources, offsets and lengths, or both are literal
   ranges with identical bytes;
-- **JSON documents** (keys ending in `zarr.json`): equal JSON values. Objects
-  compare by key, arrays by order, and numbers as IEEE 754 binary64 values;
-  whitespace and key order do not matter;
+- **JSON documents** (keys ending in `zarr.json`): equal JSON values.
+  Objects compare by key and arrays by order; whitespace and key order do
+  not matter. Numbers compare by value:
+  - a number written as an integer (an optional `-` and digits, with no
+    fraction and no exponent) has its exact value, every digit, however
+    large, since §1.6 copies such numbers exactly;
+  - any other number has its IEEE 754 binary64 value (§1.3);
+  - two numbers are equal when their values are mathematically equal. An
+    integer and a binary64 value are equal only if the binary64 value is
+    exactly that integer: `3`, `3.0` and `3e0` are equal, and so are
+    `9007199254740992` and `9007199254740992.0`, but `9007199254740993` is
+    not equal to `9007199254740993.0`, whose binary64 value is
+    9007199254740992. `-0`, `0` and `-0.0` are all equal.
+
+  A writer that holds a binary64 value that is an integer beyond 2^53 − 1
+  must therefore write it with its exact digits, or with a fraction or an
+  exponent: JavaScript's `JSON.stringify` writes 2^64 as
+  `18446744073709552000`, an integer literal of another value;
 - **other bytes entries:** identical bytes.
 
+**IR mirrors.** For the TIFF, ND2 and CZI profiles, `vzip_source` is the
+source's IR mirror ([conventions §8](conventions/README.md#8-the-ir-mirror)).
+Its table and view are canonical: a function of the source's IR, folded and
+encoded one way only ([conventions §8.8](conventions/README.md#88-canonical-form)).
+Mirrors are therefore compared entry for entry, as above, like the rest of the
+output. A virtualizer **rejects** a source whose mirror would have more than
+`N = 2^22 + floor(size / 4)` rows, the runs expanded and the derived spaces
+left out ([conventions §8.3](conventions/README.md#83-column-runs), limits),
+with the message `budget: the mirror would have more than N rows`.
+
 The archive's byte layout (entry order, compression, page index) is the
-writer's choice and is not part of the output. Two virtualizers conform to
+writer's choice and is not part of the output. Neither are the sources'
+pins and the ranges' checksums (§1.2): an `etag` pin depends on what the
+server sent, and checksums are optional. Two virtualizers conform to
 the same profile revision if they produce equivalent outputs for every input
 that the profile accepts, and both reject every input it rejects.
 
@@ -77,8 +108,24 @@ the URL it will be served from: a directory is a store input, listed as
 §1.5 says.)
 
 For a file input, the output's source table is source 0, a `url` source
-whose value is `U` as given, without pins, followed by the output's **data
-sources**, if its profile defines any. A data source is a `data` source
+whose value is `U` as given, followed by the output's **data sources**, if
+its profile defines any. Source 0 carries pins (SPEC.md §6.1):
+
+- a `size` pin, the file's size;
+- an `etag` pin when every response the virtualizer received for the file
+  (to `HEAD` and to range requests) had an `ETag` header with the same
+  strong entity tag; none when a response had none, or a weak one. Two
+  responses with different strong tags mean the file changed while it was
+  read: the virtualizer fails (it does not reject). A virtualizer that read
+  the file from somewhere other than `U` (a local file served at `U`) pins
+  no `etag`.
+
+**Checksums.** A virtualizer MAY, when asked to, record on every range of
+a `url` source the CRC-32C of its bytes (SPEC.md §5.2). That reads every
+byte the output references, pixel data included, so it is off by default;
+it is the one exception to "Structure only" below, and changes nothing else
+in the output. An output whose payload exceeds 65519 bytes only because of
+its checksums is a failure, not a rejection. A data source is a `data` source
 ([SPEC.md §6](SPEC.md#6-source-table)) holding a byte string that a profile names as **shared**: one
 that many references would otherwise each read from the file, or each carry
 as a literal, such as a JPEG header. The data sources are the distinct
@@ -88,8 +135,9 @@ reference in order of its ranges, the first range that uses a byte string
 not yet in the table adds it as the next source. A range that uses a shared
 byte string `d` in data source `i` is `(i, 0, len(d))`, the whole source.
 Every other range of a reference is a range of source 0 or a literal range.
-The TIFF (§3, JPEG tiles) and NDPI (§4) profiles define shared byte strings;
-the others define none, so their table is source 0 alone.
+The TIFF (§3, JPEG tiles), NDPI (§4) and SAFE (§12, JPEG 2000 main
+headers) profiles define shared byte strings; the others define none, so
+their table is source 0 alone.
 
 **Choosing the profile.** The file's first bytes decide, by the first row
 of this table that matches. `H` is the file's first `min(552, size)` bytes;
@@ -103,6 +151,8 @@ a test that needs a byte beyond `H` does not match.
 | bytes 0–7 are `89 48 44 46 0D 0A 1A 0A` (the HDF5 signature) | IMS profile (§8) |
 | bytes 0–3 are the 32-bit integer 348 in either byte order, and bytes 344–347 are `6E 2B 31 00` (`n+1`) | NIfTI profile (§7), NIfTI-1 |
 | bytes 0–3 are the 32-bit integer 540 in either byte order, and bytes 4–11 are `6E 2B 32 00 0D 0A 1A 0A` (`n+2`) | NIfTI profile (§7), NIfTI-2 |
+| bytes 0–3 are `50 4B 03 04` (a ZIP local file header) | SAFE profile (§12), zip form |
+| bytes 0–15 are `5A 49 53 52 41 57 46 49 4C 45` (`ZISRAWFILE`) and six `00` bytes | CZI profile (§13) |
 | anything else, including the JPEG 2000 signature box `00 00 00 0C 6A 50 20 20 0D 0A 87 0A` that starts legacy ND2 files, and NIfTI header-and-image pairs (`ni1`, `ni2`) | rejected |
 
 A DICOM file is read by the DICOM profile even when its 128-byte preamble
@@ -116,7 +166,7 @@ that is truncated or inconsistent, a value of the wrong type or out of range,
 an offset or length above 2^53 − 1. Being unable to read the input (a
 network error) is not a rejection; the virtualizer fails instead. An
 implementation MAY also fail, rather than reject, when an input exceeds a
-resource limit that it states (§12); a failure is not an output, so it does
+resource limit that it states (§14); a failure is not an output, so it does
 not affect equivalence.
 
 **Structure only.** The output MUST NOT depend on the file's pixel data.
@@ -124,7 +174,9 @@ not affect equivalence.
 parameters are structure, not pixel data, and an output may copy them: the
 data sources and literals of the TIFF and NDPI profiles hold JPEG markers
 and tables (quantization and Huffman tables, frame and scan headers, restart
-intervals), which describe how the pixels are coded but encode none of them.
+intervals), and those of the SAFE profile JPEG 2000 marker segments (SIZ,
+COD, QCD, COM, SOT, and empty packet headers), which describe how the pixels
+are coded but encode none of them.
 Entropy-coded data, from which pixels are decoded, is only ever referenced
 as ranges of source 0.
 
@@ -176,9 +228,15 @@ be served from, which MUST satisfy the same rules.)
 begins with the prefix `P` (§1.5); its **relative key** is `K` without
 `P`. A listed object is **ignored** when its relative key is empty, ends in
 `/`, contains an empty segment (`//`), or has a segment `.` or `..`
-(segments are the parts between `/`). The store's objects are the listed
-objects that are not ignored, each with its relative key and its **size**,
-the listed size. From here on "key" means the relative key. A **directory**
+(segments are the parts between `/`). An ignored object is not read, and
+its relative key is **recorded** unless its size is 0 and its relative key
+is empty or ends in `/` (a folder marker, which some tools write): the
+store conventions keep the recorded keys with the empty objects' keys
+([the Zarr v2 convention §5](conventions/zarr2/README.md#5-other-objects),
+[the N5 convention §6](conventions/n5/README.md#6-other-objects)), so that
+no listed object is dropped without a trace. The store's objects are the
+listed objects that are not ignored, each with its relative key and its
+**size**, the listed size. From here on "key" means the relative key. A **directory**
 is a key prefix that ends just before a `/`: the store's directories are
 the root (the empty path) and every `d` such that some key starts with
 `d/`. The path of a node of the output is a directory's path.
@@ -190,6 +248,7 @@ decide, by the first row that matches:
 |---|---|
 | `.zarray` or `.zgroup` | OME-Zarr profile (§11) if the store declares OME-NGFF 0.4 (below), else Zarr v2 profile (§10) |
 | `attributes.json` | N5 profile (§9) |
+| `manifest.safe` | SAFE profile (§12), directory form |
 | anything else, including an empty store | rejected |
 
 **Declaring OME-NGFF 0.4.** The test reads at most three documents, by
@@ -234,7 +293,10 @@ the local file. A response that does not have the listed size is a
 failure, not a rejection (the store changed while it was read). A profile
 reads only the metadata documents it names; it never reads a chunk object.
 (**Structure only**, §1.2, applies: the output never depends on a chunk's
-bytes, only on its key and size.)
+bytes, only on its key and size.) The SAFE profile is the exception: it
+reads its band files in ranges (their boxes, main headers and tile-part
+headers), with HTTP range requests, and a response that is not of the
+requested length is a failure ([§12.2](profiles/safe.md#122-objects-and-reading)).
 
 **Object URLs.** The URL of the object with key `k` is `U` followed by
 `k`'s UTF-8 bytes with every byte that is not an unreserved character
@@ -247,17 +309,26 @@ digits (the encoding of [SPEC.md §6](SPEC.md#6-source-table) for local paths). 
 objects** of each array: objects whose keys are chunk keys of the array,
 and the other objects it references whole (§11.6, the only one that does).
 Of these, an object of size 0 is not used: it has no entry (so the chunk
-reads as the fill value) and no source. Every other chunk object `k` gives
-one entry, whose key is `k` itself, referencing the whole object. The
-source table is one `url` source per such entry, without pins: the URL of
-its object. The sources are in ascending order of their entries' keys,
+reads as the fill value) and no source, and its key is one of the store
+conventions' empty objects' keys. Every other chunk object `k` gives
+one entry, whose key is `k` itself, referencing the whole object. Every
+other object of the store that the hierarchy doesn't represent (the store
+conventions' "Other objects") gives one entry `vzip_source/objects/<k>` (with
+the last segment escaped as those conventions say, so that no entry reads as
+a Zarr document), referencing it whole in the same way. The
+source table is one `url` source per such entry, with a `size` pin, the
+object's listed size (§1.5): the URL of its object. The sources are in ascending order of their entries' keys,
 compared as UTF-8 byte strings (which is the order of Unicode code points),
 and the entry with key `k` at position `i` of that order has the single
 range `(i, 0, size)`. No other entry is a reference, and a store input's
-output has no data sources (§1.2).
+output has no data sources (§1.2). The SAFE profile is the exception: its
+url sources are one per object that some reference uses, and data sources
+follow them, and its references are ranges within objects
+([§12.8](profiles/safe.md#128-the-source-table)).
 
-These rules replace §1.2's **References stay in the file**: each range
-lies within its object by construction, and its payload is far below 65519
+These rules replace §1.2's **References stay in the file** (but for the
+SAFE profile, whose payloads are checked as §1.2 says): each range lies
+within its object by construction, and its payload is far below 65519
 bytes. An output key MUST be at most 65535 bytes in UTF-8 and MUST NOT
 start with `__vz__/`; otherwise the input is rejected.
 
@@ -334,6 +405,9 @@ subset of XML 1.0, where `S` is whitespace (§1.3):
   processed; names compare as written).
 - Content is any sequence of character data (text not containing `<` or
   `&`, nor the sequence `]]>`), references, comments and elements.
+- Elements MUST NOT nest more than 256 deep (the root element is at depth
+  1, its children at 2): a deeper document is rejected, as the JSON reader
+  rejects deep nesting (§1.6).
 - A reference is `&lt;`, `&gt;`, `&amp;`, `&quot;`, `&apos;` (standing for
   `<`, `>`, `&`, `"`, `'`), or `&#` and decimal ASCII digits, or `&#x` and
   hex digits (either case), then `;`, standing for that code point.
@@ -351,7 +425,8 @@ element whose content has no element. The body is a **listing** when:
 - of its child elements, exactly one is named `IsTruncated`, whose text is
   `true` or `false`; at most one is named `NextContinuationToken`, and if
   `IsTruncated` is `true` there is one, with nonempty text, which is the
-  continuation token `T`; every child named `Contents` has exactly one
+  continuation token `T`, and at least one child is named `Contents`;
+  every child named `Contents` has exactly one
   child `Key` and exactly one child `Size`, neither of which has a child
   element; other children, at any depth, are not read;
 - each `Contents`' `Size` text is one or more ASCII digits, of value at
@@ -359,7 +434,11 @@ element whose content has no element. The body is a **listing** when:
 
 Each `Contents` lists an object: its key is the `Key` text and its size the
 `Size` value. The listing is complete after a response whose `IsTruncated`
-is `false`. A key listed twice, in one response or two, rejects the input.
+is `false`. A key listed twice, in one response or two, rejects the input,
+and so does a continuation token that an earlier response of the same
+listing gave. (Each response but the last then lists at least one new key,
+so a server that repeats a page, or sends empty pages, rejects the input
+instead of being followed forever.)
 (The order of the listed keys is not checked: the output's order comes from
 §1.4.)
 
@@ -386,8 +465,11 @@ both implementations:
   that code unit.
 
 A JSON value that this document copies into the output (attributes) is
-copied as these rules read it: its numbers as binary64 values (§1.1 compares
-them as such).
+copied as these rules read it, except that a number written as an integer
+(no fraction or exponent) is copied exactly, every digit, even beyond
+2^53 − 1; any other number is its binary64 value. §1.1 compares them the
+same way: an integer literal by its exact value, any other number by its
+binary64 value.
 
 ## 2. The Zarr layout
 
@@ -414,7 +496,7 @@ states, with:
 - the documents as JSON (`zarr.json`, compared by §1.1), and no other
   entries than those the profile names.
 
-## 3–11. Profiles
+## 3–13. Profiles
 
 Each profile is a separate document:
 
@@ -426,9 +508,11 @@ Each profile is a separate document:
 - §8, the IMS profile: [profiles/ims.md](profiles/ims.md);
 - §9, the N5 profile: [profiles/n5.md](profiles/n5.md);
 - §10, the Zarr v2 profile: [profiles/zarr2.md](profiles/zarr2.md);
-- §11, the OME-Zarr profile: [profiles/ome-zarr.md](profiles/ome-zarr.md).
+- §11, the OME-Zarr profile: [profiles/ome-zarr.md](profiles/ome-zarr.md);
+- §12, the SAFE profile: [profiles/safe.md](profiles/safe.md);
+- §13, the CZI profile: [profiles/czi.md](profiles/czi.md).
 
-## 12. Conformance
+## 14. Conformance
 
 This section is informative. There are two maintained implementations:
 - the Python reference, `python -m vzip.virtualize <url> <out.vzip>`
@@ -437,7 +521,7 @@ This section is informative. There are two maintained implementations:
   `web/conformance/virtualize.ts`.
 
 Both are organized by profile: `tiff/`, `ndpi/`, `nd2/`, `dicom/`, `nifti/`,
-`ims/`, `n5/`, `zarr2/` and `ome_zarr/` (`ome-zarr/` in the browser one),
+`ims/`, `n5/`, `zarr2/`, `ome_zarr/` (`ome-zarr/` in the browser one), `safe/` and `czi/`,
 next to the parts they share (`common`, and `store` for store inputs: the
 listing, the object reader and the JSON reader of §1.4–§1.6). The OME-Zarr
 profile reuses the Zarr v2 profile's hierarchy reader.
@@ -447,13 +531,17 @@ a store whose listing has more than 100000 objects (counting every listed
 `Contents`, ignored or not). Each chunk becomes a source and an entry, about
 250 bytes of archive held in memory, and the listing takes one request per
 1000 keys, so the limit bounds the archive at about 25 MB and the listing at
-100 sequential requests. The Python reference has no limit; its run on a
-470000-chunk OpenOrganelle level is recorded in
-`conformance/virtualize/REVISIONS.md` (revision 12).
+100 sequential requests. The same limit applies to a SAFE zip file's
+entries. The Python reference has no limit; its run on a 470000-chunk
+OpenOrganelle level is recorded in `conformance/virtualize/REVISIONS.md`
+(revision 12).
 
 Implementations written from this document alone, round by round, are in
 `impls/virtualize/`; `conformance/virtualize/REVISIONS.md` records what each
 round found and how this document changed.
+
+Both write the pins of §1.2 and §1.4, and record checksums when asked to
+(`--checksums`, after the two arguments, in either command).
 
 `conformance/virtualize/compare.py` runs implementations on a corpus and
 compares their outputs by §1.1 (`conformance/virtualize/HARNESS.md`
@@ -461,14 +549,19 @@ describes the command an implementation provides). The corpus has:
 - the synthetic files in `web/test/fixtures/<profile>/`, including inputs
   each profile rejects, and the synthetic stores in
   `web/test/fixtures/n5/`, `web/test/fixtures/zarr2/` and
-  `web/test/fixtures/ome-zarr/` (one directory each);
+  `web/test/fixtures/ome-zarr/` (one directory each), and the synthetic
+  SAFE products in `web/test/fixtures/safe/` (directories and zip files),
+  and the synthetic CZI files in `web/test/fixtures/czi/`;
 - the 205 OME-TIFFs of IDR idr0096;
 - public files and stores of every profile, listed in
   `conformance/virtualize/corpus_*.txt`: TIFF, SVS and NDPI
   (`corpus_tiff.txt`), ND2, DICOM (including whole-slide levels from the NCI
   Imaging Data Commons), NIfTI, IMS, N5 and Zarr v2 stores from
   OpenOrganelle (`corpus_n5.txt`, `corpus_zarr2.txt`), and OME-Zarr 0.4
-  images, label images and plates from the IDR (`corpus_ome_zarr.txt`).
+  images, label images and plates from the IDR (`corpus_ome_zarr.txt`),
+  Sentinel-2 products from the Google Cloud mirror and ESA zips
+  published on Mendeley Data (`corpus_safe.txt`), and CZI files from the
+  OME sample images and Zenodo (`corpus_czi.txt`).
 
 The harness's proxy (`conformance/virtualize/proxy.py`) serves the synthetic
 stores, and forwards remote ones, with the listing operation of §1.5.
@@ -481,7 +574,12 @@ against nibabel, IMS against h5py, N5 against an independent block reader in
 the script (and `zarr-n5`), Zarr v2 against zarr-python's own Zarr v2
 reader, and OME-Zarr against zarr-python's Zarr v2 reader and the
 `ome-zarr-models` package (every output group validated as OME-Zarr 0.5,
-every accepted input as 0.4).
+every accepted input as 0.4), and SAFE against GDAL (rasterio's JP2OpenJPEG
+and SENTINEL2 drivers), which also checks the georeferencing, and with
+every file of each product rebuilt from the hierarchy, and CZI against
+czifile (every subblock's pixels, in its level or tile array, with the
+segments, attachments, metadata and directory entries rebuilt from the
+hierarchy) and libCZI (pylibCZIrw: the stitched planes of regular levels).
 
 The conventions of [conventions §2](conventions/README.md#2-attributes) are checked by `tests/test_virtualize_conventions.py`:
 it runs every synthetic file and store through both implementations,
@@ -489,11 +587,13 @@ validates every node that declares a convention against that convention's
 JSON Schema (`conventions/<p>/schema.json`, written by
 `conventions/generate_schemas.py`), and checks that every node with source
 metadata declares it. `just tag-conventions` creates the
-`virtualize-<p>-v<N>` tags that the convention URLs name, on `main`.
+`virtualize-<p>-v<N>` tags that the convention URLs name, on `main`, from
+version 1 on; at version 0 the URLs name `main` itself (conventions §1).
 
 The DICOM, NIfTI and IMS profiles (revision 11), the N5 and Zarr v2
-profiles (revision 12), the OME-Zarr profile (revision 13) and the data
-sources of the TIFF and NDPI profiles (revision 14) have not yet been
+profiles (revision 12), the OME-Zarr profile (revision 13), the data
+sources of the TIFF and NDPI profiles (revision 14), the SAFE profile
+(revision 17) and the CZI profile (revision 18) have not yet been
 through an independent implementation round; the round implementations in
 `impls/virtualize/` still write JPEG headers as literals and ranges of the
 file, and predate the conventions (revisions 15 and 16).

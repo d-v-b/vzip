@@ -1,0 +1,313 @@
+{
+  "source_model": "czi",
+  "version": 1,
+  "about": "The source model of a Zeiss CZI file (ZISRAW; conventions/czi, profiles/czi.md §13): the elements a parser emits, the tables of pixel types and compressions, and the roles a segment, a directory entry, a subblock, an attachment, an image or a tile array plays, each with the constraints a file must meet to have the CZI convention's layout. A parser checks this schema while it parses, at the point the profile meets each role; projections read a valid IR and check nothing.",
+  "limits": {
+    "max_safe": 9007199254740991,
+    "max_entries": 2097152,
+    "max_attachments": 65536,
+    "max_walk": 8388608,
+    "max_xml": 67108864,
+    "max_images": 65536,
+    "max_levels": 64,
+    "max_extent": 2147483648,
+    "max_band": 16777216,
+    "band_floor": 1048576,
+    "max_header": 65536,
+    "max_events": 1048576,
+    "max_event_bytes": 67108864,
+    "max_decode": 65536
+  },
+  "tables": {
+    "pixel_types": {
+      "about": "PixelType: name, data type, samples p, bytes per pixel q",
+      "0": {"name": "Gray8", "dtype": "uint8", "p": 1, "q": 1},
+      "1": {"name": "Gray16", "dtype": "uint16", "p": 1, "q": 2},
+      "2": {"name": "Gray32Float", "dtype": "float32", "p": 1, "q": 4},
+      "3": {"name": "Bgr24", "dtype": "uint8", "p": 3, "q": 3},
+      "4": {"name": "Bgr48", "dtype": "uint16", "p": 3, "q": 6},
+      "8": {"name": "Bgr96Float", "dtype": "float32", "p": 3, "q": 12},
+      "9": {"name": "Bgra32", "dtype": "uint8", "p": 4, "q": 4},
+      "10": {"name": "Gray64ComplexFloat", "dtype": "complex64", "p": 1, "q": 8},
+      "11": {"name": "Bgr192ComplexFloat", "dtype": "complex64", "p": 3, "q": 24},
+      "12": {"name": "Gray32", "dtype": "int32", "p": 1, "q": 4},
+      "13": {"name": "Gray64Float", "dtype": "float64", "p": 1, "q": 8}
+    },
+    "compressions": {
+      "about": "Compression: name, and the pixel types it admits",
+      "0": {"name": "uncompressed", "pixel_types": [0, 1, 2, 3, 4, 8, 9, 10, 11, 12, 13]},
+      "1": {"name": "JpgFile", "pixel_types": [0, 3]},
+      "4": {"name": "JpgXr", "pixel_types": [0, 1, 2, 3, 4, 8, 9]},
+      "5": {"name": "Zstd0", "pixel_types": [0, 1, 2, 3, 4, 8, 9, 10, 11, 12, 13]},
+      "6": {"name": "Zstd1", "pixel_types": [0, 1, 2, 3, 4, 8, 9, 10, 11, 12, 13]}
+    },
+    "hilo_types": [1, 4],
+    "letters": ["X", "Y", "Z", "C", "T", "R", "S", "I", "H", "V", "B", "M"],
+    "series_letters": ["S", "B", "H", "I", "R", "V"],
+    "ids": {
+      "file_header": "ZISRAWFILE",
+      "directory": "ZISRAWDIRECTORY",
+      "subblock": "ZISRAWSUBBLOCK",
+      "metadata": "ZISRAWMETADATA",
+      "attachment_directory": "ZISRAWATTDIR",
+      "attachment": "ZISRAWATTACH"
+    }
+  },
+  "elements": {
+    "about": "The IR of a CZI file. Names in angle brackets are variables; `run` marks where a parser folds consecutive identically shaped siblings into one run. Every segment has its 32-byte `header` {id:cstr[16],allocated_size:<i8,used_size:<i8}; a segment two entries name (one FilePosition) is described once, the second name an alias.",
+    "file_header": {
+      "kind": "struct",
+      "children": {
+        "header": "segment header",
+        "fields": "{major,minor,reserved,primary_file_guid,file_guid,file_part,directory_position,metadata_position,update_pending,attachment_directory_position}"
+      }
+    },
+    "directory": {
+      "kind": "struct",
+      "children": {
+        "header": "",
+        "entry_count": "<i4",
+        "entries/<i>": "{schema:ascii[2],pixel_type,file_position,file_part,compression,pyramid_type,spare,dimension_count}",
+        "dimensions/<i>": "{dimension:ascii[4],start,size,start_coordinate,stored_size}[d]"
+      }
+    },
+    "subblocks/<i>": {
+      "kind": "struct",
+      "about": "by directory index",
+      "children": {
+        "header": "",
+        "sizes": "{metadata_size,attachment_size,data_size}",
+        "entry": "its copy of its entry",
+        "dimensions": "",
+        "metadata": "ascii[m]",
+        "data": "data (placed: geometry, codec, recipe; uncompressed pixels, or a Zstd1 payload after its header) or bytes[n]",
+        "zstd1_header": "bytes",
+        "trailing": "bytes (uncompressed data past the pixels)",
+        "attachment": "bytes[a]"
+      }
+    },
+    "metadata": {
+      "kind": "struct",
+      "children": {
+        "header": "",
+        "sizes": "{xml_size,attachment_size}",
+        "xml": "ascii[x] (not decoded into the IR: read for the layout, streamed)",
+        "attachment": "bytes[b]"
+      }
+    },
+    "attachment_directory": {
+      "kind": "struct",
+      "children": {
+        "header": "",
+        "entry_count": "<i4",
+        "entries/<k>": "{schema,spare,file_position,file_part,content_guid,content_file_type:cstr[8],name:cstr[80]} (A1), else bytes[128]"
+      }
+    },
+    "attachments/<k>": {
+      "kind": "struct",
+      "children": {
+        "header": "",
+        "data_size": "<i8",
+        "entry": "",
+        "data": "CZTIMS, CZFOC: struct of size, count, values <f8[c]; CZEVL: struct of size, count, events (one array of records when no event has a description, else events/<e> and descriptions/<e>); Zip-Comp, ZIP: derived (gzip, not inflated); else bytes"
+      }
+    },
+    "segments/<k>": {
+      "kind": "struct",
+      "run": true,
+      "about": "the walk's segments nothing references, in file order",
+      "children": {"header": "", "data": "bytes"}
+    },
+    "tail": {"kind": "value", "type": "bytes: from where the walk stops to the end"},
+    "gaps/<offset>": {"kind": "gap"}
+  },
+  "roles": {
+    "segment": {
+      "about": "a segment a position names, read where the profile reads it",
+      "given": {
+        "what": "",
+        "position": "",
+        "within": "its 32-byte header is within the file",
+        "id": "",
+        "expected": "",
+        "allocated": "",
+        "used": ""
+      },
+      "constraints": [
+        {
+          "require": "position >= 0 && position <= max_safe",
+          "message": "{what}'s position {position} is not an offset from 0 to 2^53 - 1"
+        },
+        {"require": "within", "message": "{what}'s segment header is outside the file"},
+        {"require": "id == expected", "message": "{what} at {position} is not a {expected} segment"},
+        {
+          "require": "allocated >= 0 && allocated <= max_safe",
+          "message": "{what}'s AllocatedSize {allocated} is not a size from 0 to 2^53 - 1"
+        },
+        {
+          "require": "used >= 0 && used <= max_safe",
+          "message": "{what}'s UsedSize {used} is not a size from 0 to 2^53 - 1"
+        }
+      ]
+    },
+    "within": {
+      "about": "bytes the profile reads",
+      "given": {"what": "", "within": ""},
+      "constraints": [{"require": "within", "message": "{what} is outside the file"}]
+    },
+    "file_header": {
+      "given": {"major": "", "minor": "", "file_part": ""},
+      "constraints": [
+        {"require": "major == 1", "message": "CZI file version {major}.{minor} (Major MUST be 1)"},
+        {
+          "require": "file_part == 0",
+          "message": "FilePart {file_part}: a CZI split over several files is not supported"
+        }
+      ]
+    },
+    "entry_count": {
+      "given": {"what": "", "count": "", "maximum": ""},
+      "constraints": [
+        {
+          "require": "count >= 0 && count <= maximum",
+          "message": "{what}'s EntryCount {count} is not from 0 to {maximum}"
+        }
+      ]
+    },
+    "entry": {
+      "about": "a directory entry's 32 bytes (conventions/czi §2.3)",
+      "given": {
+        "i": "",
+        "ends": "it ends within the directory's used bytes",
+        "within": "and within the file",
+        "schema": "",
+        "file_part": "",
+        "pixel_type": "",
+        "compression": "",
+        "dimension_count": ""
+      },
+      "derive": {"spec": "at(compressions, compression)", "admitted": "spec.pixel_types"},
+      "constraints": [
+        {"require": "ends", "message": "directory entry {i} does not end within the directory's used bytes"},
+        {"require": "within", "message": "a directory entry is outside the file"},
+        {"require": "schema == 'DV'", "message": "directory entry {i} has schema {schema}, not DV"},
+        {"require": "file_part == 0", "message": "directory entry {i} is in FilePart {file_part}"},
+        {
+          "require": "present(at(pixel_types, pixel_type))",
+          "message": "directory entry {i} has an unsupported PixelType {pixel_type}"
+        },
+        {
+          "require": "present(admitted)",
+          "message": "directory entry {i} has an unsupported Compression {compression}"
+        },
+        {
+          "require": "in(pixel_type, admitted)",
+          "message": "directory entry {i}: Compression {compression} with PixelType {pixel_type}"
+        },
+        {
+          "require": "dimension_count >= 2 && dimension_count <= 12",
+          "message": "directory entry {i} has DimensionCount {dimension_count}, not 2 to 12"
+        }
+      ]
+    },
+    "dimension": {
+      "about": "a dimension of a directory entry",
+      "given": {
+        "i": "",
+        "letter": "the letter, when the id is a letter and three NULs",
+        "repeated": "an earlier dimension has the letter",
+        "size": "",
+        "stored": ""
+      },
+      "constraints": [
+        {"require": "in(letter, letters)", "message": "directory entry {i} has the dimension {letter}"},
+        {"require": "!repeated", "message": "directory entry {i} has the dimension {letter} twice"},
+        {
+          "require": "!in(letter, ['X', 'Y']) || (size >= 1 && stored >= 1)",
+          "message": "directory entry {i}'s {letter} Size and StoredSize must be at least 1"
+        },
+        {
+          "require": "in(letter, ['X', 'Y', 'M']) || (size == 1 && stored == 1)",
+          "message": "directory entry {i}'s {letter} Size and StoredSize must be 1"
+        }
+      ]
+    },
+    "entry_dimensions": {
+      "given": {"i": "", "x": "it has X", "y": "it has Y"},
+      "constraints": [{"require": "x && y", "message": "directory entry {i} lacks the X or Y dimension"}]
+    },
+    "subblock": {
+      "about": "a subblock's header, after its segment header",
+      "given": {
+        "i": "",
+        "metadata": "MetadataSize",
+        "attachment": "AttachmentSize",
+        "data": "DataSize",
+        "schema": "its copy of its entry's",
+        "dimension_count": "its copy's"
+      },
+      "constraints": [
+        {
+          "require": "metadata >= 0 && attachment >= 0 && data >= 0 && data <= max_safe",
+          "message": "subblock {i} has a negative MetadataSize, AttachmentSize or DataSize"
+        },
+        {
+          "require": "schema == 'DV'",
+          "message": "subblock {i}'s copy of its entry has schema {schema}, not DV"
+        },
+        {
+          "require": "dimension_count >= 0 && dimension_count <= 40",
+          "message": "subblock {i}'s copy of its entry has DimensionCount {dimension_count}, not 0 to 40"
+        }
+      ]
+    },
+    "metadata_sizes": {
+      "given": {"xml": "XmlSize", "attachment": "AttachmentSize"},
+      "constraints": [
+        {
+          "require": "xml >= 0 && attachment >= 0",
+          "message": "the metadata segment has a negative XmlSize or AttachmentSize"
+        }
+      ]
+    },
+    "attachment_entry": {
+      "about": "an A1 attachment entry",
+      "given": {"k": "", "file_part": ""},
+      "constraints": [{"require": "file_part == 0", "message": "attachment entry {k} is in FilePart {file_part}"}]
+    },
+    "attachment": {
+      "given": {"k": "", "data_size": ""},
+      "constraints": [
+        {
+          "require": "data_size >= 0 && data_size <= max_safe",
+          "message": "attachment {k}'s DataSize {data_size} is not a size from 0 to 2^53 - 1"
+        }
+      ]
+    },
+    "image": {
+      "about": "a series with an image: its levels (conventions/czi §3.5)",
+      "given": {"levels": ""},
+      "constraints": [{"require": "levels <= max_levels", "message": "an image of {levels} levels, more than {max_levels}"}]
+    },
+    "images": {
+      "given": {"images": "series with an image"},
+      "constraints": [
+        {
+          "require": "images <= max_images",
+          "message": "{images} series with an image, more than {max_images}"
+        }
+      ]
+    },
+    "extent": {
+      "about": "each dimension of an image's or a tile array's shape (conventions/czi §4.2): a tile array's y and x are its coded size",
+      "given": {"extent": ""},
+      "constraints": [{"require": "extent <= max_extent", "message": "an array dimension of {extent}, more than 2^31"}]
+    },
+    "translation": {
+      "about": "each level's scale and translation",
+      "given": {"all_finite": "every scale and translation value is finite"},
+      "constraints": [{"require": "all_finite", "message": "a translation is not finite"}]
+    }
+  },
+  "about_builtins": "What the parser's code computes and the roles above check: a subblock's coded size from its codec header (conventions/czi §3.2: Zstd0 and Zstd1 frame headers, a JPEG frame header, JPEG XR's image size and pixel format, within the first 2^16 bytes of its data); placement (a subblock whose copy of its entry agrees with the directory's and that has a coded size; an entry whose subblock another entry names first is not placed again); series, layers, levels, tiles and row bands (conventions/czi §3.3–§4.4, layout.py), with a band floor: when the largest divisor band of an uncompressed tile holds less than band_floor bytes, bands are the most rows within max_band bytes and the last band of each tile row is shorter (a rectilinear grid); the metadata XML's values (§2.7) in one streaming pass, with no tree (an end tag closes back to the innermost open element of its name, found by a count per name); the walk over the segments nothing references (profiles/czi.md §13.2 step 6)."
+}

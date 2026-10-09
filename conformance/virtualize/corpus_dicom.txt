@@ -1,20 +1,20 @@
 # Public DICOM files for compare.py (url|name).
 # pydicom's test files, pinned to v3.0.1:
-https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/CT_small.dcm|pydicom-CT_small
-https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/MR_small.dcm|pydicom-MR_small
-https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/MR_small_bigendian.dcm|pydicom-MR_small_bigendian
-https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/MR_small_implicit.dcm|pydicom-MR_small_implicit
-https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/JPEG2000.dcm|pydicom-JPEG2000
-https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/MR_small_jp2klossless.dcm|pydicom-MR_small_jp2klossless
-https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/SC_rgb_jpeg_dcmtk.dcm|pydicom-SC_rgb_jpeg_dcmtk
-https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/SC_rgb_jpeg_gdcm.dcm|pydicom-SC_rgb_jpeg_gdcm
-https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/SC_jpeg_no_color_transform.dcm|pydicom-SC_jpeg_no_color_transform
-https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/SC_rgb_small_odd_jpeg.dcm|pydicom-SC_rgb_small_odd_jpeg
-https://raw.githubusercontent.com/pydicom/pydicom/v3.0.1/src/pydicom/data/test_files/rtdose.dcm|pydicom-rtdose
+https://raw.githubusercontent.com/pydicom/pydicom/50cd981a068c74b01d854c6cac9bb897fe0b74a9/src/pydicom/data/test_files/CT_small.dcm|pydicom-CT_small|ends-sha256=b9dbf12ef51de7417507b05e8b43ba9f33d1fb738509764bbe7765bb21f04808
+https://raw.githubusercontent.com/pydicom/pydicom/50cd981a068c74b01d854c6cac9bb897fe0b74a9/src/pydicom/data/test_files/MR_small.dcm|pydicom-MR_small|ends-sha256=da5775e8a594f167d3e2185b413d3256025dfa37649ea8558a6656978171e6a7
+https://raw.githubusercontent.com/pydicom/pydicom/50cd981a068c74b01d854c6cac9bb897fe0b74a9/src/pydicom/data/test_files/MR_small_bigendian.dcm|pydicom-MR_small_bigendian|ends-sha256=a6ea3bca041bc9dd9a5c592ff58c5d7b3fca50c981dee566a313dbe5541c5513
+https://raw.githubusercontent.com/pydicom/pydicom/50cd981a068c74b01d854c6cac9bb897fe0b74a9/src/pydicom/data/test_files/MR_small_implicit.dcm|pydicom-MR_small_implicit|ends-sha256=3958969ec244c50d01a455ad4438586da50f3ba29ffc47200c5b58716097731b
+https://raw.githubusercontent.com/pydicom/pydicom/50cd981a068c74b01d854c6cac9bb897fe0b74a9/src/pydicom/data/test_files/JPEG2000.dcm|pydicom-JPEG2000|ends-sha256=f91b1671ad7c4a9a5a15b93c16728ff7a2b167777e701a4b207a10779381a823
+https://raw.githubusercontent.com/pydicom/pydicom/50cd981a068c74b01d854c6cac9bb897fe0b74a9/src/pydicom/data/test_files/MR_small_jp2klossless.dcm|pydicom-MR_small_jp2klossless|ends-sha256=2c71709aad60ddf28ea0238c13c34874cf707b6bb8f7b973e6ce97ec6d04dc6b
+https://raw.githubusercontent.com/pydicom/pydicom/50cd981a068c74b01d854c6cac9bb897fe0b74a9/src/pydicom/data/test_files/SC_rgb_jpeg_dcmtk.dcm|pydicom-SC_rgb_jpeg_dcmtk|ends-sha256=0325d5cc1721ffb16072903e50c09a80762cfead0f7d569fdb4dfd3876fb5fa9
+https://raw.githubusercontent.com/pydicom/pydicom/50cd981a068c74b01d854c6cac9bb897fe0b74a9/src/pydicom/data/test_files/SC_rgb_jpeg_gdcm.dcm|pydicom-SC_rgb_jpeg_gdcm|ends-sha256=bfb52635407f5a4d4b57bb972bf68f101c7a1650433aa7bead12c4fbe2b6af80
+https://raw.githubusercontent.com/pydicom/pydicom/50cd981a068c74b01d854c6cac9bb897fe0b74a9/src/pydicom/data/test_files/SC_jpeg_no_color_transform.dcm|pydicom-SC_jpeg_no_color_transform|ends-sha256=efaaeb8e4929645d7b85c650011d58e3869eaef92b6fa6cc7c47f77e5ae7b52b
+https://raw.githubusercontent.com/pydicom/pydicom/50cd981a068c74b01d854c6cac9bb897fe0b74a9/src/pydicom/data/test_files/SC_rgb_small_odd_jpeg.dcm|pydicom-SC_rgb_small_odd_jpeg|ends-sha256=7f32f289c8915f0ab8db2568c975fa7fec8fb35dd391a384cd80ee0e7977d89d
+https://raw.githubusercontent.com/pydicom/pydicom/50cd981a068c74b01d854c6cac9bb897fe0b74a9/src/pydicom/data/test_files/rtdose.dcm|pydicom-rtdose|ends-sha256=582049346e2f0bb14bfc0b112c177286e7d5751def1628bc871221c0d741c244
 # Whole-slide image levels from the NCI Imaging Data Commons (idc-open-data):
-https://storage.googleapis.com/idc-open-data/76f1a2b6-bb09-4736-aa91-bf89ef57f877/e0e21b65-c170-4d76-85f4-1302414cd758.dcm|idc-tcga_thym-jpeg
-https://storage.googleapis.com/idc-open-data/aa2237b2-abe7-403d-975a-0c7f3a77094e/148665d3-e9b0-4159-b123-5d85e698f684.dcm|idc-bonemarrow-jpeg
-https://storage.googleapis.com/idc-open-data/46481e31-d3d6-4621-8f10-73bc8cca5f2b/d3ec3a82-7191-4cef-938a-9bd413196844.dcm|idc-tcga_cesc-j2k
-https://storage.googleapis.com/idc-open-data/d42b19a9-89fe-47e1-9dcf-834d1ae510da/b03a7cd0-78c9-41f7-bae3-5f74e90d6194.dcm|idc-rms-j2k-lossless
-https://storage.googleapis.com/idc-open-data/53d54ceb-fb2a-46f4-8458-9ee5dcbd9fef/3cacf081-7ede-4b13-8566-dd96c480db49.dcm|idc-rms-native
-https://storage.googleapis.com/idc-open-data/a1a1e797-a747-4c2b-acbb-4f746a6ecf03/4d1159c0-e240-4b0b-a274-60c2e38d6976.dcm|idc-htan-native
+https://storage.googleapis.com/idc-open-data/76f1a2b6-bb09-4736-aa91-bf89ef57f877/e0e21b65-c170-4d76-85f4-1302414cd758.dcm|idc-tcga_thym-jpeg|ends-sha256=9dd3d770270f2b48fd6a80a650ef62425293e0aab68ec04724e9302446497292
+https://storage.googleapis.com/idc-open-data/aa2237b2-abe7-403d-975a-0c7f3a77094e/148665d3-e9b0-4159-b123-5d85e698f684.dcm|idc-bonemarrow-jpeg|ends-sha256=1212241987954710f71a9896cef0e10d1dacc27ee9abbce109afb2505078c8a0
+https://storage.googleapis.com/idc-open-data/46481e31-d3d6-4621-8f10-73bc8cca5f2b/d3ec3a82-7191-4cef-938a-9bd413196844.dcm|idc-tcga_cesc-j2k|ends-sha256=7a1f8ee1550e6ef5e30c481e5183a60a977395b77c5705a7c4380206f4f2ce3c
+https://storage.googleapis.com/idc-open-data/d42b19a9-89fe-47e1-9dcf-834d1ae510da/b03a7cd0-78c9-41f7-bae3-5f74e90d6194.dcm|idc-rms-j2k-lossless|ends-sha256=a69fda4634a65e09ece8ebb6c66f0edd4dcf8e54d5a164c4ec1dd7140d9fdee9
+https://storage.googleapis.com/idc-open-data/53d54ceb-fb2a-46f4-8458-9ee5dcbd9fef/3cacf081-7ede-4b13-8566-dd96c480db49.dcm|idc-rms-native|ends-sha256=4d0029189025a17c6189a4f99e4b8d9fc1172dee24792dc7f18a679b34963110
+https://storage.googleapis.com/idc-open-data/a1a1e797-a747-4c2b-acbb-4f746a6ecf03/4d1159c0-e240-4b0b-a274-60c2e38d6976.dcm|idc-htan-native|ends-sha256=399488b7451ebcb1cecef26234ebdf7e3b350ecdcf7d14d5ee44f847a29aee37

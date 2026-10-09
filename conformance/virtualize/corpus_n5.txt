@@ -3,12 +3,12 @@
 # ListObjectsV2. Small levels and groups only, so the browser limit (VIRTUALIZE.md §12, 100000
 # objects) is never reached: COSEM multiscale groups (labels, with sparse blocks), and single
 # low-resolution levels (a dataset at the store root).
-https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/labels/gt/|hela2_labels_gt
-https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/labels/mito_seg/|hela2_labels_mito_seg
-https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/em/fibsem-uint16/s4/|hela2_fibsem_uint16_s4
-https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/em/fibsem-uint16/s3/|hela2_fibsem_uint16_s3
-https://janelia-cosem-datasets.s3.amazonaws.com/jrc_cos7-11/jrc_cos7-11.n5/em/fibsem-uint16/s5/|cos7_11_fibsem_uint16_s5
-https://s3.amazonaws.com/janelia-cosem-datasets/jrc_cos7-11/jrc_cos7-11.n5/em/fibsem-uint16/s4/|cos7_11_fibsem_uint16_s4_path_style
+https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/labels/gt/|hela2_labels_gt|listing-sha256=42573ca4f18593bd0a7d3bec145f2d5e4f41d731f43ebead59e476b58fd7dbf5
+https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/labels/mito_seg/|hela2_labels_mito_seg|listing-sha256=ef5fe1ceffcee91c0798b72f7dcc1c4253ce8c06a7d7b55899b9be4752903198
+https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/em/fibsem-uint16/s4/|hela2_fibsem_uint16_s4|listing-sha256=37f2768cd5fb5cc8ae2f97c1691fe2dd7c07be682eb0981dc5891ba19bec4b23
+https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/em/fibsem-uint16/s3/|hela2_fibsem_uint16_s3|listing-sha256=dd8fa42397d9783c9e099e1fa7c8be912fdd6fb4e2bc8e5860dacc502ce38371
+https://janelia-cosem-datasets.s3.amazonaws.com/jrc_cos7-11/jrc_cos7-11.n5/em/fibsem-uint16/s5/|cos7_11_fibsem_uint16_s5|listing-sha256=c8cf456cdd8c997c595d2c0429e186638ab4eabcba9ad90d4f2b2e03bf739c87
+https://s3.amazonaws.com/janelia-cosem-datasets/jrc_cos7-11/jrc_cos7-11.n5/em/fibsem-uint16/s4/|cos7_11_fibsem_uint16_s4_path_style|listing-sha256=12ef0c10d459f10db95186d1abfed7475642cd20d24416cdaf7822d17daebcc6
 # The full-resolution level, 12000 x 1600 x 6368 in 64^3 gzip blocks (about 470000 objects): past the
 # browser limit, so compare.py runs it only with --large, and only with the Python reference.
-https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/em/fibsem-uint16/s0/|hela2_fibsem_uint16_s0|py-only
+https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/em/fibsem-uint16/s0/|hela2_fibsem_uint16_s0|py-only|listing-sha256=ddd512b1b5e99472f2cf0e26edd820e69193318504c9a9dbad7834faab8b05dc

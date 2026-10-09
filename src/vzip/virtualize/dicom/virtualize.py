@@ -7,9 +7,10 @@ import re
 import struct
 
 from vzip.virtualize.common import (
-    MAX_PAYLOAD, Output, Reader, Rejected, array_json, root_json, image_ome, payload_size, transpose_codec,
+    MAX_PAYLOAD, Output, Reader, Rejected, array_json, declare, emit_plans, image_ome, payload_size, root_json,
+    transpose_codec,
 )
-from vzip.virtualize.dicom.source import source_json
+from vzip.virtualize.dicom.source import source_metadata
 from vzip.virtualize.dicom.dataset import (
     EXPLICIT_LE, IMPLICIT_LE, ITEM, PIXEL_DATA, UNDEFINED, Dataset, Element, Encoding, Walker, tag_name,
 )
@@ -81,6 +82,16 @@ class Values:
         if any(v > MAX_SAFE for v in values):
             raise Rejected(f"{tag_name(tag)} has a value above 2^53 - 1")
         return list(values)
+
+    def tag(self, tag: int) -> int | None:
+        """The first value of an AT attribute, as a tag."""
+        el = self._element(tag, ("AT",))
+        if el is None:
+            return None
+        if el.length % 4:
+            raise Rejected(f"{tag_name(tag)} has a length that is not a multiple of 4")
+        group, element = struct.unpack(("<" if el.little else ">") + "HH", self.read(el.value, 4))
+        return group << 16 | element
 
     def strings(self, tag: int, vr: str) -> list[bytes] | None:
         el = self._element(tag, (vr,))
@@ -165,6 +176,7 @@ def virtualize_dicom(url: str, read: Reader, size: int) -> Output:
     total_columns, total_rows = v.integer(0x00480006, "UL"), v.integer(0x00480007, "UL")
     optical_paths, focal_planes = v.integer(0x00480302, "UL"), v.integer(0x00480303, "UL")
     eot, eot_lengths = v.integers64(0x7FE00001), v.integers64(0x7FE00002)
+    increment, frame_time = v.tag(0x00280009), v.decimals(0x00181063)
     if pixel.vr is not None and pixel.vr not in ("OB", "OW"):
         raise Rejected(f"Pixel Data has VR {pixel.vr}")
     # (FG) attributes: the Pixel Measures item where present there, else the top level.
@@ -223,14 +235,28 @@ def virtualize_dicom(url: str, read: Reader, size: int) -> Output:
     planar_native = codec is None and spp == 3 and planar == 1
     frame_size = rows * columns * spp * (bits_allocated // 8)
     frame_ranges: list[list[tuple[int, int] | bytes]] = []
+    pixel_extra = None  # native pixel data past the frames, unless one 00 byte
+    # What an Extended Offset Table skips: a family of bytes, its count, and
+    # whether it holds the frames' item headers.
+    unreferenced = None
+    # Each fragment's (frame, data length), when a frame has more than one,
+    # and whether the Basic Offset Table is not empty (conventions/dicom/README.md §5).
+    fragment_lengths: list[tuple[int, int]] | None = None
+    offset_table = False
     if codec is None:
         if pixel.length == UNDEFINED:
             raise Rejected("native Pixel Data with an undefined length")
+        if pixel.value + pixel.length > size:
+            raise Rejected(f"Pixel Data's {pixel.length} bytes run past the end of the {size}-byte file")
         if pixel.length < n * frame_size:
             raise Rejected(f"Pixel Data has {pixel.length} bytes, less than {n} frames of {frame_size}")
         if not encoding.little and bits_allocated == 8 and pixel.vr == "OW":
             raise Rejected("8-bit Pixel Data of VR OW in big endian")
         frame_ranges = [[(pixel.value + f * frame_size, frame_size)] for f in range(n)]
+        pixel_end = pixel.value + pixel.length
+        extra = pixel.length - n * frame_size
+        if extra > 1 or (extra == 1 and read(pixel_end - 1, 1) != b"\0"):
+            pixel_extra = (pixel.value + n * frame_size, extra)
     else:
         if pixel.length != UNDEFINED:
             raise Rejected("encapsulated Pixel Data with a defined length")
@@ -248,8 +274,34 @@ def virtualize_dicom(url: str, read: Reader, size: int) -> Output:
             if bot_length != 0:
                 raise Rejected("an Extended Offset Table with a Basic Offset Table")
             fragments = [[(q + eot[f] + 8, eot_lengths[f])] for f in range(n)]
+            for (o, length), in fragments:
+                _check_range(o, length, size)
+            # Whether each frame's 8 bytes before its data are its item header:
+            # an item tag, and the frame's length. If one is not, the frames'
+            # items are their data alone, and every header is kept with the
+            # bytes between them.
+            headers = all(struct.unpack("<HHI", read(q + eot[f], 8)) == (0xFFFE, 0xE000, eot_lengths[f])
+                          for f in range(n))
+            # The frames' items, with their headers, MUST NOT overlap.
+            spans = sorted((q + eot[f], 8 + eot_lengths[f]) for f in range(n))
+            if any(a + m > b for (a, m), (b, _) in zip(spans, spans[1:])):
+                raise Rejected("the Extended Offset Table's frames overlap")
+            items = [(q + eot[f], 8 + eot_lengths[f]) if headers else (q + eot[f] + 8, eot_lengths[f])
+                     for f in range(n)]
+            # The bytes between the frames' items, in file order: member k is
+            # those before the k-th (often none). Where Pixel Data ends, without
+            # walking its fragments: after the frame that ends last, at its
+            # sequence delimiter if that follows (else there).
+            members, pixel_end = [], q
+            for k, (o, length) in enumerate(sorted(items)):
+                members.append((k, pixel_end, max(0, o - pixel_end)))
+                pixel_end = max(pixel_end, o + length)
+            if any(m for _, _, m in members):
+                unreferenced = (members, n, not headers)
+            if pixel_end + 8 <= size and struct.unpack("<HHI", read(pixel_end, 8)) == (0xFFFE, 0xE0DD, 0):
+                pixel_end += 8
         else:
-            items, _ = walker.fragments(pixel.value, size, True)
+            items, pixel_end = walker.fragments(pixel.value, size, True)
             items = items[1:]
             if not items:
                 raise Rejected("encapsulated Pixel Data without fragments")
@@ -271,6 +323,9 @@ def virtualize_dicom(url: str, read: Reader, size: int) -> Output:
                 fragments = [data]
             else:
                 raise Rejected(f"{len(items)} fragments for {n} frames without an offset table")
+            offset_table = bool(bot)
+            if any(len(frags) > 1 for frags in fragments):
+                fragment_lengths = [(f, length) for f, frags in enumerate(fragments) for _, length in frags]
         for f, frags in enumerate(fragments):
             ranges: list[tuple[int, int] | bytes] = [r for r in frags if r[1] > 0]
             if not ranges:
@@ -279,13 +334,17 @@ def virtualize_dicom(url: str, read: Reader, size: int) -> Output:
                 o, length = ranges[0]
                 if length <= 2:
                     raise Rejected(f"frame {f}'s first fragment is too short for a JPEG stream")
+                if read(o, 2) != b"\xff\xd8":
+                    raise Rejected(f"frame {f}'s first fragment does not start with a JPEG SOI marker (FF D8)")
                 ranges = [ADOBE + bytes([0 if photometric == b"RGB" else 1]), (o + 2, length - 2)] + ranges[1:]
             frame_ranges.append(ranges)
 
     # conventions/dicom/README.md §4; profiles/dicom.md §6.6: the chunk references
-    axes = (["c"] if spp == 3 else []) + (["z"] if not whole_slide and n > 1 else []) + ["y", "x"]
-    shape = {"c": 3, "z": n, "y": height_px, "x": width_px}
-    chunk_shape = {"c": 1 if planar_native else 3, "z": 1, "y": rows, "x": columns}
+    # The frames are along t when the Frame Increment Pointer is Frame Time or Frame Time Vector.
+    fa = "t" if increment in (0x00181063, 0x00181065) else "z"
+    axes = (["c"] if spp == 3 else []) + ([fa] if not whole_slide and n > 1 else []) + ["y", "x"]
+    shape = {"c": 3, fa: n, "y": height_px, "x": width_px}
+    chunk_shape = {"c": 1 if planar_native else 3, fa: 1, "y": rows, "x": columns}
     codecs = [transpose_codec(axes)] if spp == 3 and not planar_native else []
     if codec is None:
         codecs.append({"name": "bytes", "configuration": {"endian": "little" if encoding.little else "big"}}
@@ -296,9 +355,12 @@ def virtualize_dicom(url: str, read: Reader, size: int) -> Output:
     usable = spacing is not None and len(spacing) == 2 and all(s is not None and s > 0 for s in spacing)
     between = fg[0x00180088]
     step = between[0] if between is not None and between[0] is not None and between[0] > 0 else None
-    scale = {"c": 1, "z": step or 1, "y": spacing[0] if usable else 1, "x": spacing[1] if usable else 1}
-    units = {"z": "millimeter" if step else None, "y": "millimeter" if usable else None,
-             "x": "millimeter" if usable else None}
+    period = frame_time[0] / 1000 if (increment == 0x00181063 and frame_time and frame_time[0] is not None
+                                      and frame_time[0] > 0) else None
+    scale = {"c": 1, "z": step or 1, "t": period or 1, "y": spacing[0] if usable else 1,
+             "x": spacing[1] if usable else 1}
+    units = {"z": "millimeter" if step else None, "t": "second" if period else None,
+             "y": "millimeter" if usable else None, "x": "millimeter" if usable else None}
     ome = image_ome(axes, units, [[scale[a] for a in axes]], None)
 
     if representation == 0:
@@ -327,7 +389,12 @@ def virtualize_dicom(url: str, read: Reader, size: int) -> Output:
 
     out = Output(url)
     # The source metadata (conventions/dicom/README.md §5).
-    out.json("zarr.json", root_json(ome, "dicom", url, source_json(read, size, dataset_start, encoding)))
+    root_meta, node_meta, plans = source_metadata(read, size, dataset_start, encoding, pixel_end, pixel_extra,
+                                                  unreferenced, codec is not None and eot is not None,
+                                                  fragment_lengths, offset_table)
+    out.json("zarr.json", root_json(ome, "dicom", url, root_meta))
+    if node_meta or plans:
+        emit_plans(out, plans, declare({}, "dicom", None, node_meta or None))
     out.json("0/zarr.json", array_json([shape[a] for a in axes], data_type, [chunk_shape[a] for a in axes],
                                        codecs, axes))
     for f, ranges in enumerate(frame_ranges):
@@ -344,9 +411,9 @@ def virtualize_dicom(url: str, read: Reader, size: int) -> Output:
                     _check_range(r[0], r[1], size)
             if payload_size(part) > MAX_PAYLOAD:
                 raise Rejected(f"frame {f}'s reference payload exceeds {MAX_PAYLOAD} bytes")
-            coords = {"c": s, "z": f, "y": row, "x": col}
+            coords = {"c": s, fa: f, "y": row, "x": col}
             out.refs["0/c/" + "/".join(str(coords[a]) for a in axes)] = part
     out.summary = {"axes": axes, "shape": [shape[a] for a in axes], "dataType": data_type,
                    "transferSyntax": syntax.decode("latin-1"), "photometric": photometric.decode("latin-1"),
-                   "frames": n, "wholeSlide": whole_slide, "references": len(out.refs)}
+                   "frames": n, "wholeSlide": whole_slide, "references": sum(k.startswith("0/c/") for k in out.refs)}
     return out

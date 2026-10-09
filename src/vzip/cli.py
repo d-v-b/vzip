@@ -1,7 +1,12 @@
 """Conformance-harness CLI (conformance/HARNESS.md) for the reference implementation.
 
-    python -m vzip.cli read <archive> <queries.json>
+    python -m vzip.cli [--allow-private-hosts] read <archive> <queries.json>
     python -m vzip.cli write <description.json> <out>
+
+`read` uses the reader's default policy (spec §8.7). --allow-private-hosts is
+UNSAFE: it lets the archive's sources reach loopback, private, link-local and
+other special addresses. The harness needs it, since the runner serves its
+HTTP sources on 127.0.0.1.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ from zarr.core.sync import sync
 
 from vzip.archive import RESERVED_PREFIX, VZipWriter
 from vzip.pb import Range, Source
+from vzip.policy import Policy
 from vzip.store import VZipStore
 
 
@@ -89,14 +95,15 @@ def _check_query(q) -> None:
             raise ValueError(f"range values must be non-negative integers: {q!r}")
 
 
-def read(archive: str, queries_path: str) -> dict:
+def read(archive: str, queries_path: str, policy: Policy | None = None) -> dict:
     with open(queries_path) as f:
         queries = json.load(f, object_pairs_hook=_no_duplicates)
     if not isinstance(queries, list):
         raise ValueError("the queries file must hold a JSON array")
     for q in queries:
         _check_query(q)
-    store, raw = VZipStore(archive), VZipStore(archive, resolve=False)
+    store = VZipStore(archive, policy=policy)
+    raw = VZipStore(archive, resolve=False, policy=policy)
     try:
         sync(store._open())
         sync(raw._open())
@@ -208,9 +215,12 @@ def write(desc_path: str, out: str) -> None:
 
 
 def main(argv: list[str]) -> int:
+    policy = None
+    if argv[:1] == ["--allow-private-hosts"]:
+        policy, argv = Policy(allow_private_hosts=True), argv[1:]  # unsafe: asked for by name
     if len(argv) == 3 and argv[0] == "read":
         try:
-            result = read(argv[1], argv[2])
+            result = read(argv[1], argv[2], policy)
         except (OSError, ValueError) as e:
             print(f"invalid queries file: {e}", file=sys.stderr)
             return 2

@@ -21,3 +21,6 @@ conformance/results/
 
 # Test scratch output
 impls/typescript/test/.tmp/
+
+# The IR core's build output
+rust/vzip-ir/target/

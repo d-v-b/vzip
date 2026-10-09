@@ -16,7 +16,7 @@ live demos are at https://d-v-b.github.io/vzip-demo/. for example, [image files 
 
 ## virtualizing image files and stores
 
-vzip can present TIFF, NDPI, ND2, DICOM, NIfTI and Imaris files, and N5, Zarr v2 and OME-Zarr 0.4 stores, as OME-Zarr without copying their pixels. [docs/virtualize/](docs/virtualize/README.md) has a page per format: who it is for, what you get, and how to run it from Python or in the browser.
+vzip can present TIFF, NDPI, ND2, CZI, DICOM, NIfTI and Imaris files, and N5, Zarr v2 and OME-Zarr 0.4 stores, as OME-Zarr, and Sentinel-2 SAFE products as GeoZarr, without copying their pixels. TIFF, ND2 and CZI are read by a Rust core ([rust/vzip-ir](rust/vzip-ir/)) that runs natively from Python and as WebAssembly in the browser. [docs/virtualize/](docs/virtualize/README.md) has a page per format: who it is for, what you get, and how to run it from Python or in the browser.
 
 ## status
 

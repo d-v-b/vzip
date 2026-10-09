@@ -15,8 +15,9 @@ slice of a large 4-D series lazily, has to convert it today.
 
 A NIfTI file is a header followed by one block of voxels, so vzip reads the
 header (348 or 540 bytes) and writes an archive in which every Zarr chunk is
-one z-slice, or one block of rows of a large slice, of the file. The SPM
-`avg152T1.nii` template becomes a 12 KB archive in under 4 s.
+a run of at most 128 KiB of that block: several z-slices, one slice, or
+some rows of a large slice. The SPM `avg152T1.nii` template became a 12 KB
+archive in under 4 s (at VIRTUALIZE.md revision 16).
 
 ## What you get
 
@@ -27,13 +28,15 @@ One OME-Zarr 0.5 image at the archive root, with one array, `0`.
 - **Data types:** every NIfTI integer and float type (`uint8` to `uint64`,
   `int8` to `int64`, `float32`, `float64`), and RGB24 or RGBA32 as `uint8`
   with a `c` axis.
-- **Chunks:** one `y × x` slice per chunk, split into equal row blocks of at
-  most 128 KiB when the slice is larger.
+- **Chunks:** the voxels as the file stores them, cut into equal runs of at
+  most 128 KiB along the outermost axis that allows it: whole volumes or
+  blocks of slices when they are small, else blocks of rows of a slice (13
+  slices per chunk for the template below).
 - **Codecs:** `bytes` in the file's byte order (`transpose` first for
-  colour voxels). No compression: the file has none.
+  color voxels and 5-D files). No compression: the file has none.
 - **Scale:** from the sform or qform when it is axis-aligned with a positive
-  diagonal, else from `pixdim`; units from `xyzt_units` (metres,
-  millimetres, micrometres; seconds and milliseconds).
+  diagonal, else from `pixdim`; units from `xyzt_units` (meters,
+  millimeters, micrometers; seconds, milliseconds and microseconds).
 - **Translation:** the affine's offset, only when the affine is
   axis-aligned. A rotated or flipped affine, such as the common radiological
   sform with a negative x step, gives no translation.
@@ -42,10 +45,12 @@ One OME-Zarr 0.5 image at the archive root, with one array, `0`.
   `vzip_virtualized` convention) as
   `"nifti": {..., "scaling": {"slope": s, "inter": i}}`; compute
   `s × raw + i`.
-- **Header:** every field of the NIfTI header, and its extensions, under
-  `vzip_virtualized.nifti`.
+- **Header:** every field of the NIfTI header, its extensions and its
+  affine, under `vzip_virtualized.nifti` (large extensions as arrays on
+  `vzip_source`). With them, every byte of the file but the voxels and
+  padding is in the hierarchy.
 - **omero:** a display window from `cal_min`/`cal_max`, or R, G, B (A)
-  channels for colour voxels.
+  channels for color voxels.
 
 ## Try it
 
@@ -57,11 +62,13 @@ uv run python -m vzip.virtualize https://raw.githubusercontent.com/spm/spm/main/
 ```
 
 ```
-{"format": "nifti", "version": 1, "byteOrder": "little", "sizes": {"z": 91, "y": 109, "x": 91}, "dataType": "uint8", "colour": false, "rowBlock": 109, "chunks": 91, "scaling": {"slope": 0.003921568859368563, "inter": 0.0}, "affine": "sform", "translation": false, "extensions": false}
+{"format": "nifti", "version": 1, "byteOrder": "little", "sizes": {"z": 91, "y": 109, "x": 91}, "dataType": "uint8", "color": false, "chunkShape": [13, 109, 91], "chunks": 7, "scaling": {"slope": 0.003921568859368563, "inter": 0.0}, "affine": "sform", "translation": false, "extensions": false}
 ```
 
-The sform is radiological (x runs right to left), so there is no
-translation. Read it:
+(This is the current summary, with the chunking of revision 23; it was
+derived from the profile rather than run again. At revision 16 each slice
+was a chunk.) The sform is radiological (x runs right to left), so there is
+no translation. Read it:
 
 ```python
 import zarr
@@ -80,7 +87,7 @@ print(a[45, 50, 40:48])
 [{'name': 'z', 'type': 'space', 'unit': 'millimeter'}, {'name': 'y', 'type': 'space', 'unit': 'millimeter'}, {'name': 'x', 'type': 'space', 'unit': 'millimeter'}]
 [{'path': '0', 'coordinateTransformations': [{'type': 'scale', 'scale': [2.0, 2.0, 2.0]}]}]
 {'slope': 0.003921568859368563, 'inter': 0.0}
-(91, 109, 91) uint8 (1, 109, 91)
+(91, 109, 91) uint8 (13, 109, 91)
 [ 93 106 127 148 150 148 147 131]
 ```
 
@@ -98,7 +105,7 @@ cross-origin reads.
 The Neuroglancer fork (<https://github.com/d-v-b/neuroglancer>, branch `vzip`)
 displays NIfTI archives of `uint8`, `int8`, `uint16`, `int16`, `uint32`,
 `int32`, `uint64` and `float32` data; `avg152T1.nii` renders through a local
-build of the demo, with millimetre scales. It has no `int64` or `float64`
+build of the demo, with millimeter scales. It has no `int64` or `float64`
 data type, so `float64` volumes (which some pipelines write) cannot be shown
 there; zarr-python reads them. Neuroglancer shows the raw values: apply the
 `nifti` scaling yourself where it matters.
@@ -109,12 +116,13 @@ Supported:
 
 - NIfTI-1 and NIfTI-2 single files (`.nii`), either byte order, up to five
   dimensions.
-- Extensions after the header are skipped.
+- Extensions after the header are kept in the source metadata; they do not
+  change where the voxels start.
 
 Rejected:
 
 - Gzipped files (`.nii.gz`), the usual way NIfTI is distributed: `not a
-  TIFF, NDPI, ND2, DICOM, NIfTI or IMS file`. A gzip stream has no byte
+  TIFF, NDPI, ND2, DICOM, NIfTI, IMS, CZI or SAFE zip file`. A gzip stream has no byte
   ranges to reference; decompress the file first (and host the `.nii`).
 - Header-and-image pairs (`.hdr`/`.img`, magic `ni1`, `ni2`).
 - Complex, binary and 128-bit types.
@@ -125,13 +133,12 @@ Rejected:
 
 - Virtualizing reads the first 552 bytes of the file: one range request,
   after one request for the file's size.
-- Reading a chunk is one range request of at most 128 KiB, or of one row if
-  a row alone is larger.
-- The archive has one entry per slice (or row block): 91 for this template.
+- Reading a chunk is one range request of at most 128 KiB.
+- The archive has one entry per chunk: 7 for this template.
 
 ## How it's verified
 
-`web/test/nifti/verify.py` virtualizes 64 synthetic NIfTI files (including
+`web/test/nifti/verify.py` virtualizes 88 synthetic NIfTI files (including
 inputs to reject) with the browser code, reads them back through `src/vzip`
 and zarr-python, and compares the values with nibabel's unscaled data.
 `compare.py` checks that the Python and browser outputs are equivalent on

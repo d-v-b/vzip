@@ -32,9 +32,17 @@ array.
   internal compressors, including `lz4`).
 - **Chunk keys:** the `v2` encoding with the array's own separator (`.` or
   `/`), so the keys are unchanged.
-- **Attributes:** copied unchanged, including OME-NGFF 0.4 metadata of
-  groups below the store's root. Zarr v2 has no dimension names; xarray's
-  `_ARRAY_DIMENSIONS` stays an attribute.
+- **Attributes:** each node's `.zattrs`, whole and unchanged, under
+  `vzip_virtualized.zarr2.attributes` on the node, including OME-NGFF 0.4
+  metadata of groups below the store's root and xarray's
+  `_ARRAY_DIMENSIONS` (Zarr v2 has no dimension names). They are not mixed
+  into the node's own attributes, so they cannot collide with Zarr v3
+  conventions or be read as OME-NGFF 0.5. Members of `.zgroup` or `.zarray`
+  that the `zarr.json` does not reproduce are under
+  `vzip_virtualized.zarr2.metadata`.
+- **Other objects:** any object of the store that is neither a document nor
+  a chunk (a README, `.zmetadata`) is kept whole, referenced in place, under
+  `vzip_source/objects/`.
 
 A store whose **root** declares OME-NGFF 0.4 is migrated to OME-Zarr 0.5
 instead; see [ome-zarr](../ome-zarr/README.md).
@@ -51,10 +59,13 @@ uv run python -m vzip.virtualize https://janelia-cosem-datasets.s3.amazonaws.com
 ```
 
 ```
-{"format": "zarr2", "groups": 0, "arrays": 1, "chunks": 24, "emptyChunks": 0, "objects": 25, "listingRequests": 1}
+{"format": "zarr2", "groups": 0, "arrays": 1, "chunks": 24, "emptyChunks": 0, "objects": 25, "otherObjects": 0, "listingRequests": 1}
 ```
 
-This took about 1 s and wrote a 3.6 KB archive. The store's root is an
+This took about 1 s and wrote a 3.6 KB archive, at VIRTUALIZE.md revision 16
+([overview](../README.md#formats)). (`otherObjects`, the objects kept under
+`vzip_source/objects/`, is new since then; it is 0 here, as the store's 25
+objects are its `.zarray` and 24 chunks.) The store's root is an
 array, so open it as one:
 
 ```python
@@ -91,8 +102,9 @@ reads the `v2` chunk key encoding and the `transpose`, `bytes`, `zlib`,
 `int32`, `uint64` and `float32` data. It has no `bool`, `float16`, `int64`
 or `float64` data type, so arrays of those types cannot be shown there. The
 demo page needs an OME-Zarr image; groups with OME-NGFF 0.4 metadata below
-the root keep it as 0.4 attributes on Zarr v3, which the fork's OME parser
-accepts, but this was not checked with a real store.
+the root keep it only under `vzip_virtualized`, where an OME-NGFF reader does
+not look, so they are not shown as images. (A store whose root is OME-NGFF
+0.4 is migrated instead: see [ome-zarr](../ome-zarr/README.md).)
 
 ## Supported and not supported
 
@@ -121,7 +133,8 @@ Notes:
   `https://s3.amazonaws.com/janelia-cosem-datasets/...`); see the
   [N5 page](../n5/README.md#supported-and-not-supported) for the rule.
 - Consolidated metadata (`.zmetadata`) is never read: nodes come from the
-  listing, so stale consolidated metadata cannot change the output.
+  listing, so stale consolidated metadata cannot change the output. It is
+  kept, like any other object, under `vzip_source/objects/`.
 
 ## Performance
 
@@ -130,11 +143,13 @@ Notes:
   and gave a 43.7 MB archive
   ([REVISIONS.md](../../../conformance/virtualize/REVISIONS.md), revision
   12).
-- **Many small groups cost one request per document.** OpenOrganelle's
-  `labels/groundtruth/crop155/` (65 groups, 384 arrays, 22484 objects) took
-  4.4 minutes with only 23 listing requests: the Python command reads the
-  `.zgroup`, `.zarray` and `.zattrs` documents one at a time. The archive
-  is 3.3 MB.
+- **Many small groups cost one request per document.** The `.zgroup`,
+  `.zarray` and `.zattrs` documents are read concurrently, 16 requests at a
+  time by default (`--workers N` in Python, `concurrency` in the browser),
+  holding at most 64 MiB of documents ahead. At revision 16, when they were
+  read one at a time, OpenOrganelle's `labels/groundtruth/crop155/` (65
+  groups, 384 arrays, 22484 objects) took 4.4 minutes with only 23 listing
+  requests, and gave a 3.3 MB archive; it has not been measured since.
 - **The archive grows with the number of chunks:** one `url` source and one
   entry per chunk. Virtualize the arrays or groups you need.
 - **The browser stops at 100000 listed objects** (HTTP 507).

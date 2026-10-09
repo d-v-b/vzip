@@ -21,6 +21,9 @@ def _build():
     rng.oneof_decl.add(name="_data")  # proto3 `optional` = synthetic oneof
     rng.field.add(name="data", number=5, type=_F.TYPE_BYTES, label=_F.LABEL_OPTIONAL,
                   oneof_index=0, proto3_optional=True)
+    rng.oneof_decl.add(name="_crc32c")
+    rng.field.add(name="crc32c", number=6, type=_F.TYPE_UINT32, label=_F.LABEL_OPTIONAL,
+                  oneof_index=1, proto3_optional=True)
 
     cat = fdp.message_type.add(name="Concat")
     cat.field.add(name="parts", number=1, type=_F.TYPE_MESSAGE, type_name=".vzip.v0.Range",
@@ -40,6 +43,9 @@ def _build():
     tbl = fdp.message_type.add(name="SourceTable")
     tbl.field.add(name="sources", number=1, type=_F.TYPE_MESSAGE, type_name=".vzip.v0.Source",
                   label=_F.LABEL_REPEATED)
+    tbl.oneof_decl.add(name="_revision")
+    tbl.field.add(name="revision", number=2, type=_F.TYPE_UINT32, label=_F.LABEL_OPTIONAL,
+                  oneof_index=0, proto3_optional=True)
 
     idx = fdp.message_type.add(name="CdIndex")
     page = idx.nested_type.add(name="Page")
@@ -72,6 +78,8 @@ def range_msg(r: dict):
         m.data = bytes.fromhex(r["data"])
     else:
         m.source, m.offset, m.length = r.get("source", 0), r.get("offset", 0), r.get("length", 0)
+        if "crc32c" in r:
+            m.crc32c = r["crc32c"]
     return m
 
 
@@ -85,8 +93,10 @@ def payload(ranges: list[dict]) -> tuple[int, bytes]:
     return 0x7A77, c.SerializeToString(deterministic=True)
 
 
-def source_table(sources: list[dict]) -> bytes:
+def source_table(sources: list[dict], revision: int | None = None) -> bytes:
     t = SourceTable()
+    if revision is not None:
+        t.revision = revision
     for s in sources:
         m = t.sources.add()
         for k, v in s.items():

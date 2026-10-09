@@ -6,10 +6,11 @@ Each fixture file under 256 KiB gets `count` mutants: a byte set to a random
 value near the start or end of the file (where headers, IFDs and chunk maps
 are), a byte anywhere, or a truncation.
 
-Each synthetic store (a directory under web/test/fixtures/n5, zarr2 or ome-zarr) gets
-`count` mutants, copied to <out dir>/<format>/<name>.m<k>/, each with one
-change: a metadata document (attributes.json, .zarray, .zgroup, .zattrs)
-mutated as bytes, or as JSON (a member's value replaced by a value of
+Each synthetic store (a directory under web/test/fixtures/n5, zarr2, ome-zarr or
+safe, but the SAFE products made to be rejected) gets `count` mutants, copied to
+<out dir>/<format>/<name>.m<k>/, each with one change: a metadata document
+(attributes.json, .zarray, .zgroup, .zattrs, or a SAFE product's XML) mutated as
+bytes, or as JSON (a member's value replaced by a value of
 another type or an edge value, or the member removed); a chunk object
 truncated, emptied, deleted or changed; an object deleted; or a stray
 metadata document added.
@@ -28,8 +29,12 @@ import sys
 from pathlib import Path
 
 FIXTURES = Path(__file__).resolve().parents[2] / "web" / "test" / "fixtures"
-STORE_FORMATS = ("n5", "zarr2", "ome-zarr")
+STORE_FORMATS = ("n5", "zarr2", "ome-zarr", "safe")
 METADATA = ("attributes.json", ".zarray", ".zgroup", ".zattrs")
+
+
+def is_metadata(p: Path) -> bool:
+    return p.name in METADATA or p.suffix == ".xml" or p.name == "manifest.safe"
 EDGE_VALUES = [None, -1, 0, 1, 2, 2**31, 2**53, 1.5, -0.0, 1e308, True, "", "x", "NaN", "raw", "gzip", "blosc",
                "uint8", "<u2", "|b1", "F", "/", [], [1], [0, 0], {}, {"type": "raw"}, {"id": "zlib"}]
 
@@ -83,8 +88,8 @@ def mutate_json(data: bytes, rng: random.Random) -> bytes:
 def mutate_store(src: Path, dst: Path, rng: random.Random) -> None:
     shutil.copytree(src, dst)
     files = sorted(p for p in dst.rglob("*") if p.is_file())
-    meta = [p for p in files if p.name in METADATA]
-    chunks = [p for p in files if p.name not in METADATA]
+    meta = [p for p in files if is_metadata(p)]
+    chunks = [p for p in files if not is_metadata(p)]
     kind = rng.random()
     if meta and kind < 0.3:
         f = rng.choice(meta)
@@ -123,10 +128,11 @@ def main(argv: list[str]) -> int:
     count = int(argv[1]) if len(argv) > 1 else 10
     rng = random.Random(int(argv[2]) if len(argv) > 2 else 0)
     out.mkdir(parents=True, exist_ok=True)
-    stores = sorted(d for f in STORE_FORMATS if (FIXTURES / f).is_dir() for d in (FIXTURES / f).iterdir() if d.is_dir())
+    stores = sorted(d for f in STORE_FORMATS if (FIXTURES / f).is_dir() for d in (FIXTURES / f).iterdir()
+                    if d.is_dir() and not d.name.startswith("safe_reject_"))
     for p in sorted([*FIXTURES.rglob("*.tif"), *FIXTURES.rglob("*.ndpi"), *FIXTURES.rglob("*.nd2"), *FIXTURES.rglob("*.dcm"), *FIXTURES.rglob("*.nii"),
-                     *FIXTURES.rglob("*.ims")]):
-        if any(p.is_relative_to(s) for s in stores):
+                     *FIXTURES.rglob("*.ims"), *FIXTURES.rglob("*.SAFE.zip")]):
+        if any(p.is_relative_to(s) for s in stores) or p.name.startswith("safe_reject_"):
             continue
         data = p.read_bytes()
         if len(data) > 256 * 1024 or len(data) < 2:

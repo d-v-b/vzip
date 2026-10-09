@@ -30,6 +30,15 @@ from pathlib import Path
 import numcodecs
 import numpy as np
 
+
+def pinned_gzip(data: bytes, level: int = 9) -> bytes:
+    """gzip.compress with modification time 0 and the header's OS byte pinned to 255
+    ("unknown"): zlib writes its build's OS code there (3 on Linux, 19 on macOS), so
+    unpinned fixtures differ between platforms."""
+    out = bytearray(gzip.compress(data, compresslevel=level, mtime=0))
+    out[9] = 255
+    return bytes(out)
+
 OUT = Path(__file__).parents[1] / "fixtures" / "n5"
 RNG = np.random.default_rng(5)
 
@@ -46,7 +55,7 @@ def compress(data: bytes, compression: dict, itemsize: int) -> bytes:
     if t == "gzip":
         if compression.get("useZlib"):
             return zlib.compress(data, 6)
-        return gzip.compress(data, mtime=0)
+        return pinned_gzip(data)
     if t == "zstd":
         return numcodecs.Zstd(level=3).encode(data)
     if t == "blosc":
@@ -305,9 +314,76 @@ def main() -> None:
     d = store("n5_reject_no_root_attributes")
     dataset(d, "x", arr((2, 2), "u1"), [2, 2], RAW, write_blocks=False)
 
+    # Source metadata (conventions/n5/README.md §5): the attributes, and the layout members the
+    # Zarr v3 metadata does not reproduce (the version `n5`, a compression's members its codec
+    # does not carry, a compressionType next to a compression); the compression levels, which
+    # the codecs carry; integers beyond 2^53 kept exact. Written after the stores above, so
+    # that the random data of those does not change.
+    d = store("n5_source_metadata", {"n5": "4.0.0", "id": 18446744073709551615, "neg": -9007199254740993})
+    dataset(d, "gzip_9", arr((4,), "u1"), [4], {"type": "gzip", "level": 9})
+    dataset(d, "gzip_no_level", arr((4,), "u1"), [4], {"type": "gzip"})
+    dataset(d, "zlib_default", arr((4,), "u1"), [4], {"type": "gzip", "useZlib": True, "level": -1})
+    dataset(d, "zstd_extra", arr((4,), "u1"), [4], {"type": "zstd", "level": -5, "nbWorkers": 2})
+    dataset(d, "both", arr((4,), "u1"), [4], RAW, extra={"compressionType": "gzip", "n5": "4.0.0"})
+    dataset(d, "layout_only", arr((4,), "u1"), [4], RAW)
+    write_json(d / "version_only/attributes.json", {"n5": "4.0.0"})
+    dataset(d, "version_only/x", arr((4,), "u1"), [4], RAW)
+
+    # Objects that are neither node documents nor blocks (conventions/n5/README.md §6): each is
+    # kept whole under vzip_source/objects/, a dataset nested in a dataset included; an empty
+    # object is not.
+    d = store("n5_objects", {"n5": "4.0.0"})
+    dataset(d, "a", arr((4,), "u1"), [4], RAW)
+    dataset(d, "a/labels", arr((4,), "u1"), [4], RAW, extra={"meaning": "kept as objects"})
+    put(d / "README", b"about this container\n")
+    put(d / "g/notes.txt", b"a stray object\n")
+    write_json(d / "g/attributes.json", {"kind": "group"})
+    put(d / "g/empty", b"")
+
+    reject("gzip_level", {**ok, "compression": {"type": "gzip", "level": 10}})
+    reject("zstd_level", {**ok, "compression": {"type": "zstd", "level": 2.5}})
+    d = store("n5_reject_objects_collision", {"n5": "4.0.0"})  # a node where the other objects go
+    write_json(d / "vzip_source/attributes.json", {"mine": True})
+    put(d / "README", b"x")
+
     total = sum(f.stat().st_size for f in OUT.rglob("*") if f.is_file())
     print(f"{sum(1 for _ in OUT.iterdir())} stores, {total} bytes")
 
 
+def exact_objects() -> None:
+    """Objects named zarr.json, escaped with `~` under vzip_source/objects/, and empty
+    objects, whose keys are vzip_source's source metadata (conventions/n5/README.md §6)."""
+    d = store("n5_node_names", {"n5": "4.0.0"})
+    put(d / "zarr.json", b'{"zarr_format": 3, "node_type": "group"}')
+    put(d / "g/zarr.json~", b"one tilde")
+    dataset(d, "a", np.arange(4, dtype="uint16"), [4], RAW)
+    put(d / "a/zarr.json", b'{"zarr_format": 3, "node_type": "group"}')
+    put(d / "e", b"")
+
+
+
+
+def empty_chunks() -> None:
+    """A root dataset with an empty block object, whose key is listed in
+    vzip_source/empty.json (conventions/n5/README.md §3.1, §6)."""
+    d = store("n5_root_dataset_empty_block")
+    dataset(d, "", np.arange(4, dtype="uint16"), [2], RAW, extra={"n5": "4.0.0"})
+    put(d / "1", b"")
+
+
+def root_objects() -> None:
+    """A dataset at the root with another object beside its block (a README), which the
+    root keeps without a vzip_source group (conventions/n5/README.md §6). Written byte for
+    byte as the first, hand-made copy was: compact JSON with a newline, no RNG."""
+    d = store("n5_root_dataset_objects")
+    put(d / "attributes.json",
+        b'{"dimensions":[4],"blockSize":[4],"dataType":"uint8","compression":{"type":"raw"}}\n')
+    put(d / "0", block_bytes(np.array([1, 2, 3, 4], dtype="uint8"), RAW))
+    put(d / "README", b"notes\n")
+
+
 if __name__ == "__main__":
     main()
+    exact_objects()
+    empty_chunks()
+    root_objects()

@@ -107,8 +107,9 @@ be 0, within the item's own container.
 depth of the dataset holding its sequence, plus 1. An item at a depth above
 64 rejects the input.
 
-Of elements with the same tag in a dataset, the first is used; tags are not
-otherwise required to be in order. Every element walked is checked as this
+Of elements with the same tag in a dataset, the first is used (the
+convention's source metadata keeps the others); tags are not otherwise
+required to be in order. Every element walked is checked as this
 section says, whether or not the convention §2.2 reads it.
 
 ### 6.4 Rejection
@@ -124,8 +125,11 @@ Let `B = Bits Allocated / 8` and `F = Rows × Columns × S × B`, a frame's
 size. Let `v` be the start of the top-level Pixel Data value and `n` its
 length.
 
-**Native.** The Pixel Data length MUST be defined, with `n ≥ N × F` (extra
-bytes, such as a padding byte, are ignored). In explicit VR big endian,
+**Native.** The Pixel Data length MUST be defined, its value MUST lie
+within the file (`v + n` at most the file's size; this is checked before
+anything is computed from `n` or `N`), and `n ≥ N × F` (extra bytes, such
+as a padding byte, are not part of a frame: the convention §5 keeps them).
+In explicit VR big endian,
 Pixel Data with VR `OW` and Bits Allocated 8 is rejected (its bytes are
 swapped in 16-bit words). Frame `f` is the range `(0, v + f × F, F)`; when
 `S` is 3 and Planar Configuration is 1, sample `s` of the frame is the range
@@ -146,8 +150,16 @@ The frames' fragments are found by the first of these that applies.
 1. **Extended Offset Table.** If `(7FE0,0001)` or `(7FE0,0002)` is present,
    both MUST be, each with exactly `N` values, and the BOT MUST be empty
    (`L = 0`). Frame `f` is one fragment, whose data is the range
-   `(0, q + EOT[f] + 8, EOTL[f])`. The fragments' item headers are not read
-   or checked, nor is the end of the sequence.
+   `(0, q + EOT[f] + 8, EOTL[f])`. The frames' items, the ranges
+   `(q + EOT[f], 8 + EOTL[f])` of each frame's 8 bytes before its data and
+   its data, MUST NOT overlap (taken in order of offset, then of length,
+   each MUST start at or after the end of the one before it); otherwise the
+   input is rejected. The fragments' item headers do not
+   decide the frames, nor does the end of the sequence: neither is checked,
+   and the input is not rejected for them. The convention §5 reads each
+   frame's 8 bytes at `q + EOT[f]`, and keeps them, with the bytes between
+   the frames' items, when one is not an item header `(FFFE,E000)` of
+   length `EOTL[f]`.
 2. Otherwise every fragment's item header is read, up to and including
    the `(FFFE,E0DD)` that ends the sequence, all within the file. There
    MUST be at least one fragment.
@@ -167,8 +179,9 @@ headers.
 **JPEG color.** For `jpeg` with `S` = 3, the frame's stream is made
 explicit about its color transform, as the TIFF profile does for JPEG tiles
 ([tiff.md §3.3](tiff.md#33-chunks)): its ranges become `[P, (0, o + 2, m − 2), ...the rest]`, where
-`(0, o, m)` is its first range, `m` MUST be more than 2 (the frame's
-first 2 bytes, its SOI marker, are dropped), and `P` is the literal range
+`(0, o, m)` is its first range, `m` MUST be more than 2 and the range's
+first 2 bytes MUST be `FF D8`, the SOI marker (they are dropped, and `P`
+starts with its own), and `P` is the literal range
 `FF D8 FF EE 00 0E 41 64 6F 62 65 00 64 00 00 00 00 T`: SOI and an Adobe
 APP14 marker with transform `T` = 0 for `RGB` and 1 for `YBR_FULL` and
 `YBR_FULL_422`. (Markers of the stream's own, such as JFIF, still apply by
@@ -181,7 +194,7 @@ MUST be at most 65519 bytes (§1.2); otherwise the input is rejected.
 
 Frame `f` (or sample `s` of it) is the entry `0/c/<coords>` of
 [the convention §4](../conventions/dicom/README.md#4-output), with its ranges (§6.5). Coords are: for `c`, the sample `s` when planar,
-else 0; for `z`, `f`; then the frame's tile row and column for a
+else 0; for the frame axis, `f`; then the frame's tile row and column for a
 whole-slide image, else 0 and 0.
 
 
@@ -196,7 +209,10 @@ These are deliberate, and follow from the rules above.
   level); `TILED_SPARSE` images, and those with several focal planes or
   optical paths, are rejected.
 - The frames of a multi-frame image that is not a whole-slide image are
-  placed along `z`, whatever they are (slices, time points, cine frames).
+  placed along `t` when the Frame Increment Pointer names Frame Time or
+  Frame Time Vector, and along `z` otherwise, whatever they are. An
+  enhanced image whose frames span several dimensions (slices, echoes,
+  b-values) is still one axis.
 - With an empty Basic Offset Table, no Extended Offset Table, and a number
   of fragments other than 1 or `N`, the input is rejected rather than split
   at JPEG markers, which would read pixel data.

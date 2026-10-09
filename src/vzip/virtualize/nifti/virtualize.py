@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
-import base64
+import json
 import math
 import struct
+import sys
+from array import array
+
+import numpy as np
 
 from vzip.virtualize.common import (
-    Output, Reader, Rejected, array_json, image_ome, json_number, json_text, root_json, transpose_codec,
+    MAX_PAYLOAD, RAGGED_CHUNK, SOURCE_NODE, Output, Plan, Reader, Rejected, array_json, declare, emit_plans,
+    grid_chunks, image_ome, json_base64, json_number, json_text, payload_size, root_json, row_chunks, text_json,
 )
 
 MAX_SAFE = 2**53 - 1
-BLOCK_BYTES = 1 << 17  # the most bytes of a row block (conventions/nifti/README.md §4.1)
+CHUNK_BYTES = 1 << 17  # the most bytes of a chunk of the image (conventions/nifti/README.md §4.1)
+MAX_CHANNELS = 64  # the most channels given display windows (conventions/nifti/README.md §4.4)
 
 # Header length, magic (§1.2) and the offset and struct format of each field (conventions/nifti/README.md §2).
 LAYOUTS = {
@@ -59,33 +65,254 @@ HEADER_FIELDS = {
         ("unused_str", 525, "s15"),
     ],
 }
-MAX_EXTENSION_BYTES = 1 << 24  # the most extension data recorded (conventions/nifti/README.md §5)
 
 
-def header_json(version: int, order: str, header: bytes) -> dict:
-    """Every header field, translated (conventions/nifti/README.md §5)."""
-    out = {}
+# The bits of the one NaN a float field is written back as from "NaN" (conventions/nifti/README.md §5).
+CANONICAL_NAN = {"f": 0x7FC00000, "d": 0x7FF8000000000000}
+
+
+def float_json(order: str, kind: str, raw: bytes):
+    """A float field's value as source metadata (conventions/nifti/README.md §5): a number,
+    or {"bits": hex} for a negative zero or a NaN other than the canonical one, whose
+    bits JSON numbers and "NaN" do not keep."""
+    v = struct.unpack(order + kind, raw)[0]
+    bits = int.from_bytes(raw, "little" if order == "<" else "big")
+    if (v == 0 and math.copysign(1, v) < 0) or (math.isnan(v) and bits != CANONICAL_NAN[kind]):
+        return {"bits": f"{bits:0{2 * len(raw)}x}"}
+    return json_number(v)
+
+
+def header_json(version: int, order: str, header: bytes) -> tuple[dict, dict]:
+    """Every header field, translated, and the bytes after the first NUL of each
+    character field but `magic` where they are not all NUL (conventions/nifti/README.md §5)."""
+    out, rest = {}, {}
     for name, offset, kind in HEADER_FIELDS[version]:
         if kind[0] == "s":
-            out[name] = json_text(header[offset:offset + int(kind[1:])])
+            raw = header[offset:offset + int(kind[1:])]
+            out[name] = json_text(raw)
+            tail = raw.partition(b"\0")[2]
+            if name != "magic" and tail.strip(b"\0"):
+                rest[name] = json_base64(tail)
             continue
-        values = struct.unpack_from(order + kind, header, offset)
-        out[name] = [json_number(v) for v in values] if kind[0].isdigit() else json_number(values[0])
-    return out
+        if kind[-1] in "fd":
+            size = struct.calcsize(kind[-1])
+            values = [float_json(order, kind[-1], header[at:at + size])
+                      for at in range(offset, offset + struct.calcsize(kind), size)]
+        else:
+            values = [json_number(v) for v in struct.unpack_from(order + kind, header, offset)]
+        out[name] = values if kind[0].isdigit() else values[0]
+    return out, rest
 
 
-def extensions_json(read: Reader, order: str, start: int, vox: int) -> tuple[list[dict], bool]:
-    """The extensions from `start` up to the voxel data, and whether the chain was
-    cut short (conventions/nifti/README.md §5)."""
-    out, q, total = [], start, 0
-    while q + 8 <= vox:
-        esize, ecode = struct.unpack(order + "ii", read(q, 8))
-        if esize < 8 or q + esize > vox or total + esize - 8 > MAX_EXTENSION_BYTES:
-            return out, True
-        out.append({"ecode": ecode, "edata": base64.b64encode(read(q + 8, esize - 8)).decode()})
-        total += esize - 8
-        q += esize
-    return out, False
+TEXT_CODES = {4, 6, 8, 32, 44}  # AFNI and XCEDE XML, comment, CIFTI XML, MRS JSON: text
+INLINE = 64  # the most bytes of binary extension data kept as JSON
+MAX_TEXT = 1 << 16  # the longest text extension kept as JSON
+EXTENSIONS_BUDGET = 1 << 14  # the most bytes of the extensions' JSON on the root
+LIST_MOST = EXTENSIONS_BUDGET // 12  # the most extensions of an array E in the budget: each is >= 12 bytes
+SCAN = 1 << 20  # the bytes read at a time to check that a run is all zero
+EXTENDERS = (bytes(4), b"\1\0\0\0")  # the extenders that are not recorded
+
+
+ECODES = f"{SOURCE_NODE}/extensions/ecode"
+ESIZES = f"{SOURCE_NODE}/extensions/esize"
+EDATA = f"{SOURCE_NODE}/extensions/data"
+ECODE_CHUNK = 1 << 22  # the most values of a chunk of the ecodes (conventions/nifti/README.md §5)
+
+
+def extensions_json(read: Reader, order: str, start: int, vox: int) -> tuple[tuple[object, list], int]:
+    """The extension chain from `start` up to the voxel data (conventions/nifti/README.md §5):
+    (its JSON, its arrays, where it ends). The chain is kept as two packed columns, so that
+    memory per extension is 8 bytes; the JSON is built per extension only while it may fit."""
+    esizes, ecodes, q = array("i"), array("i"), start
+    fmt = order + "ii"
+    while q + 8 <= vox:  # read the chain a block at a time
+        block, p = read(q, min(SCAN, vox - q)), 0
+        while p + 8 <= len(block):
+            esize, ecode = struct.unpack_from(fmt, block, p)
+            if esize < 8 or q + p + esize > vox:
+                return extensions_value(read, order, start, q + p, esizes, ecodes), q + p
+            esizes.append(esize)
+            ecodes.append(ecode)
+            p += esize
+        q += p
+    return extensions_value(read, order, start, q, esizes, ecodes), q
+
+
+def extension_text(ecode: int, data: bytes | None):
+    """The text value of an extension's data, or None when it is not a text extension (§5)."""
+    if ecode not in TEXT_CODES or data is None:
+        return None
+    head, _, pad = data.partition(b"\0")
+    return None if pad.strip(b"\0") else text_json(head)
+
+
+def extensions_value(read: Reader, order: str, start: int, end: int, esizes: array, ecodes: array
+                     ) -> tuple[object, list]:
+    """The value of `extensions` and its arrays, for the chain from `start` to `end` (§5)."""
+    count = len(esizes)
+    if count <= LIST_MOST:  # the array E may fit: build it while its running size does
+        out, plans, size, at = [], [], 1, start + 8  # size: the JSON of "[" and of each entry and its separator
+        for i in range(count):
+            n, ecode = esizes[i] - 8, ecodes[i]
+            entry: dict = {"ecode": ecode}
+            data = read(at, n) if n <= MAX_TEXT else None
+            text = extension_text(ecode, data)
+            if text is not None:
+                entry["text"] = text
+                if n + 8 != text_esize(len(data.partition(b"\0")[0])):  # padded otherwise than with the fewest NULs
+                    entry["esize"] = n + 8
+            elif n <= INLINE:
+                entry["edata"] = json_base64(data)
+            else:
+                path = f"extensions/{i}"
+                rows, chunks = row_chunks(at, n, 1)
+                plans.append(Plan(path, "uint8", [n], [rows], ["byte"], chunks))
+                entry["data"] = f"{SOURCE_NODE}/{path}"
+            out.append(entry)
+            size += json_size(entry) + 1
+            if size > EXTENSIONS_BUDGET:
+                break
+            at += n + 8
+        else:
+            return out, plans
+    # Over the budget: the ecodes, the text extensions that fit, and the others' data as a family.
+    compact: dict = {"ecode": ECODES, "esize": ESIZES, "data": EDATA}
+    size, inline = json_size(compact), {}
+    sizes = np.frombuffer(esizes, dtype=np.int32)
+    # The extensions that may be text, and where their data is.
+    candidates = np.flatnonzero(np.isin(np.frombuffer(ecodes, dtype=np.int32), sorted(TEXT_CODES))
+                                & (sizes <= MAX_TEXT + 8))
+    places = start + 8 + np.cumsum(sizes, dtype=np.int64)[candidates] - sizes[candidates]
+    for j in range(len(candidates)):
+        i = int(candidates[j])
+        least = len(str(i)) + 2 + 1 + 2 + (1 if inline else len(',"text":{}'))  # "i":"" with its separator
+        if size + least > EXTENSIONS_BUDGET:
+            break  # no later text fits: their indexes are no shorter
+        text = extension_text(ecodes[i], read(int(places[j]), esizes[i] - 8))
+        if text is not None:
+            more = least - 2 + json_size(text)
+            if size + more <= EXTENSIONS_BUDGET:
+                inline[i] = text
+                size += more
+    del sizes, candidates, places
+    if inline:
+        compact["text"] = {str(i): text for i, text in inline.items()}
+    k = -(-count // ECODE_CHUNK)
+    c = -(-count // k)
+    plans = []
+    for name, column in (("ecode", ecodes), ("esize", esizes)):
+        if (order == "<") != (sys.byteorder == "little"):
+            column = array("i", column)
+            column.byteswap()
+        values = column.tobytes() + bytes(4 * (k * c - count))
+        plans.append(Plan(f"extensions/{name}", "int32", [count], [c], ["index"],
+                          {(j,): values[j * c * 4:(j + 1) * c * 4] for j in range(k)},
+                          endian="little" if order == "<" else "big"))
+    return compact, plans + data_family("extensions/data", Window(read, end), start, esizes, inline)
+
+
+def data_family(path: str, read: Window, start: int, esizes: array, inline: dict) -> list[Plan]:
+    """The extensions' data as a family of byte values in its second form (conventions §7),
+    member i absent when it is in `inline`: the rule of common.family_plans, from the packed
+    esizes, so that memory is 8 bytes per member and one chunk at a time."""
+    count = len(esizes)
+    ends = np.frombuffer(esizes, dtype=np.int32).astype(np.int64)
+    ends -= 8
+    ends[sorted(inline)] = 0
+    np.cumsum(ends, out=ends)  # where each member ends in the data
+    starts = array("q", [0])  # the members' starts in the data, then its length
+    starts.frombytes(memoryview(ends).cast("B"))
+    del ends
+    total = starts[count]
+    packed = starts.tobytes() if sys.byteorder == "little" else np.array(starts, dtype="<i8").tobytes()
+    # The offsets are copied, and cut as contiguous values (conventions/README.md §7).
+    shape, cut = grid_chunks(0, [count + 1], 8, lambda o, n: packed[o : o + n])
+    offsets = {k: v if isinstance(v, bytes) else b"".join(packed[r[0] : r[0] + r[1]] if isinstance(r, tuple) else r
+                                                          for r in v) for k, v in cut.items()}
+    plans = [Plan(f"{path}/offsets", "int64", [count + 1], shape, ["index"], offsets)]
+    if not total:
+        return plans
+    size_c = -(-total // -(-total // RAGGED_CHUNK))  # balanced: k = ceil(total / 2^20) chunks
+    data_chunks = {}
+    first, source = 0, start  # the first member that may reach the chunk, and where its extension is
+    for c in range(-(-total // size_c)):
+        lo, hi = c * size_c, min(total, (c + 1) * size_c)
+        while first < count and (first in inline or starts[first + 1] <= lo):
+            source += esizes[first]
+            first += 1
+        ranges: list = []
+        fixed = 0  # the payload of the ranges but the last, as payload_size counts them
+        copy, filled = None, 0  # the chunk's bytes, once its ranges are over the payload, and how many
+        o = source
+        for i in range(first, count):
+            at = starts[i]
+            if at >= hi:
+                break
+            if i not in inline and starts[i + 1] > lo:
+                begin, n = o + 8 + max(lo, at) - at, min(hi, starts[i + 1]) - max(lo, at)
+                if copy is not None:
+                    copy[filled:filled + n] = read(begin, n)
+                    filled += n
+                elif ranges and ranges[-1][0] + ranges[-1][1] == begin:  # adjacent in the source: one range
+                    ranges[-1] = (ranges[-1][0], ranges[-1][1] + n)
+                else:
+                    if ranges:
+                        fixed += _term(ranges[-1])
+                    ranges.append((begin, n))
+                if copy is None and len(ranges) > 1 and fixed + _term(ranges[-1]) > MAX_PAYLOAD:
+                    copy = bytearray(size_c)  # it stays over: copy it, the padding zero
+                    for r in ranges:
+                        copy[filled:filled + r[1]] = read(*r)
+                        filled += r[1]
+            o += esizes[i]
+        pad = [bytes(size_c - (hi - lo))] if hi - lo < size_c else []
+        if copy is not None:
+            data_chunks[(c,)] = bytes(copy)
+            continue
+        ranges += pad
+        if payload_size(ranges) > MAX_PAYLOAD:
+            ranges = b"".join(read(r[0], r[1]) if isinstance(r, tuple) else r for r in ranges)
+        data_chunks[(c,)] = ranges
+    plans.append(Plan(f"{path}/data", "uint8", [total], [size_c], ["byte"], data_chunks))
+    return plans
+
+
+class Window:
+    """Reads of the chain, in increasing order, through a window of SCAN bytes, so that
+    the data of many short extensions is one read (it ends at the chain's `end`)."""
+
+    def __init__(self, read: Reader, end: int):
+        self.read_source, self.end, self.start, self.data = read, end, 0, b""
+
+    def __call__(self, offset: int, length: int) -> bytes:
+        if not (self.start <= offset and offset + length <= self.start + len(self.data)):
+            self.start, self.data = offset, self.read_source(offset, max(length, min(SCAN, self.end - offset)))
+        return self.data[offset - self.start:offset - self.start + length]
+
+
+def _term(r) -> int:
+    """A range's bytes in a reference of several ranges (common.payload_size)."""
+    return payload_size([r, r]) // 2
+
+
+def text_esize(length: int) -> int:
+    """The esize of a text extension of `length` bytes padded with the fewest NULs: the
+    least multiple of 16 that is at least length + 8 (conventions/nifti/README.md §5)."""
+    return -(-(length + 8) // 16) * 16
+
+
+def json_size(value) -> int:
+    """The bytes of `value`'s compact JSON, in UTF-8, non-ASCII characters unescaped."""
+    return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+
+
+def all_zero(read: Reader, start: int, end: int) -> bool:
+    while start < end:
+        n = min(SCAN, end - start)
+        if read(start, n).count(0) != n:
+            return False
+        start += n
+    return True
 
 
 # datatype: (Zarr data type, bitpix, samples per voxel) (conventions/nifti/README.md §3).
@@ -168,10 +395,6 @@ def virtualize_nifti(url: str, read: Reader, size: int) -> Output:
     if total > MAX_SAFE or vox + total > size:
         raise Rejected(f"the {total}-byte voxel data at {vox} is outside the {size}-byte file")
 
-    # Row blocks (conventions/nifti/README.md §4.1) and their ranges (profiles/nifti.md §7.2)
-    row = X * b
-    h = next((d for d in range(min(Y, BLOCK_BYTES // row), 0, -1) if Y % d == 0), 1)
-
     # conventions/nifti/README.md §4.2
     scaling = None
     if not color:
@@ -210,51 +433,72 @@ def virtualize_nifti(url: str, read: Reader, size: int) -> Output:
                      "window": {"min": 0, "max": 255, "start": 0, "end": 255}} for label, c in COLORS[:samples]]
     else:
         lo, hi = field("cal_min"), field("cal_max")
-        if math.isfinite(lo) and math.isfinite(hi) and hi > lo:
+        if math.isfinite(lo) and math.isfinite(hi) and hi > lo and C <= MAX_CHANNELS:
             if scaling:
                 s, i = scaling
                 lo, hi = sorted([(lo - i) / s, (hi - i) / s])
-                if not (math.isfinite(lo) and math.isfinite(hi)):
-                    raise Rejected("the display window is not finite")
-            channels = [{"label": f"C{k}", "color": "FFFFFF", "active": True,
-                         "window": {"min": lo, "max": hi, "start": lo, "end": hi}} for k in range(C)]
+            if math.isfinite(lo) and math.isfinite(hi):  # else the scaled window overflowed: none
+                channels = [{"label": f"C{k}", "color": "FFFFFF", "active": True,
+                             "window": {"min": lo, "max": hi, "start": lo, "end": hi}} for k in range(C)]
 
     # conventions/nifti/README.md §4.1
     axes = (["t"] if n >= 4 else []) + (["c"] if n >= 5 or color else []) + (["z"] if n >= 3 else []) + ["y", "x"]
     shape = {"t": T, "c": samples if color else C, "z": Z, "y": Y, "x": X}
-    chunk_shape = {"t": 1, "c": samples, "z": 1, "y": h, "x": X}
+    # The voxels in file order: dimension 5 outermost, a color type's samples innermost.
+    stored = (["c"] if n >= 5 else []) + [a for a in axes if a != "c"] + (["c"] if color else [])
+    grid, voxel_chunks = grid_chunks(vox, [shape[a] for a in stored], b // samples, read, limit=CHUNK_BYTES)
+    chunk_shape = {a: grid[stored.index(a)] for a in axes}
     translation = [offset["xyz".index(a)] if a in "xyz" else 0 for a in axes] if diagonal else None
     ome = image_ome(axes, units, [[scale[a] for a in axes]], None, [translation] if translation else None)
     if channels is not None:
         ome["omero"] = {"channels": channels}
     # The source metadata (conventions/nifti/README.md §5).
     endian = "little" if order == "<" else "big"
-    meta = {"nifti_version": version, "byte_order": endian, "header": header_json(version, order, header)}
-    extended = read(length, 1) != b"\0"
+    header_meta, header_rest = header_json(version, order, header)
+    meta = {"nifti_version": version, "byte_order": endian, "header": header_meta}
+    if header_rest:
+        meta["header_rest"] = header_rest
+    extender = read(length, 4)
+    if extender not in EXTENDERS:
+        meta["extender"] = json_base64(extender)
+    extended = extender[0] != 0
+    plans, end = [], length + 4
     if extended:
-        meta["extensions"], cut = extensions_json(read, order, length + 4, vox)
-        if cut:
+        (meta["extensions"], plans), end = extensions_json(read, order, end, vox)
+    if end < vox and not all_zero(read, end, vox):  # bytes the chain does not hold, and not padding
+        if extended:
             meta["extensions_truncated"] = True
+        rows, chunks = row_chunks(end, vox - end, 1)
+        plans.append(Plan("unparsed", "uint8", [vox - end], [rows], ["byte"], chunks))
+        meta["unparsed"] = f"{SOURCE_NODE}/unparsed"
+    if vox + total < size:  # after the voxel data
+        rows, chunks = row_chunks(vox + total, size - vox - total, 1)
+        plans.append(Plan("trailing", "uint8", [size - vox - total], [rows], ["byte"], chunks))
+        meta["trailing"] = f"{SOURCE_NODE}/trailing"
     if nontrivial:
         meta["scaling"] = {"slope": scaling[0], "inter": scaling[1]}
+    if affine is not None:
+        meta["affine"] = {"form": affine, "applied": diagonal is not None}
     root = root_json(ome, "nifti", url, meta)
-    codecs = ([transpose_codec(axes)] if color else []) + [
+    transpose = {"name": "transpose", "configuration": {"order": [axes.index(a) for a in stored]}}
+    codecs = ([transpose] if stored != axes else []) + [
         {"name": "bytes", "configuration": {"endian": endian}} if bits // samples > 8 else {"name": "bytes"}]
     out = Output(url)
     out.json("zarr.json", root)
+    if plans:
+        emit_plans(out, plans, declare({}, "nifti", None))
     out.json("0/zarr.json", array_json([shape[a] for a in axes], data_type, [chunk_shape[a] for a in axes],
                                        codecs, axes))
-    slab = Y * row
-    for k in range(C):
-        for t in range(T):
-            for z in range(Z):
-                start = vox + ((k * T + t) * Z + z) * slab
-                for j in range(Y // h):
-                    coords = {"t": t, "c": k, "z": z, "y": j, "x": 0}
-                    out.refs["0/c/" + "/".join(str(coords[a]) for a in axes)] = [(start + j * h * row, h * row)]
+    for coords, parts in voxel_chunks.items():  # profiles/nifti.md §7.2
+        key = "0/c/" + "/".join(str(coords[stored.index(a)]) for a in axes)
+        if isinstance(parts, bytes):
+            out.bytes_entries[key] = parts
+        else:
+            out.refs[key] = parts
     out.summary = {
         "version": version, "byteOrder": endian, "sizes": {a: shape[a] for a in axes}, "dataType": data_type,
-        "color": color, "rowBlock": h, "chunks": len(out.refs),
+        "color": color,
+        "chunkShape": [chunk_shape[a] for a in axes], "chunks": len(voxel_chunks),
         "scaling": {"slope": scaling[0], "inter": scaling[1]} if nontrivial else None,
         "affine": affine, "translation": translation is not None,
         "extensions": extended,

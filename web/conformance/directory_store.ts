@@ -35,6 +35,16 @@ export function directoryStore(root: string, storeUrl: string): Store {
       if (data.length !== store.objects.get(key)) throw new Error(`${key}: the file changed while it was read`);
       return data;
     },
+    async readRange(key, offset, length) {
+      const fd = fs.openSync(`${root}/${key}`, "r");
+      try {
+        const data = new Uint8Array(length);
+        if (fs.readSync(fd, data, 0, length, offset) !== length) throw new Error(`${key}: the file changed while it was read`);
+        return data;
+      } finally {
+        fs.closeSync(fd);
+      }
+    },
   };
   addListed(store, listed, "", new Set());
   return store;

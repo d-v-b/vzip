@@ -23,6 +23,8 @@ export interface ArchiveDesc {
   mirror?: boolean;
 }
 
+/** The revision of SPEC.md the writer follows, recorded in every archive (§1.3, §6). */
+export const SPEC_REVISION = 10;
 export const SOURCES_KEY = "__vz__/sources";
 export const INDEX_KEY = "__vz__/index";
 export const RANGE_ID = 0x7a76;
@@ -104,8 +106,14 @@ function validate(desc: ArchiveDesc) {
     let total = 0n;
     for (const r of e.ranges) {
       if ("data" in r) {
+        if ((r as { crc32c?: number }).crc32c !== undefined) {
+          reject(`${e.key}: a literal range with a crc32c`);
+        }
         total += BigInt(r.data.length);
         continue;
+      }
+      if (r.crc32c !== undefined && !(Number.isInteger(r.crc32c) && r.crc32c >= 0 && r.crc32c <= U32_ALL)) {
+        reject(`${e.key}: crc32c ${r.crc32c} is not a uint32`);
       }
       if (!Number.isInteger(r.source) || r.source < 0 || r.source >= n) {
         reject(`${e.key}: source ${r.source} >= ${n} sources`);
@@ -193,7 +201,7 @@ export async function writeVzip(desc: ArchiveDesc): Promise<Uint8Array> {
       });
     }
   }
-  const table = encodeSourceTable(desc.sources);
+  const table = encodeSourceTable(desc.sources, SPEC_REVISION);
   const sources: Built = {
     name: utf8.encode(SOURCES_KEY),
     method: 8,

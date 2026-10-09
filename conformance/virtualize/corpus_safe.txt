@@ -1,0 +1,23 @@
+# url|name of public Sentinel-2 SAFE products. Directory form: the Google Cloud public
+# mirror gcp-public-data-sentinel-2 (Copernicus Sentinel data, free and open licence),
+# listed anonymously with S3 ListObjectsV2 at storage.googleapis.com. Zip form: ESA zips
+# published on Mendeley Data (doi:10.17632/ckcxh6jskz.1, CC BY 4.0). They cover L1C and
+# L2A, processing baselines 02.06 to 05.11 (L2A 02.06 with the names of PSD 14.2, and 02.06
+# and 02.07 with three granule lists and an empty AUX_DATA), Sentinel-2A, 2B and 2C, GML and JP2 masks,
+# UTM zones 18N, 32N and 56S, a reprocessed 2015 acquisition with HTML/, and a product in
+# the format used before December 2016, which is rejected.
+https://storage.googleapis.com/gcp-public-data-sentinel-2/tiles/32/T/NS/S2B_MSIL1C_20240103T101329_N0510_R022_T32TNS_20240103T110304.SAFE/|l1c-t32tns-pb0510|listing-sha256=7df14210aa441c25cdad5ccda331748e798a5c982be9c0d34967395acbac98b2
+https://storage.googleapis.com/gcp-public-data-sentinel-2/L2/tiles/32/T/NS/S2B_MSIL2A_20240103T101329_N0510_R022_T32TNS_20240103T113848.SAFE/|l2a-t32tns-pb0510|listing-sha256=591dee22c966661561a3aba64fe5adeef808eb01f6d83d6a74e7559349df4668
+https://storage.googleapis.com/gcp-public-data-sentinel-2/tiles/32/T/NS/S2C_MSIL1C_20260107T101421_N0511_R022_T32TNS_20260107T121047.SAFE/|l1c-t32tns-pb0511-s2c|listing-sha256=482c874e6716b0a691691386f6582ab80c7971ce86fbe45a8c13743a4b80eadf
+https://storage.googleapis.com/gcp-public-data-sentinel-2/L2/tiles/32/T/NS/S2C_MSIL2A_20260107T101421_N0511_R022_T32TNS_20260107T140910.SAFE/|l2a-t32tns-pb0511-s2c|listing-sha256=08eb1d0010fee37bdb19eeb59af71c8f0910d383dad475de253fc21b27337bf4
+https://storage.googleapis.com/gcp-public-data-sentinel-2/tiles/32/T/NS/S2B_MSIL1C_20190701T102029_N0207_R065_T32TNS_20190701T123353.SAFE/|l1c-t32tns-pb0207-gml|listing-sha256=6bb6824e9d305050c154c10d5ad293b5c5bd0fe3bbfd24ae83ee9d5f8ffe3cd1
+https://storage.googleapis.com/gcp-public-data-sentinel-2/L2/tiles/32/T/NS/S2B_MSIL2A_20190701T102029_N0212_R065_T32TNS_20190701T134657.SAFE/|l2a-t32tns-pb0212-gml|listing-sha256=748c06bca8b3bd9b227d40fc22c8fcc4e4478fe3bce300b706404c30188c8592
+https://storage.googleapis.com/gcp-public-data-sentinel-2/L2/tiles/32/T/NS/S2A_MSIL2A_20180326T103021_N0207_R108_T32TNS_20180326T155240.SAFE/|l2a-t32tns-pb0207-three-granules|listing-sha256=a6ba4e27813ea18eec1b0b3ead9045d37634c5e8dc6fbfe565a9535e955a9eb8
+https://storage.googleapis.com/gcp-public-data-sentinel-2/L2/tiles/32/T/NS/S2A_MSIL2A_20171024T102111_N0206_R065_T32TNS_20171024T140204.SAFE/|l2a-t32tns-pb0206-psd142|listing-sha256=f57af025eb1e034c8005608899880ffce479e9b14b651307b189c4c1b5bf9141
+https://storage.googleapis.com/gcp-public-data-sentinel-2/L2/tiles/32/T/NS/S2A_MSIL2A_20220121T102331_N0301_R065_T32TNS_20220121T131536.SAFE/|l2a-t32tns-pb0301|listing-sha256=30166961624973dbd382e8ff6273377dbba2efb149eec23d1562df93f1dd47f5
+https://storage.googleapis.com/gcp-public-data-sentinel-2/L2/tiles/56/H/LH/S2A_MSIL2A_20230603T000231_N0509_R030_T56HLH_20230603T040000.SAFE/|l2a-t56hlh-south-utm56s|listing-sha256=bbb09b318b2d979ede1efb47f77b9e92b57a792b3d17b765ba7163069d32953b
+https://storage.googleapis.com/gcp-public-data-sentinel-2/tiles/18/T/WL/S2B_MSIL1C_20230606T153819_N0509_R011_T18TWL_20230606T173807.SAFE/|l1c-t18twl-utm18n|listing-sha256=9cc971a1dee03a5280c5740b96a9805d5fe6d5016112ca68f4667a05693c9a1e
+https://storage.googleapis.com/gcp-public-data-sentinel-2/tiles/32/T/NS/S2A_MSIL1C_20150704T101006_N0500_R022_T32TNS_20231011T134419.SAFE/|l1c-t32tns-2015-reprocessed-pb0500-html|listing-sha256=3452a402488bee3e8e74d112085b1433178e82ed07724ca4d765e387cf4a5cf9
+https://storage.googleapis.com/gcp-public-data-sentinel-2/tiles/32/T/NS/S2A_MSIL1C_20150627T102531_N0202_R062_T32TNS_20160607T154053.SAFE/|reject-old-format-2015|listing-sha256=29f5fa9a41c2f1767021b789304368d7b9dce95a1e3611c2cfbc567639a3f190
+https://data.mendeley.com/public-files/datasets/ckcxh6jskz/files/e97b9543-b8d8-436e-b967-7e64fe7be62c/file_downloaded|zip-l2a-t32upu-pb0212|ends-sha256=d38b155d555a9b6ec2ae5f55c65eb0164c3628e3db1514808abd129419f82b26
+https://data.mendeley.com/public-files/datasets/ckcxh6jskz/files/52abe583-c322-4ef1-8825-883fbfefe495/file_downloaded|zip-l1c-t33uwp-pb0208|ends-sha256=f28692e0fa8c3efd42f2133d20077b959d37c61ebd62cb8c2d4a71fb314322e9

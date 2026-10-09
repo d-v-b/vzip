@@ -111,7 +111,7 @@ class Ndpi:
         return offset
 
     def image(self, strip: bytes, width: int, height: int, mag: float, starts: list[int] | None = None,
-              extra: dict | None = None) -> None:
+              extra: dict | None = None, duplicates: tuple = ()) -> None:
         so = self.blob(strip)
         tags = {
             256: (4, [width]), 257: (4, [height]), 258: (3, [8, 8, 8]), 259: (3, [7]), 262: (3, [6]),
@@ -122,17 +122,24 @@ class Ndpi:
         if starts is not None:
             tags[65426] = (4, starts)
         tags.update(extra or {})
+        self.ifds.append(self.directory([(tag, *tags[tag]) for tag in sorted(tags)] + list(duplicates)))
+
+    def directory(self, items: list) -> int:
+        """An IFD of (tag, type, values) entries, in the order given: values are a
+        list of numbers, or bytes (counted in bytes, for ASCII, UNDEFINED and
+        unknown types). Returns its offset."""
         entries = []
-        for tag in sorted(tags):
-            typ, values = tags[tag]
-            if typ == 5:
+        for tag, typ, values in items:
+            if isinstance(values, bytes):
+                raw = values
+            elif typ == 5:
                 raw = b"".join(struct.pack("<II", *v) for v in values)
             else:
-                raw = struct.pack(f"<{len(values)}{ {3: 'H', 4: 'I', 9: 'i', 11: 'f'}[typ] }", *values)
+                raw = struct.pack(f"<{len(values)}{ {3: 'H', 4: 'I', 9: 'i', 11: 'f', 13: 'I', 16: 'Q'}[typ] }", *values)
             field = raw.ljust(4, b"\x00") if len(raw) <= 4 else struct.pack("<I", self.blob(raw))
             entries.append(struct.pack("<HHI", tag, typ, len(values)) + field)
         n = len(entries)
-        self.ifds.append(self.blob(struct.pack("<H", n) + b"".join(entries) + b"\x00" * 8 + b"\x00" * 4 * n))
+        return self.blob(struct.pack("<H", n) + b"".join(entries) + b"\x00" * 8 + b"\x00" * 4 * n)
 
     def write(self, name: str) -> None:
         struct.pack_into("<Q", self.buf, 4, self.ifds[0])
@@ -176,6 +183,38 @@ def main() -> None:
     f = Ndpi()
     f.image(no_dri[0], no_dri[2], no_dri[3], 20.0, no_dri[1])
     f.write("edge_reject_ndpi_no_restart_interval.ndpi")
+    # Revision 10: pointer tags (the EXIF IFD and a private IFD-typed tag, in NDPI's
+    # layout), a duplicate tag, an unknown field type, and a macro image in two
+    # contiguous strips.
+    f = Ndpi()
+    f.image(level1[0], level1[2], level1[3], 20.0, level1[1])
+    exif = f.directory([(36867, 2, b"2026:01:01 00:00:00\0")])
+    private = f.directory([(305, 2, b"private\0")])
+    half = len(macro) // 2 & ~1
+    first, second = f.blob(macro[:half]), f.blob(macro[half:])
+    f.image(macro, 48, 16, -1.0, extra={
+        273: (4, [first, second]), 278: (4, [8]), 279: (4, [half, len(macro) - half]), 34665: (4, [exif]),
+        65449: (13, [private]), 65500: (99, b"\x01\x02\x03\x04")}, duplicates=[(65420, 4, [2])])
+    f.write("ndpi_pointers.ndpi")
+    # Revision 11: a restart interval of 8192 MCUs, one per row: a chunk 65536 pixels
+    # wide, which SOF0 cannot hold.
+    strip = bytearray(level1[0])
+    dri = strip.index(b"\xff\xdd")
+    strip[dri + 4:dri + 6] = struct.pack(">H", 8192)
+    f = Ndpi()
+    f.image(bytes(strip), level1[2], level1[3], 20.0, level1[1][::3])
+    f.write("edge_reject_ndpi_wide_interval.ndpi")
+    # Round 3: a strip of 3 bytes, shorter than a JPEG stream's SOI and EOI.
+    f = Ndpi()
+    f.image(b"\xff\xd8\xff", 8, 8, 20.0)
+    f.write("edge_reject_ndpi_short_strip.ndpi")
+    # The values of an IFD that is not a level are not read: the macro image's
+    # McuStarts (LONG8, above 2^53 - 1) and its BitsPerSample (shared with the
+    # level's, read once) do not reject.
+    f = Ndpi()
+    f.image(small, 64, 48, 1.25)
+    f.image(macro, 48, 16, -1.0, extra={65426: (16, [2**60, 1])})
+    f.write("ndpi_unused_values.ndpi")
     for p in sorted(OUT.glob("*ndpi*")):
         print(p.name, p.stat().st_size)
 

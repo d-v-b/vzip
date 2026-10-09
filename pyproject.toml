@@ -37,7 +37,11 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "czifile>=2026.8.16",
     "jsonschema>=4.26.0",
     "ome-zarr-models>=1.8.1",
+    "pylibczirw>=6.1.0",
+    "pyproj>=3.8.0",
+    "rasterio>=1.5.2",
     "zarr-n5>=0.3.1",
 ]

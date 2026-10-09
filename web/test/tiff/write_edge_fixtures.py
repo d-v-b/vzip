@@ -17,8 +17,8 @@ from pathlib import Path
 OUT = Path(__file__).parents[1] / "fixtures" / "tiff"
 
 SHORT, LONG, ASCII, UNDEFINED = 3, 4, 2, 7
-SIZE = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 8: 2, 13: 4, 16: 8, 99: 1}
-PACK = {1: "B", 2: "B", 3: "H", 4: "I", 7: "B", 8: "h", 13: "I", 16: "Q", 99: "B"}
+SIZE = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 8: 2, 12: 8, 13: 4, 16: 8, 99: 1}
+PACK = {1: "B", 2: "B", 3: "H", 4: "I", 7: "B", 8: "h", 12: "d", 13: "I", 16: "Q", 99: "B"}
 
 
 class Tiff:
@@ -255,6 +255,106 @@ def main() -> None:
         '<Plane TheZ="1" PositionX="9" PositionXUnit="mm" PositionY="9" PositionYUnit="mm"/>'
         '<Plane TheZ="0" PositionX="1000" PositionXUnit="nm" PositionY="-2" PositionYUnit="µm"/>'), 2)
     (OUT / "edge_reject_no_ifds.tif").write_bytes(b"II*\0\0\0\0\0" + b"\0" * 64)
+    # Revision 10: pointer tags, nested SubIFDs, duplicates, unknown field types, a
+    # JPEG interchange stream and contiguous strips.
+    t = Tiff()
+    interop = t.ifd([(1, ASCII, b"R98\0")])
+    exif = t.ifd([(36867, ASCII, b"2026:01:01 00:00:00\0"), (40965, LONG, [interop])])
+    private = t.ifd([(305, ASCII, b"private\0")])
+    other = t.ifd([(305, ASCII, b"other\0")])
+    subsub = image(t, 16, 16)
+    sub = image(t, 32, 32, subifds=[subsub], extra=[(305, ASCII, b"sub\0")])
+    level0 = image(t, subifds=[sub], extra=[
+        (305, ASCII, b"first\0"), (34665, LONG, [exif]), (34853, LONG, [10**6]), (400, 13, [private]),
+        (65000, 13, [private, other]), (65100, 99, b"\x01\x02\x03\x04"),
+        # Two duplicates of 305 after the first, one too long for JSON.
+        (305, ASCII, b"second\0"), (305, SHORT, list(range(70)))])
+    jpeg = b"\xff\xd8" + bytes(range(40)) + b"\xff\xd9"
+    stream = t.blob(jpeg)
+    strips = [t.blob(bytes([7]) * n) for n in (256, 256, 128)]  # contiguous, of two lengths
+    thumb = t.ifd([(256, SHORT, [16]), (257, SHORT, [40]), (258, SHORT, [8]), (259, SHORT, [1]), (262, SHORT, [1]),
+                   (273, LONG, strips), (278, SHORT, [16]), (279, LONG, [256, 256, 128]),
+                   (513, LONG, [stream]), (514, LONG, [len(jpeg)]), (34665, LONG, [exif])])
+    t.chain([level0, thumb])
+    t.write("edge_pointers.tif")
+    # YCbCr without subsampling is accepted; with it, or with FillOrder 2, rejected.
+    single("edge_ycbcr_unsubsampled.tif", spp=3, skip={262}, extra=[(262, SHORT, [6]), (530, SHORT, [1, 1])])
+    single("edge_reject_ycbcr_subsampled.tif", spp=3, skip={262}, extra=[(262, SHORT, [6]), (530, SHORT, [2, 2])])
+    single("edge_reject_fill_order.tif", extra=[(266, SHORT, [2])])
+    # Revision 11. YCbCr without YCbCrSubsampling has TIFF 6.0's default, [2, 2].
+    single("edge_reject_ycbcr_default.tif", spp=3, skip={262}, extra=[(262, SHORT, [6])])
+    # 505 TiffData of 2 planes each step through 1010 planes, more than 4 × 2 + 1000.
+    planes("edge_reject_tiffdata_steps.tif", ome(tz, '<TiffData PlaneCount="2"/>' * 505), 2)
+    # A pointer tag of more than 64 values (an array of record numbers): new IFDs, an IFD
+    # of no entries, one inside another's extent, a value outside the file, and links to
+    # an IFD it recorded and to a main-chain IFD; GlobalParametersIFD as a LONG; and the
+    # old-style JPEG tables of a non-image IFD.
+    t = Tiff()
+    targets = [t.ifd([(305, ASCII, f"t{i}\0".encode())]) for i in range(66)]
+    empty = t.blob(bytes(6))
+    gp = t.ifd([(305, ASCII, b"gp\0")])
+    q0, q1 = t.blob(bytes(range(64))), t.blob(bytes(range(64, 128)))
+    dc = t.blob(bytes([0, 1, 5, 1, 1, 1, 1, 1, 1] + [0] * 7) + bytes(range(12)))
+    ac = t.blob(bytes([0, 2, 1, 3] + [0] * 12) + bytes(range(6)))
+    thumb = t.ifd([(256, SHORT, [8]), (257, SHORT, [8]), (258, SHORT, [8]), (259, SHORT, [6]), (262, SHORT, [1]),
+                   (273, LONG, [t.blob(bytes(64))]), (279, LONG, [64]), (519, LONG, [q0, q1, 10**6]),
+                   (520, LONG, [dc]), (521, LONG, [ac])])
+    values = targets + [empty, targets[1] + 2, targets[0], 10**6, thumb]
+    level0 = image(t, extra=[(400, LONG, [gp]), (50001, 13, values)])
+    t.chain([level0, thumb])
+    t.write("edge_pointer_list.tif")
+    # 10001 IFDs through a pointer tag: the last is past the limit of 10000.
+    t = Tiff()
+    targets = [t.ifd([(305, ASCII, b"x\0")]) for _ in range(10001)]
+    t.chain([image(t, extra=[(50001, 13, targets)])])
+    t.write("edge_pointer_limit.tif")
+    # Round 3. Shared tables: two IFDs with the same strip, JPEGQTables and pointer
+    # entries (the second names the first's arrays in same_as), a tiled image with
+    # strips (kept as ifds/0/strips), and an IFD that is not used, whose LONG8
+    # TileOffsets above 2^53 - 1 are not read.
+    t = Tiff()
+    strips = [t.blob(bytes([9]) * 64) for _ in range(3)]
+    offsets_at, counts_at = t.blob(struct.pack("<3I", *strips)), t.blob(struct.pack("<3I", 64, 64, 64))
+    q = t.blob(bytes(range(64)))
+    targets = [t.ifd([(305, ASCII, f"s{i}\0".encode())]) for i in range(3)]
+    pointers_at = t.blob(struct.pack("<70I", *(targets[i % 3] for i in range(70))))
+    shared = [(256, SHORT, [8]), (257, SHORT, [24]), (258, SHORT, [8]), (259, SHORT, [1]), (262, SHORT, [1]),
+              (273, LONG, ("at", 3, offsets_at)), (278, SHORT, [8]), (279, LONG, ("at", 3, counts_at)),
+              (519, LONG, [q]), (50001, 13, ("at", 70, pointers_at))]
+    level0 = image(t, extra=[(273, LONG, [strips[0]]), (279, LONG, [64])])
+    unused = t.ifd([(256, SHORT, [8]), (257, SHORT, [8]), (258, SHORT, [8]),
+                    (324, 16, struct.pack("<2Q", 2**60, 1)), (325, LONG, [1, 1])])
+    t.chain([level0, t.ifd(shared), t.ifd(shared), unused])
+    t.write("edge_shared_tables.tif")
+    # The budget of values as JSON: IFD 1 holds 2^16 bytes of them exactly (the
+    # third 30000-byte text, a later DOUBLE and EXIF's ifds are past it, so arrays),
+    # IFD 2 spends the total budget (2^20 bytes and the file's size) on texts of escapes, and
+    # IFD 3's text is then an array.
+    t = Tiff()
+    level0 = image(t)
+    text = t.blob(b"a" * 29999 + b"\0")
+    exif = t.ifd([(36867, ASCII, b"2026:01:01 00:00:00\0")])
+    escapes = t.blob(b"\x01" * 65535 + b"\0")
+    numbers = [1e21, 1.5e-7, -0.0, 0.1, 123.456, 1e-6]  # 37 bytes: [1e+21,1.5e-7,0,0.1,123.456,0.000001]
+    ifd1 = t.ifd([(1000, ASCII, ("at", 30000, text)), (1001, ASCII, ("at", 30000, text)),
+                  (1002, ASCII, ("at", 30000, text)), (1003, ASCII, b"hello world\0"),
+                  (1004, ASCII, b"\x01" * 900 + b"a" * 82 + b"\0"), (1005, 12, numbers),
+                  (1006, ASCII, b"x\0"), (1007, 12, [0.5]), (34665, LONG, [exif]),
+                  (1000, ASCII, ("at", 30000, text))])
+    ifd2 = t.ifd([(2000 + i, ASCII, ("at", 65536, escapes)) for i in range(43)])
+    ifd3 = t.ifd([(305, ASCII, b"hello world\0")])
+    t.chain([level0, ifd1, ifd2, ifd3])
+    t.write("edge_budget.tif")
+    # Offsets tried through a pointer tag: one that leads to no IFD (an IFD of no
+    # entries) is tried once however often it repeats, and every offset tried counts
+    # toward the 10000: after 100 values of one such offset, 9998 others and a valid
+    # IFD (the 10000th tried), nothing more is tried.
+    t = Tiff()
+    empties = t.blob(bytes(2 * 10000))
+    valid = [t.ifd([(305, ASCII, b"v\0")]) for _ in range(2)]
+    values = [empties] * 100 + [empties + 2 * i for i in range(1, 9999)] + [valid[0], empties + 2 * 9999, valid[1]]
+    t.chain([image(t, extra=[(50001, 13, values)])])
+    t.write("edge_pointer_tries.tif")
     for p in sorted(OUT.glob("edge_*.tif")):
         print(p.name, p.stat().st_size)
 

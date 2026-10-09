@@ -25,22 +25,43 @@ never read: nodes come from the listing and documents from their own
 objects, so stale consolidated metadata cannot change the output. (Chunks
 must come from the listing anyway, since `.zmetadata` does not list them.)
 
+**Numbers.** The documents' integer literals are kept exactly where the
+convention copies them ([its §4](../conventions/zarr2/README.md#4-source-metadata)),
+beyond 2^53 − 1 too, in place of §1.6's last paragraph; every number the
+convention uses is its binary64 value, as §1.6 says.
+
 ### 10.1 Rejection
 
 The input is rejected when a rule of §1.4–§1.6 fails, and when the
 convention gives it no layout: wherever it says that the input is
 rejected, or that something MUST hold and it does not.
 
-### 10.2 Chunks
+### 10.2 Chunks and other objects
 
 Every chunk that the convention says is present
 ([the convention §3.2](../conventions/zarr2/README.md#32-chunks)) is an
 entry under its own key, referencing the whole chunk object through its own
-`url` source (§1.4). A chunk object of size 0 has no entry.
+`url` source (§1.4). A chunk object of size 0 has no entry: its key is
+one of the convention §5's empty objects' keys.
+
+Every other object of [the convention §5](../conventions/zarr2/README.md#5-other-objects)
+is referenced whole in the same way, by an entry under the key
+`vzip_source/objects/<k>` (with a `~` appended when the convention §5
+escapes `k`'s last segment) whose `url` source is the URL of the object `k`
+(§1.4). (This is the one place where an entry's key is not its object's
+key; §1.4's rules otherwise apply: the sources are in ascending order of
+their entries' keys, each entry referencing its object's whole range.)
+Under a root array, the empty objects' keys and the ignored keys are the
+document `vzip_source/empty.json` (the convention §5), written as UTF-8
+compact JSON, as `JSON.stringify` writes it. The documents under
+`vzip_source/` (which hold these keys) are deflated and, like the chunks, not
+among the documents a reader fetches when it opens the archive
+([conventions §2](../conventions/README.md#2-attributes)).
 
 ### 10.3 Summary
 
 This section is informative. Both implementations print a one-line JSON
 summary: `groups` (explicit and implicit), `arrays`, `chunks` (chunk
 entries), `emptyChunks` (chunk objects of size 0), `objects` (the store's
-objects) and `listingRequests`.
+objects), `otherObjects` (the entries under `vzip_source/objects/`) and
+`listingRequests`.
