@@ -1,6 +1,6 @@
 // Describing a tiled (OME-)TIFF as an OME-NGFF 0.5 multiscale image whose
 // chunks are vzip references to the TIFF's tiles: the TIFF profile
-// (spec/virtualize/tiff/profile.md, §3).
+// (spec/virtualize.md, §3).
 
 import { REVISION } from "../revision.ts";
 import { type ByteReader, DataSources, declare, MAX_PAYLOAD, type Part, payloadSize, toRange, stringifyJson } from "../../../../../js/src/virtualize/common.ts";
@@ -10,10 +10,10 @@ import type { ArchiveDesc, EntryDesc } from "../../../../../js/src/writer.ts";
 
 const JPEG2000 = new Set([33003, 33004, 33005, 34712]);
 const JPEG = 7;
-// The Adobe APP14 marker without its last byte, the color transform (spec/virtualize/tiff/profile.md §3.3).
+// The Adobe APP14 marker without its last byte, the color transform (spec/virtualize.md §3.3).
 const ADOBE = [0xff, 0xee, 0x00, 0x0e, 0x41, 0x64, 0x6f, 0x62, 0x65, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00];
 
-/** What each JPEG tile's stream has after its SOI marker (spec/virtualize/tiff/profile.md §3.3), a data source:
+/** What each JPEG tile's stream has after its SOI marker (spec/virtualize.md §3.3), a data source:
  * the Adobe color marker for 3 samples, and the IFD's tables. */
 function jpegPrefix(ifd: Ifd, spp: number, photometric: number | null): Uint8Array {
   const out: number[] = [];
@@ -330,7 +330,7 @@ export async function virtualizeTiff(
   const [ifd0] = tiff.ifds;
   if (ifd0 === undefined) reject("no images");
   await tiff.load(ifd0, { description: true });
-  // A level's IFDs, with every value they use read (spec/virtualize/tiff/profile.md §3.1).
+  // A level's IFDs, with every value they use read (spec/virtualize.md §3.1).
   const loaded = async (ifds: Ifd[]) => {
     for (const i of ifds) await tiff.load(i, { tiles: true });
     return level(ifds);
@@ -531,7 +531,7 @@ export async function virtualizeTiff(
     codecs.unshift({ name: "transpose", configuration: { order: stored } });
   }
 
-  // spec/virtualize/tiff.md §4.4: the arrays; spec/virtualize/tiff/profile.md §3.3: their chunks.
+  // spec/virtualize/tiff.md §4.4: the arrays; spec/virtualize.md §3.3: their chunks.
   const data = new DataSources();
   const entries: EntryDesc[] = [];
   const meta: EntryDesc[] = [];

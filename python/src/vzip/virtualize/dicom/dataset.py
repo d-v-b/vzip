@@ -1,4 +1,4 @@
-"""Walking a DICOM file's elements (spec/virtualize/dicom/profile.md §6.1–§6.3)."""
+"""Walking a DICOM file's elements (spec/virtualize.md §6.1–§6.3)."""
 
 from __future__ import annotations
 

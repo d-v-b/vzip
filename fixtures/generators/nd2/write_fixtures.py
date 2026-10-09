@@ -1,6 +1,6 @@
 """Writes synthetic ND2 files (format version 3) to fixtures/nd2/, with
 the pixels each one should decode to, covering the rules of the ND2 profile
-(spec/virtualize/nd2/profile.md §5) that the public corpus does not: compressed frames, padded
+(spec/virtualize.md §5) that the public corpus does not: compressed frames, padded
 rows, multi-period time loops, disabled positions, sibling and spectral
 experiment nodes, missing frames, float data, and the inputs it rejects.
 
@@ -650,7 +650,7 @@ def sized_level(target: int, legacy: bool = True) -> bytes:
 
 def revision8() -> None:
     """Round-2 review: every placed frame's header, tags, lossless CustomData,
-    sparse families and frame grids, and the root's budget (spec/virtualize/nd2/profile.md §5.3,
+    sparse families and frame grids, and the root's budget (spec/virtualize.md §5.3,
     spec/virtualize/nd2.md §5)."""
     h, w = 3, 4
 
@@ -842,7 +842,7 @@ def revision9() -> None:
 
 def revision10() -> None:
     """Round-3 follow-up: the profile's chunks inflate to at most 64 MiB
-    (spec/virtualize/nd2/profile.md §5.1), and other and empty past vzip_source's budget
+    (spec/virtualize.md §5.1), and other and empty past vzip_source's budget
     (spec/virtualize/nd2.md §5.4)."""
     h, w = 3, 4
 
@@ -866,7 +866,7 @@ def revision10() -> None:
 
 def revision11() -> None:
     """Round-4 review: positions and the profile's LV records are bounded
-    (spec/virtualize/nd2/profile.md §5.1, §5.3), sparse frame times take smaller chunks, a
+    (spec/virtualize.md §5.1, §5.3), sparse frame times take smaller chunks, a
     large declared tag is its index, and path segments that a store cannot
     hold go to other (spec/virtualize/nd2.md §5.2-§5.4)."""
     h, w = 3, 4

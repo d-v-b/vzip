@@ -21,7 +21,7 @@ MAX_SAFE = 2**53 - 1
 INTEGER_TYPES = {1, 3, 4, 13, 16, 18}
 SCALARS = {256, 257, 259, 262, 266, 277, 282, 283, 284, 296, 317, 322, 323}
 TILES = {324, 325}
-# The tags a used IFD reads (spec/virtualize/tiff/profile.md §3.1): all of the table's but
+# The tags a used IFD reads (spec/virtualize.md §3.1): all of the table's but
 # ImageDescription (IFD 0's only) and SubIFDs (read where they are followed).
 USED = TAGS - {270, 330}
 

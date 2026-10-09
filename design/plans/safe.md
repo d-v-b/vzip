@@ -1,7 +1,7 @@
 # SAFE: implementation plan
 
 The plan for implementing [the SAFE convention](../../spec/virtualize/safe.md) and
-[profile](../../spec/virtualize/safe/profile.md). The design is settled in those two
+[profile](../../spec/virtualize/safe.md#part-2-the-profile). The design is settled in those two
 documents; this one says how to build, test and verify it, what the
 research behind the design found, and what is still open.
 

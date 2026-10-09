@@ -4,8 +4,8 @@ TIFF, ND2 and CZI files go through the IR (`vzip.ir`): the Rust core's sans-IO
 parser of the format, driven by its read planner over this package's I/O, projected
 to the convention's hierarchy and mirrored under `vzip_source` by the Rust core.
 Every other profile is a subpackage: ndpi, dicom, nifti, ims (file inputs), n5,
-zarr2, ome_zarr (store inputs, spec/virtualize/n5/profile.md, spec/virtualize/zarr2/profile.md and
-spec/virtualize/ome-zarr/profile.md), and safe (Sentinel-2 SAFE products, spec/virtualize/safe/profile.md: a
+zarr2, ome_zarr (store inputs, spec/virtualize/n5.md, spec/virtualize/zarr2.md and
+spec/virtualize/ome-zarr.md), and safe (Sentinel-2 SAFE products, spec/virtualize/safe.md: a
 store input, or a zip file); common holds what they share, and store the store
 machinery (§1.4–§1.6). (`tiff/` keeps the IFD reader and tag translator NDPI uses.)
 

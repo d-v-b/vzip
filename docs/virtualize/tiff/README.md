@@ -243,7 +243,7 @@ the Python and browser hosts of the core must write the same archive,
 `vzip_source` included, and both must match, outside `vzip_source`, the
 frozen reference: the Python TIFF profile vzip shipped before the core.
 
-- Profile: [spec/virtualize/tiff/profile.md](../../../spec/virtualize/tiff/profile.md); convention:
+- Profile: [spec/virtualize/tiff.md](../../../spec/virtualize/tiff.md#part-2-the-profile); convention:
   [spec/virtualize/tiff.md](../../../spec/virtualize/tiff.md)
 - Rust core: [rust/vzip-ir/src/tiff.rs](../../../rust/vzip-ir/src/tiff.rs)
   (the parser) and [rust/vzip-ir/src/project/tiff.rs](../../../rust/vzip-ir/src/project/tiff.rs)

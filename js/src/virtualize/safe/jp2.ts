@@ -1,4 +1,4 @@
-// JPEG 2000 band files (spec/virtualize/safe/profile.md §12.3) and their chunks (§12.6).
+// JPEG 2000 band files (spec/virtualize.md §12.3) and their chunks (§12.6).
 //
 // A band file is a JP2 file whose codestream has one tile-part per tile, in
 // raster order. Each tile becomes a standalone codestream: the file's main
@@ -8,7 +8,7 @@
 import { SafeError } from "./product.ts";
 
 const MAX_BOXES = 1024;
-/** The most bytes of a main header after its SIZ segment (spec/virtualize/safe/profile.md §12.3). */
+/** The most bytes of a main header after its SIZ segment (spec/virtualize.md §12.3). */
 export const MAX_REST = 1 << 16;
 /** The most bytes of a chunk's empty tiles and EOC (§12.6). */
 export const MAX_TAIL = 1 << 12;

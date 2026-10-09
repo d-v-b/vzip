@@ -1,4 +1,4 @@
-"""The Zarr v2 profile (spec/virtualize/zarr2/profile.md, §10)."""
+"""The Zarr v2 profile (spec/virtualize.md, §10)."""
 
 from __future__ import annotations
 

@@ -111,7 +111,7 @@ values as an earlier IFD's (and whose codec and framing agree) names its
 `tiles` by alias. The parser rejects only a file whose header is not TIFF.
 
 The image projection is today's convention logic reading the IR: every check
-of spec/virtualize/tiff/profile.md §3.1 (field types, counts and places of the table's tags
+of spec/virtualize.md §3.1 (field types, counts and places of the table's tags
 in every IFD read, IFDs read twice, IFD offsets in the header, values past
 2^53) is a check of IR values and of which elements exist.
 
@@ -583,7 +583,7 @@ reads facts the schema derived.
 
 **Does schema-driven validation remove the duplication?** For the semantic
 layer, yes: every member check, derived quantity and constraint of
-spec/virtualize/nd2.md §3 and spec/virtualize/nd2/profile.md §5.3 is stated once and checked once;
+spec/virtualize/nd2.md §3 and spec/virtualize.md §5.3 is stated once and checked once;
 round 1's split (a permissive parser, a projection that re-derives what must
 hold) is gone, and the rejections are the same set as today's on 43 fixtures
 and every probe. Three things stay code: the binary layer (chunk headers, the

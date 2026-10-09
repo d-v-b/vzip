@@ -1,4 +1,4 @@
-"""The ND2 profile (spec/virtualize/nd2/profile.md, §5)."""
+"""The ND2 profile (spec/virtualize.md, §5)."""
 
 from __future__ import annotations
 
@@ -21,10 +21,10 @@ MAP_SIGNATURE = b"ND2 CHUNK MAP SIGNATURE 0000001!"
 FILEMAP_NAME = b"ND2 FILEMAP SIGNATURE NAME 0001!"
 FRAME = re.compile(rb"ImageDataSeq\|(0|[1-9][0-9]*)!")
 MAX_SAFE = 2**53 - 1
-MAX_INFLATE = 1 << 26  # the most a chunk the profile reads may inflate to (spec/virtualize/nd2/profile.md §5.1)
+MAX_INFLATE = 1 << 26  # the most a chunk the profile reads may inflate to (spec/virtualize.md §5.1)
 MAX_RECORDS = 1 << 20  # the most LV records and byte-array bytes of the chunks the profile reads (§5.1)
-MAX_POSITIONS = 1 << 16  # the most positions (spec/virtualize/nd2/profile.md §5.3)
-MAX_POSITION_CHANNELS = 1 << 20  # the most positions x components (spec/virtualize/nd2/profile.md §5.3)
+MAX_POSITIONS = 1 << 16  # the most positions (spec/virtualize.md §5.3)
+MAX_POSITION_CHANNELS = 1 << 20  # the most positions x components (spec/virtualize.md §5.3)
 REQUIRED = object()
 
 
@@ -308,7 +308,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
         except TooLarge:
             raise Rejected(f"the profile's chunks hold more than {MAX_RECORDS} LV records and byte-array bytes") from None
 
-    room = [MAX_RECORDS]  # shared by the three chunks (spec/virtualize/nd2/profile.md §5.1)
+    room = [MAX_RECORDS]  # shared by the three chunks (spec/virtualize.md §5.1)
 
     # spec/virtualize/nd2.md §3 attributes
     attributes = chunk(b"ImageAttributesLV!")
@@ -391,7 +391,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
         labels = [f"C{k}" for k in range(comp)]
         colors = ["FFFFFF"] * comp
 
-    # spec/virtualize/nd2/profile.md §5.3
+    # spec/virtualize.md §5.3
     total = 1
     for l in loops:
         total *= l["count"]

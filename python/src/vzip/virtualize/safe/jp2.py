@@ -1,4 +1,4 @@
-"""JPEG 2000 band files (spec/virtualize/safe/profile.md §12.3) and their chunks (§12.6).
+"""JPEG 2000 band files (spec/virtualize.md §12.3) and their chunks (§12.6).
 
 A band file is a JP2 file whose codestream has one tile-part per tile, in
 raster order. Each tile becomes a standalone codestream: the file's main
@@ -15,7 +15,7 @@ from typing import Callable
 from vzip.virtualize.common import Rejected
 
 MAX_BOXES = 1024
-MAX_REST = 1 << 16  # the most bytes of a main header after its SIZ segment (spec/virtualize/safe/profile.md §12.3)
+MAX_REST = 1 << 16  # the most bytes of a main header after its SIZ segment (spec/virtualize.md §12.3)
 MAX_TAIL = 1 << 12  # the most bytes of a chunk's empty tiles and EOC (§12.6)
 BLOCK = 1 << 16
 SMALL_TILE = 1 << 14  # after a tile-part this small, the next tile-part headers are read in a block

@@ -1,4 +1,4 @@
-// The OME-Zarr profile (spec/virtualize/ome-zarr/profile.md, §11): an OME-Zarr 0.4 hierarchy
+// The OME-Zarr profile (spec/virtualize.md, §11): an OME-Zarr 0.4 hierarchy
 // on Zarr v2 storage as OME-Zarr 0.5 on Zarr v3, each chunk referenced in place.
 
 import {

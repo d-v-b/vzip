@@ -1,7 +1,7 @@
 # Implementation plan: the CZI profile
 
 This plan implements [README.md](../../spec/virtualize/czi.md) (the convention) and
-[spec/virtualize/czi/profile.md](../../spec/virtualize/czi/profile.md) (the profile) in both
+[spec/virtualize/czi.md](../../spec/virtualize/czi.md#part-2-the-profile) (the profile) in both
 implementations, with fixtures, a verifier and a public corpus. It is a
 design note, not normative.
 

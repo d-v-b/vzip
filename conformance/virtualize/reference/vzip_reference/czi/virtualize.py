@@ -1,4 +1,4 @@
-"""The CZI profile (spec/virtualize/czi/profile.md, spec/virtualize.md §13)."""
+"""The CZI profile (spec/virtualize/czi.md, spec/virtualize.md §13)."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from vzip_reference.czi.source import (
 from vzip_reference.czi.xml import MAX_XML, XmlValues, read_xml_values
 
 MAGIC = b"ZISRAWFILE" + bytes(6)
-MAX_IMAGES = 1 << 16  # series with an image (spec/virtualize/czi/profile.md §13.3)
+MAX_IMAGES = 1 << 16  # series with an image (spec/virtualize.md §13.3)
 MAX_LEVELS = 64  # levels per image
 MAX_EXTENT = 1 << 31  # each dimension of an array's shape
 MAX_OMERO = 64  # an image's channel indexes, for omero

@@ -187,7 +187,7 @@ that the Python and browser outputs are equivalent on those files and on the
 pydicom's test files and six whole-slide levels from the IDC, with JPEG,
 JPEG 2000 and native tiles.
 
-- Profile: [spec/virtualize/dicom/profile.md](../../../spec/virtualize/dicom/profile.md)
+- Profile: [spec/virtualize/dicom.md](../../../spec/virtualize/dicom.md#part-2-the-profile)
 - Python: [python/src/vzip/virtualize/dicom/](../../../python/src/vzip/virtualize/dicom/)
 - Browser: [js/src/virtualize/dicom/](../../../js/src/virtualize/dicom/)
 - Fixtures: [fixtures/dicom/](../../../fixtures/dicom/)

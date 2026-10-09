@@ -1,4 +1,4 @@
-"""The zip form of a SAFE product (spec/virtualize/safe/profile.md §12.4): the ZIP archive's
+"""The zip form of a SAFE product (spec/virtualize.md §12.4): the ZIP archive's
 end records, its central directory, its local headers, and its deflated XML
 documents."""
 

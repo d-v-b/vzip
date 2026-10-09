@@ -1,4 +1,4 @@
-"""The Python Zarr v2 virtualizer (spec/virtualize/zarr2/profile.md) on the synthetic stores.
+"""The Python Zarr v2 virtualizer (spec/virtualize/zarr2.md) on the synthetic stores.
 
 Equivalence with the browser virtualizer is checked by
 conformance/virtualize/compare.py, and pixel correctness against zarr-python's

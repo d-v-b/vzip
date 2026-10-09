@@ -720,7 +720,7 @@ conventions stay at version 1: no version had been tagged.
 This revision did not come from a spec round.
 
 **The profile.** VIRTUALIZE.md gains §12, the SAFE profile
-([profiles/safe.md](../../virtualize/safe/profile.md)), with its convention
+([profiles/safe.md](../../virtualize/safe.md#part-2-the-profile)), with its convention
 ([conventions/safe/README.md](../../virtualize/safe.md)), and
 Conformance moves to §13. A Sentinel-2 Level-1C or Level-2A product is read
 as a `.SAFE` directory (a store input, chosen by `manifest.safe` at its root)
@@ -777,7 +777,7 @@ round.
 This revision did not come from a spec round.
 
 **The profile.** VIRTUALIZE.md gains §13, the CZI profile
-([profiles/czi.md](../../virtualize/czi/profile.md)), with its convention
+([profiles/czi.md](../../virtualize/czi.md#part-2-the-profile)), with its convention
 ([conventions/czi/README.md](../../virtualize/czi.md)), and
 Conformance moves to §14. A file whose first 16 bytes are `ZISRAWFILE` and
 six NULs is read as a CZI file (version 1, single file): its file header,

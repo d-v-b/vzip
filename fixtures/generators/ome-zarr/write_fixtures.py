@@ -1,6 +1,6 @@
 """Writes synthetic OME-Zarr 0.4 hierarchies (on Zarr v2) to
 fixtures/ome-zarr/<name>/, covering the OME-Zarr profile
-(spec/virtualize/ome-zarr/profile.md §11): 2-D, 3-D and 5-D images with and without
+(spec/virtualize.md §11): 2-D, 3-D and 5-D images with and without
 translations, omero metadata, custom axes, labels (image-label colors,
 properties and source; a label image with an extra level), a plate with wells, fields and acquisitions, a well
 at the root, bioformats2raw collections (numbered images with a series and

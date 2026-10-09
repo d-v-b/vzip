@@ -1,5 +1,5 @@
 //! A sans-IO parser of TIFF, BigTIFF and OME-TIFF files into the IR
-//! (spec/virtualize/tiff/profile.md §3, spec/virtualize/tiff.md): it never reads; it asks for batches
+//! (spec/virtualize.md §3, spec/virtualize/tiff.md): it never reads; it asks for batches
 //! of ranges (`step`), is given their bytes (`feed`), and holds them only until
 //! the step that uses them.
 //!
@@ -823,7 +823,7 @@ impl Tiff {
     }
 }
 
-// ---- the layout (spec/virtualize/tiff/profile.md §3.2–§3.4), as the profile reads it
+// ---- the layout (spec/virtualize.md §3.2–§3.4), as the profile reads it
 
 type Vals = HashMap<u16, Loaded>;
 

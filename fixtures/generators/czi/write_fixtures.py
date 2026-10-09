@@ -1,4 +1,4 @@
-"""Writes the synthetic CZI fixtures in fixtures/czi/ (spec/virtualize/czi/profile.md).
+"""Writes the synthetic CZI fixtures in fixtures/czi/ (spec/virtualize/czi.md).
 
 A small struct-based CZI writer (`Czi`): no library writes pyramids, JPEG XR,
 attachments, deleted segments or broken files. Each accepted fixture is

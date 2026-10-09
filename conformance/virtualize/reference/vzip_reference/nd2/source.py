@@ -297,7 +297,7 @@ class Source:
 
 @dataclass
 class Frames:
-    """What the image takes from the frames (spec/virtualize/nd2/profile.md §5.3)."""
+    """What the image takes from the frames (spec/virtualize.md §5.3)."""
     count: int  # N
     placed: dict[int, int]  # each placed frame's chunk offset
     stamps: dict[int, int]  # each placed frame's timestamp offset

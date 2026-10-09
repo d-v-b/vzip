@@ -23,17 +23,17 @@ is a document of its own, numbered as a section of this one:
 
 | § | profile | inputs |
 |---|---|---|
-| 3 | [TIFF](virtualize/tiff/profile.md) | TIFF and BigTIFF, including OME-TIFF and JPEG-tiled slides such as Aperio SVS |
-| 4 | [NDPI](virtualize/ndpi/profile.md) | Hamamatsu NDPI slides, a TIFF variant with 64-bit offsets |
-| 5 | [ND2](virtualize/nd2/profile.md) | Nikon ND2, format version 3 and later |
-| 6 | [DICOM](virtualize/dicom/profile.md) | DICOM Part 10 files with native or JPEG-encapsulated pixel data, including whole-slide images |
-| 7 | [NIfTI](virtualize/nifti/profile.md) | NIfTI-1 and NIfTI-2 single files (`.nii`) |
-| 8 | [IMS](virtualize/ims/profile.md) | Imaris IMS files (HDF5) |
-| 9 | [N5](virtualize/n5/profile.md) | N5 containers (store input), default-mode blocks |
-| 10 | [Zarr v2](virtualize/zarr2/profile.md) | Zarr v2 hierarchies (store input) |
-| 11 | [OME-Zarr](virtualize/ome-zarr/profile.md) | OME-Zarr 0.4 hierarchies on Zarr v2 (store input), migrated to OME-Zarr 0.5 |
-| 12 | [SAFE](virtualize/safe/profile.md) | Sentinel-2 Level-1C and Level-2A products: a `.SAFE` directory (store input) or a `.SAFE.zip` file (file input) |
-| 13 | [CZI](virtualize/czi/profile.md) | Zeiss CZI files (ZISRAW, file version 1), with uncompressed, JPEG, JPEG XR and Zstd subblocks, mosaics and pyramids |
+| 3 | [TIFF](virtualize/tiff.md#part-2-the-profile) | TIFF and BigTIFF, including OME-TIFF and JPEG-tiled slides such as Aperio SVS |
+| 4 | [NDPI](virtualize/ndpi.md#part-2-the-profile) | Hamamatsu NDPI slides, a TIFF variant with 64-bit offsets |
+| 5 | [ND2](virtualize/nd2.md#part-2-the-profile) | Nikon ND2, format version 3 and later |
+| 6 | [DICOM](virtualize/dicom.md#part-2-the-profile) | DICOM Part 10 files with native or JPEG-encapsulated pixel data, including whole-slide images |
+| 7 | [NIfTI](virtualize/nifti.md#part-2-the-profile) | NIfTI-1 and NIfTI-2 single files (`.nii`) |
+| 8 | [IMS](virtualize/ims.md#part-2-the-profile) | Imaris IMS files (HDF5) |
+| 9 | [N5](virtualize/n5.md#part-2-the-profile) | N5 containers (store input), default-mode blocks |
+| 10 | [Zarr v2](virtualize/zarr2.md#part-2-the-profile) | Zarr v2 hierarchies (store input) |
+| 11 | [OME-Zarr](virtualize/ome-zarr.md#part-2-the-profile) | OME-Zarr 0.4 hierarchies on Zarr v2 (store input), migrated to OME-Zarr 0.5 |
+| 12 | [SAFE](virtualize/safe.md#part-2-the-profile) | Sentinel-2 Level-1C and Level-2A products: a `.SAFE` directory (store input) or a `.SAFE.zip` file (file input) |
+| 13 | [CZI](virtualize/czi.md#part-2-the-profile) | Zeiss CZI files (ZISRAW, file version 1), with uncompressed, JPEG, JPEG XR and Zstd subblocks, mosaics and pyramids |
 
 §3–§8 and §13 read a single file (a **file input**); §9–§11 read a store of many
 objects (a **store input**, §1.4); §12 reads either. §14 is informative:
@@ -296,7 +296,7 @@ reads only the metadata documents it names; it never reads a chunk object.
 bytes, only on its key and size.) The SAFE profile is the exception: it
 reads its band files in ranges (their boxes, main headers and tile-part
 headers), with HTTP range requests, and a response that is not of the
-requested length is a failure ([§12.2](virtualize/safe/profile.md#122-objects-and-reading)).
+requested length is a failure ([§12.2](virtualize/safe.md#122-objects-and-reading)).
 
 **Object URLs.** The URL of the object with key `k` is `U` followed by
 `k`'s UTF-8 bytes with every byte that is not an unreserved character
@@ -324,7 +324,7 @@ range `(i, 0, size)`. No other entry is a reference, and a store input's
 output has no data sources (§1.2). The SAFE profile is the exception: its
 url sources are one per object that some reference uses, and data sources
 follow them, and its references are ranges within objects
-([§12.8](virtualize/safe/profile.md#128-the-source-table)).
+([§12.8](virtualize/safe.md#128-the-source-table)).
 
 These rules replace §1.2's **References stay in the file** (but for the
 SAFE profile, whose payloads are checked as §1.2 says): each range lies
@@ -498,19 +498,20 @@ states, with:
 
 ## 3–13. Profiles
 
-Each profile is a separate document:
+Each profile is Part 2 of its format's document in [virtualize/](virtualize/), whose Part 1
+is the format's Zarr convention:
 
-- §3, the TIFF profile: [spec/virtualize/tiff/profile.md](virtualize/tiff/profile.md);
-- §4, the NDPI profile: [spec/virtualize/ndpi/profile.md](virtualize/ndpi/profile.md);
-- §5, the ND2 profile: [spec/virtualize/nd2/profile.md](virtualize/nd2/profile.md);
-- §6, the DICOM profile: [spec/virtualize/dicom/profile.md](virtualize/dicom/profile.md);
-- §7, the NIfTI profile: [spec/virtualize/nifti/profile.md](virtualize/nifti/profile.md);
-- §8, the IMS profile: [spec/virtualize/ims/profile.md](virtualize/ims/profile.md);
-- §9, the N5 profile: [spec/virtualize/n5/profile.md](virtualize/n5/profile.md);
-- §10, the Zarr v2 profile: [spec/virtualize/zarr2/profile.md](virtualize/zarr2/profile.md);
-- §11, the OME-Zarr profile: [spec/virtualize/ome-zarr/profile.md](virtualize/ome-zarr/profile.md);
-- §12, the SAFE profile: [spec/virtualize/safe/profile.md](virtualize/safe/profile.md);
-- §13, the CZI profile: [spec/virtualize/czi/profile.md](virtualize/czi/profile.md).
+- §3, the TIFF profile: [spec/virtualize/tiff.md](virtualize/tiff.md#part-2-the-profile);
+- §4, the NDPI profile: [spec/virtualize/ndpi.md](virtualize/ndpi.md#part-2-the-profile);
+- §5, the ND2 profile: [spec/virtualize/nd2.md](virtualize/nd2.md#part-2-the-profile);
+- §6, the DICOM profile: [spec/virtualize/dicom.md](virtualize/dicom.md#part-2-the-profile);
+- §7, the NIfTI profile: [spec/virtualize/nifti.md](virtualize/nifti.md#part-2-the-profile);
+- §8, the IMS profile: [spec/virtualize/ims.md](virtualize/ims.md#part-2-the-profile);
+- §9, the N5 profile: [spec/virtualize/n5.md](virtualize/n5.md#part-2-the-profile);
+- §10, the Zarr v2 profile: [spec/virtualize/zarr2.md](virtualize/zarr2.md#part-2-the-profile);
+- §11, the OME-Zarr profile: [spec/virtualize/ome-zarr.md](virtualize/ome-zarr.md#part-2-the-profile);
+- §12, the SAFE profile: [spec/virtualize/safe.md](virtualize/safe.md#part-2-the-profile);
+- §13, the CZI profile: [spec/virtualize/czi.md](virtualize/czi.md#part-2-the-profile).
 
 ## 14. Conformance
 

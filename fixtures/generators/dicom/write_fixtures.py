@@ -1,5 +1,5 @@
 """Writes synthetic DICOM files to fixtures/dicom/, covering the
-rules of the DICOM profile (spec/virtualize/dicom/profile.md §6): the native transfer
+rules of the DICOM profile (spec/virtualize.md §6): the native transfer
 syntaxes in both byte orders, signed and 8/16/32-bit data, RGB planar and
 interleaved, multi-frame images, JPEG and JPEG 2000 frames with and without
 offset tables and split into fragments, whole-slide images, sequences of
@@ -98,7 +98,7 @@ def jpeg(pixels: np.ndarray, photometric: str) -> bytes:
     if photometric == "RGB":
         # Stored as RGB, then made silent about it (no APP14, component ids
         # 1, 2, 3): a decoder that guesses would take it for YCbCr, so the
-        # profile's Adobe marker decides (spec/virtualize/dicom/profile.md §6.5).
+        # profile's Adobe marker decides (spec/virtualize.md §6.5).
         return _strip_adobe(imagecodecs.jpeg8_encode(pixels, level=95, colorspace="RGB", outcolorspace="RGB"))
     if photometric == "YBR_FULL_422":
         return imagecodecs.jpeg8_encode(pixels, level=95, subsampling="422")
@@ -701,7 +701,7 @@ def review2() -> None:
 
 
 def review3() -> None:
-    """Round three (spec/virtualize/dicom.md §5, spec/virtualize/dicom/profile.md §6.5):
+    """Round three (spec/virtualize/dicom.md §5, spec/virtualize.md §6.5):
     native pixel data that runs past the file and overlapping Extended Offset
     Table frames, which the profile rejects; group lengths and offset tables
     that are not layout; explicit UN values in big endian; per-frame values

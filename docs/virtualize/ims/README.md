@@ -148,7 +148,7 @@ equivalent on those files and on the 21 public files of
 [corpus_ims.txt](../../../conformance/virtualize/corpus_ims.txt), two of
 which must be rejected (the LZ4 file and a scene file).
 
-- Profile: [spec/virtualize/ims/profile.md](../../../spec/virtualize/ims/profile.md)
+- Profile: [spec/virtualize/ims.md](../../../spec/virtualize/ims.md#part-2-the-profile)
 - Python: [python/src/vzip/virtualize/ims/](../../../python/src/vzip/virtualize/ims/)
 - Browser: [js/src/virtualize/ims/](../../../js/src/virtualize/ims/)
 - Fixtures: [fixtures/ims/](../../../fixtures/ims/)

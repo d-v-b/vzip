@@ -1,4 +1,4 @@
-"""The Python CZI virtualizer (spec/virtualize/czi/profile.md) on the synthetic fixtures.
+"""The Python CZI virtualizer (spec/virtualize/czi.md) on the synthetic fixtures.
 
 Equivalence with the browser virtualizer is checked by
 conformance/virtualize/compare.py, and pixels and reconstruction against

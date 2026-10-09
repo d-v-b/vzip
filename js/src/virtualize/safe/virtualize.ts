@@ -1,4 +1,4 @@
-// The SAFE profile (spec/virtualize/safe/profile.md, §12): the output of a Sentinel-2 product, in
+// The SAFE profile (spec/virtualize.md, §12): the output of a Sentinel-2 product, in
 // the directory form (a store input) or the zip form (a file input).
 
 import {

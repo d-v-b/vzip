@@ -1,4 +1,4 @@
-// Reading a CZI file's segments (spec/virtualize/czi.md §2, spec/virtualize/czi/profile.md §13.2).
+// Reading a CZI file's segments (spec/virtualize/czi.md §2, spec/virtualize.md §13.2).
 
 import { batched, type ByteReader, Prefetched } from "../../../../../js/src/virtualize/common.ts";
 import { COMPRESSIONS, PIXEL_TYPES } from "./coding.ts";
@@ -11,7 +11,7 @@ export const reject = (message: string): never => {
 };
 
 export const MAX_SAFE = Number.MAX_SAFE_INTEGER;
-const MAX_ENTRIES = 2 ** 21; // directory entries (spec/virtualize/czi/profile.md §13.3)
+const MAX_ENTRIES = 2 ** 21; // directory entries (spec/virtualize.md §13.3)
 const MAX_ATTACHMENTS = 2 ** 16; // attachment entries
 const MAX_WALK = 2 ** 23; // segments the walk visits
 export const LETTERS = "XYZCTRSIHVBM";
@@ -410,7 +410,7 @@ function isSegmentId(id: Uint8Array): boolean {
   return true;
 }
 
-/** The walk (spec/virtualize/czi/profile.md §13.2 step 6): the segments in file order, and
+/** The walk (spec/virtualize.md §13.2 step 6): the segments in file order, and
  * where the tail starts. `known` holds the headers already read, by offset. */
 export async function walk(
   read: ByteReader, fileSize: number, known: Map<number, [Uint8Array, number, number]>,

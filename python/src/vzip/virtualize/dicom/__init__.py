@@ -1,4 +1,4 @@
-"""DICOM Part 10 files (spec/virtualize/dicom/profile.md)."""
+"""DICOM Part 10 files (spec/virtualize/dicom.md)."""
 
 from vzip.virtualize.dicom.virtualize import is_dicom, virtualize_dicom
 

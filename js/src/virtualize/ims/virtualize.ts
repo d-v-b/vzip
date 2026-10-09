@@ -1,4 +1,4 @@
-// Virtualizing an Imaris IMS file (HDF5) by the IMS profile (spec/virtualize/ims/profile.md,
+// Virtualizing an Imaris IMS file (HDF5) by the IMS profile (spec/virtualize/ims.md,
 // §8): every chunk of every resolution level, time point and channel becomes a
 // Zarr chunk that references the file.
 
@@ -234,7 +234,7 @@ export async function virtualizeIms(
     }
   }
 
-  // spec/virtualize/ims.md §4: output; spec/virtualize/ims/profile.md §8.8: the chunk references.
+  // spec/virtualize/ims.md §4: output; spec/virtualize.md §8.8: the chunk references.
   const z0 = levelInfo[0].sizes[0];
   // A z axis also when chunks hold several z planes, so that they decode to Zarr chunks.
   const hasZ = z0 > 1 || levelInfo.some((l) => l.chunk[0] > 1);

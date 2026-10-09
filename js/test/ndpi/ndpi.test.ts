@@ -1,4 +1,4 @@
-// The NDPI JPEG header parser of the browser virtualizer (spec/virtualize/ndpi/profile.md §4),
+// The NDPI JPEG header parser of the browser virtualizer (spec/virtualize.md §4),
 // and the data sources that hold the header.
 // Whole files are checked against tifffile by ndpi/verify.py.
 

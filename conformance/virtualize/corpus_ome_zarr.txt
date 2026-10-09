@@ -1,7 +1,7 @@
 # url|name[|py-only] of the public OME-Zarr 0.4 stores in the corpus (store URLs end in "/"), from the
 # IDR's OME-NGFF samples (https://idr.github.io/ome-ngff-samples/, CC BY 4.0) on EMBL-EBI's Embassy
 # S3, listed anonymously with path-style ListObjectsV2 (bucket "idr"). Each is migrated to OME-Zarr
-# 0.5 by the OME-Zarr profile (spec/virtualize/ome-zarr/profile.md, §11).
+# 0.5 by the OME-Zarr profile (spec/virtualize.md, §11).
 #
 # Images (3-D to 5-D), an image with two label images, an HCS plate (72 wells, 1440 fields) and a
 # bioformats2raw plate with OME-XML.

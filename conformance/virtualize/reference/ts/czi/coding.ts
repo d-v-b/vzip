@@ -1,5 +1,5 @@
 // CZI pixel types, compressions and codec headers (spec/virtualize/czi.md
-// §3.1–§3.2, spec/virtualize/czi/profile.md §13.4).
+// §3.1–§3.2, spec/virtualize.md §13.4).
 
 import type { ByteReader } from "../../../../../js/src/virtualize/common.ts";
 
@@ -31,7 +31,7 @@ const HILO_TYPES = new Set([1, 4]); // Gray16, Bgr48: the only types hi-lo packi
 export const MAX_HEADER = 2 ** 16; // codec headers are scanned within this many bytes of the data
 const ZSTD = { name: "zstd", configuration: { level: 0, checksum: false } };
 const SHUFFLE = { name: "numcodecs.shuffle", configuration: { elementsize: 2 } };
-// JPEG XR pixel format GUIDs (as stored) each pixel type admits (spec/virtualize/czi/profile.md §13.4).
+// JPEG XR pixel format GUIDs (as stored) each pixel type admits (spec/virtualize.md §13.4).
 const WIC = "24C3DD6F034EFE4BB1853D77768DC9".toLowerCase();
 const JXR_FORMATS: Record<number, string[]> = {
   0: [WIC + "08"],

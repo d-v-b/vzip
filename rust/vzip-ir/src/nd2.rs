@@ -1,4 +1,4 @@
-//! A sans-IO parser of ND2 files into the IR (spec/virtualize/nd2/profile.md, spec/virtualize/nd2.md):
+//! A sans-IO parser of ND2 files into the IR (spec/virtualize/nd2.md, spec/virtualize/nd2.md):
 //! it never reads; it asks for batches of ranges (`step`), is given their bytes
 //! (`feed`), and holds them only until the step that uses them.
 //!

@@ -1,4 +1,4 @@
-//! A sans-IO parser of Zeiss CZI files into the IR (spec/virtualize/czi/profile.md §13,
+//! A sans-IO parser of Zeiss CZI files into the IR (spec/virtualize.md §13,
 //! spec/virtualize/czi.md): it never reads; it asks for batches of ranges (`step`), is
 //! given their bytes (`feed`), and holds them only until the step that uses them.
 //!
@@ -1021,7 +1021,7 @@ impl Czi {
         Ok(true)
     }
 
-    // ---- the walk (spec/virtualize/czi/profile.md §13.2 step 6)
+    // ---- the walk (spec/virtualize.md §13.2 step 6)
 
     /// The segments nothing references, in file order, from windows read ahead;
     /// then the tail. None when done.

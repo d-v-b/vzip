@@ -1,4 +1,4 @@
-"""The Python TIFF virtualizer (spec/virtualize/tiff/profile.md) on the synthetic fixtures.
+"""The Python TIFF virtualizer (spec/virtualize/tiff.md) on the synthetic fixtures.
 
 Equivalence with the browser virtualizer is checked by
 conformance/virtualize/compare.py, and pixel correctness by
@@ -163,7 +163,7 @@ def test_rejects(name, message):
 
 
 def test_jpeg_prefix_is_a_data_source():
-    # spec/virtualize/tiff/profile.md §3.3: every JPEG tile is its first 2 bytes (SOI), its IFD's prefix P,
+    # spec/virtualize.md §3.3: every JPEG tile is its first 2 bytes (SOI), its IFD's prefix P,
     # a data source (one per distinct P, in order of first use), then the rest of the tile:
     # every byte of the tile is referenced. Without a prefix (one sample, no JPEGTables),
     # the tile is one range.
@@ -211,7 +211,7 @@ def test_resolution_tags_give_a_pixel_size_only_when_it_is_microscopic(tmp_path)
 
 def test_bounds_the_source_metadata_and_shares_tables():
     """spec/virtualize/tiff.md §5: the budget of values as JSON, shared tables kept once,
-    a tiled IFD's strips, the offsets tried through pointer tags; spec/virtualize/tiff/profile.md §3.1:
+    a tiled IFD's strips, the offsets tried through pointer tags; spec/virtualize.md §3.1:
     the values of an IFD that is not used are not read."""
     # A value's size is its compact JSON's, numbers as ECMAScript writes them (from node).
     sizes = [([1e21, 1.5e-7, -0.0, 0.1, 123.456, 1e-6], 37),

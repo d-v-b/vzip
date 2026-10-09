@@ -1,14 +1,22 @@
-# The OME-Zarr convention
+# OME-Zarr
 
 The OME-Zarr 0.5 layout of an OME-Zarr 0.4 hierarchy on Zarr v2 storage,
 and its attributes. It builds on the [Zarr v2 convention](zarr2.md).
 What all of vzip's conventions share is in
 [spec/conventions.md](../conventions.md), cited here as "conventions §n". How
 vzip produces this layout as a virtual store from a listed store is the
-OME-Zarr profile, [spec/virtualize/ome-zarr/profile.md](ome-zarr/profile.md).
+OME-Zarr profile, [Part 2](#part-2-the-profile) below.
 
 Convention version: 0 (until release, conventions §1) · UUID: `b74ea302-65bb-49ae-b81f-f9bb52cd4eed` ·
 Schema: [schema.json](ome-zarr/schema.json)
+
+This document has two parts. [Part 1](#part-1-the-convention) is the OME-Zarr
+convention: the Zarr layout, cited as "the convention §n". [Part 2](#part-2-the-profile)
+is the OME-Zarr profile: how vzip reads the source, which inputs it rejects, and how
+each chunk references the source. The profile keeps its numbering as a section
+of [spec/virtualize.md](../virtualize.md), and is cited as spec/virtualize.md §n.
+
+# Part 1. The convention
 
 This convention gives a layout only to the hierarchies that meet its
 requirements. Where it says that "the input is rejected", or that
@@ -524,3 +532,51 @@ and the source metadata names it rather than copying it:
   }
 }
 ```
+
+# Part 2. The profile
+
+The OME-Zarr profile of [spec/virtualize.md](../virtualize.md) (revision 16),
+numbered as its §11. §1 is in spec/virtualize.md and applies here, in particular
+the store input rules of §1.4–§1.6, and so does §2. The profile builds on
+the Zarr v2 profile ([zarr2.md](zarr2.md#part-2-the-profile), §10).
+
+The output has the convention's layout for the input
+([spec/virtualize.md §2](../virtualize.md#2-the-zarr-layout)); this profile says
+how the store is read, which inputs are rejected, and how each chunk
+references the store. "The convention §n" below is a section of Part 1.
+
+## 11. OME-Zarr profile
+
+The profile was chosen because the store's root has a `.zarray` or a
+`.zgroup` and the store declares OME-NGFF 0.4 (§1.4). The store is read
+as §10 reads it, integer literals included.
+
+### 11.1 Rejection
+
+The input is rejected when a rule of §10 rejects it, and when the
+convention gives it no layout: wherever it says that the input is
+rejected, or that something MUST hold and it does not (in particular, a
+rule of [its §4](#4-validation)).
+
+### 11.2 Chunks and OME-XML
+
+Chunks are §10's: each nonempty chunk object is an entry under its own key,
+referencing the whole object through its own `url` source (§1.4). Each
+OME-XML object of [the convention §7](#7-chunks-and-ome-xml)
+is referenced whole in the same way: an entry under its key, with its own
+source, in the order of §1.4 among the chunk entries (an object of size 0
+has no entry; its key is one of the Zarr v2 convention §5's empty objects'
+keys, as an empty chunk object's is). Every other object of the convention (those of
+[the Zarr v2 convention §5](zarr2.md#5-other-objects))
+is an entry under `vzip_source/objects/<k>`, escaped as §10.2 says.
+
+### 11.3 Summary
+
+This section is informative. Both implementations print a one-line JSON
+summary: `groups` (explicit and implicit), `arrays`, `chunks` (chunk
+entries), `emptyChunks` (chunk objects of size 0), `objects` (the store's
+objects), `images`, `labels` (label images), `droppedLabelLevels` (the
+datasets L7 drops, over all label images), `plates`, `wells`, `fields`
+(the images wells list), `omeXml` (OME-XML entries), `otherObjects` (the
+entries under `vzip_source/objects/`) and `listingRequests`.
+

@@ -1,4 +1,4 @@
-"""The Python N5 virtualizer (spec/virtualize/n5/profile.md) on the synthetic stores.
+"""The Python N5 virtualizer (spec/virtualize/n5.md) on the synthetic stores.
 
 Equivalence with the browser virtualizer is checked by
 conformance/virtualize/compare.py, and pixel correctness against an

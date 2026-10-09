@@ -1,5 +1,5 @@
 """CZI pixel types, compressions and codec headers (spec/virtualize/czi.md
-§3.1–§3.2, spec/virtualize/czi/profile.md §13.4)."""
+§3.1–§3.2, spec/virtualize.md §13.4)."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ HILO_TYPES = frozenset({1, 4})  # Gray16, Bgr48: the only types hi-lo packing is
 MAX_HEADER = 1 << 16  # codec headers are scanned within this many bytes of the data
 ZSTD = {"name": "zstd", "configuration": {"level": 0, "checksum": False}}
 SHUFFLE = {"name": "numcodecs.shuffle", "configuration": {"elementsize": 2}}
-# JPEG XR pixel format GUIDs (as stored) each pixel type admits (spec/virtualize/czi/profile.md §13.4).
+# JPEG XR pixel format GUIDs (as stored) each pixel type admits (spec/virtualize.md §13.4).
 WIC = bytes.fromhex("24C3DD6F034EFE4BB1853D77768DC9")
 JXR_FORMATS = {
     0: {WIC + b"\x08"},

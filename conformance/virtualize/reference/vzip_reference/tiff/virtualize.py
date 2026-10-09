@@ -1,4 +1,4 @@
-"""The TIFF profile (spec/virtualize/tiff/profile.md, §3)."""
+"""The TIFF profile (spec/virtualize.md, §3)."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from vzip_reference.tiff.tags import Translator
 JPEG2000 = {33003, 33004, 33005, 34712}
 MAX_PLANES = 100000
 JPEG = 7
-# The Adobe APP14 marker, with its color transform byte last (spec/virtualize/tiff/profile.md §3.3).
+# The Adobe APP14 marker, with its color transform byte last (spec/virtualize.md §3.3).
 ADOBE = bytes.fromhex("FFEE000E41646F626500640000000000")[:-1]
 
 
@@ -166,7 +166,7 @@ def aperio_fields(description: bytes) -> dict | None:
 # ---- profile
 
 def jpeg_prefix(ifd: Ifd, spp: int, photometric) -> bytes:
-    """What each JPEG tile's stream has after its SOI marker (spec/virtualize/tiff/profile.md §3.3), a data
+    """What each JPEG tile's stream has after its SOI marker (spec/virtualize.md §3.3), a data
     source: the Adobe color marker for 3 samples, and the IFD's tables."""
     out = b""
     if spp == 3:

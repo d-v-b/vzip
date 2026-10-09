@@ -1,4 +1,4 @@
-// The N5 profile (spec/virtualize/n5/profile.md, §9): an N5 container as a Zarr v3
+// The N5 profile (spec/virtualize.md, §9): an N5 container as a Zarr v3
 // hierarchy, each block a whole-object chunk read by the n5_default codec.
 
 import {

@@ -1,4 +1,4 @@
-"""The Python ND2 virtualizer (spec/virtualize/nd2/profile.md) on the synthetic fixtures.
+"""The Python ND2 virtualizer (spec/virtualize/nd2.md) on the synthetic fixtures.
 
 Equivalence with the browser virtualizer is checked by
 conformance/virtualize/compare.py, and pixel correctness by
@@ -65,19 +65,19 @@ def test_padded_rows_become_one_range_per_row():
 
 
 def test_more_than_2_16_positions_are_rejected():
-    """spec/virtualize/nd2/profile.md §5.3: at most 2^16 positions."""
+    """spec/virtualize.md §5.3: at most 2^16 positions."""
     with pytest.raises(Rejected, match="65537 positions of 1 components"):
         virtualize(str(FIXTURES / "nd2_reject_positions.nd2"), url="https://data.test/x")
 
 
 def test_more_than_2_20_positions_x_components_are_rejected():
-    """spec/virtualize/nd2/profile.md §5.3: at most 2^20 positions x components."""
+    """spec/virtualize.md §5.3: at most 2^20 positions x components."""
     with pytest.raises(Rejected, match="1025 positions of 1024 components"):
         virtualize(str(FIXTURES / "nd2_reject_position_channels.nd2"), url="https://data.test/x")
 
 
 def test_the_profile_chunks_share_a_record_budget():
-    """spec/virtualize/nd2/profile.md §5.1: two chunks of 600000 records each, together over 2^20."""
+    """spec/virtualize.md §5.1: two chunks of 600000 records each, together over 2^20."""
     with pytest.raises(Rejected, match="more than 1048576 LV records"):
         virtualize(str(FIXTURES / "nd2_reject_profile_records.nd2"), url="https://data.test/x")
 

@@ -1,4 +1,4 @@
-// Virtualizing a DICOM Part 10 file by the DICOM profile (spec/virtualize/dicom/profile.md,
+// Virtualizing a DICOM Part 10 file by the DICOM profile (spec/virtualize/dicom.md,
 // §6): its frames, native or JPEG/JPEG 2000 encapsulated, become Zarr chunks
 // that reference the file.
 
@@ -43,7 +43,7 @@ const PHOTOMETRIC: Record<string, string[]> = {
   "jpeg 1": MONOCHROME, "jpeg 3": ["RGB", "YBR_FULL", "YBR_FULL_422"],
   "jpeg2k 1": MONOCHROME, "jpeg2k 3": ["RGB", "YBR_ICT", "YBR_RCT"],
 };
-// SOI and the Adobe APP14 marker, without its last byte, the color transform (spec/virtualize/dicom/profile.md §6.5).
+// SOI and the Adobe APP14 marker, without its last byte, the color transform (spec/virtualize.md §6.5).
 const ADOBE = [0xff, 0xd8, 0xff, 0xee, 0x00, 0x0e, 0x41, 0x64, 0x6f, 0x62, 0x65, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00];
 const DECIMAL = /^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$/;
 const INTEGER = /^([+-]?)([0-9]+)$/;
@@ -278,7 +278,7 @@ export async function virtualizeDicom(
     if (n !== across * down) reject(`${n} frames for ${down} by ${across} tiles`);
   }
 
-  // spec/virtualize/dicom/profile.md §6.5: each frame's ranges.
+  // spec/virtualize.md §6.5: each frame's ranges.
   const planarNative = codec === null && spp === 3 && planar === 1;
   const frameSize = rows * columns * spp * (bitsAllocated / 8);
   const frameRanges: Ranges[] = [];
@@ -405,7 +405,7 @@ export async function virtualizeDicom(
     }
   }
 
-  // spec/virtualize/dicom.md §4; spec/virtualize/dicom/profile.md §6.6: the chunk references
+  // spec/virtualize/dicom.md §4; spec/virtualize.md §6.6: the chunk references
   // The frames are along t when the Frame Increment Pointer is Frame Time or Frame Time Vector.
   const fa = increment === 0x00181063 || increment === 0x00181065 ? "t" : "z";
   const axes: string[] = [];

@@ -36,14 +36,14 @@ export const WANTED = new Set<number>(Object.values(Tag));
 /** The deepest nesting of SubIFDs (and of pointer targets): main-chain IFDs are at depth 0. */
 export const MAX_DEPTH = 4;
 
-// Tags with one used value (spec/virtualize/tiff/profile.md §3.1); the others are arrays.
+// Tags with one used value (spec/virtualize.md §3.1); the others are arrays.
 const SCALARS = new Set<number>([256, 257, 259, 262, 266, 277, 282, 283, 284, 296, 317, 322, 323]);
 // XResolution and YResolution: RATIONAL, kept as [numerator, denominator].
 const RATIONAL_TAGS = new Set<number>([282, 283]);
 // Field types allowed for every tag but ImageDescription: unsigned integers.
 const INTEGER_TYPES = new Set([1, 3, 4, 13, 16, 18]);
 const TILES = new Set<number>([Tag.TileOffsets, Tag.TileByteCounts]);
-// The tags a used IFD reads (spec/virtualize/tiff/profile.md §3.1): all of the table's but
+// The tags a used IFD reads (spec/virtualize.md §3.1): all of the table's but
 // ImageDescription (IFD 0's only) and SubIFDs (read where they are followed).
 const USED = new Set([...WANTED].filter((t) => t !== Tag.ImageDescription && t !== Tag.SubIFDs));
 
@@ -80,7 +80,7 @@ export interface Tiff {
   bigTiff: boolean;
   /** The main IFD chain, each with its SubIFDs. */
   ifds: Ifd[];
-  /** Reads the values of an IFD that the layout uses (spec/virtualize/tiff/profile.md §3.1). */
+  /** Reads the values of an IFD that the layout uses (spec/virtualize.md §3.1). */
   load: (ifd: Ifd, options?: { tiles?: boolean; description?: boolean }) => Promise<void>;
 }
 

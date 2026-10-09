@@ -1,4 +1,4 @@
-"""Writes NDPI files to fixtures/ndpi/ for spec/virtualize/ndpi/profile.md §4, cut from
+"""Writes NDPI files to fixtures/ndpi/ for spec/virtualize.md §4, cut from
 the restart intervals of level 2 of OpenSlide's CMU-1.ndpi (CC0 1.0), which
 is downloaded once into a cache.
 

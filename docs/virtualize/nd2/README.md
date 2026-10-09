@@ -168,7 +168,7 @@ and browser hosts of the core must write the same archive, `vzip_source`
 included, and both must match, outside `vzip_source`, the frozen reference:
 the Python ND2 profile vzip shipped before the core.
 
-- Profile: [spec/virtualize/nd2/profile.md](../../../spec/virtualize/nd2/profile.md); convention:
+- Profile: [spec/virtualize/nd2.md](../../../spec/virtualize/nd2.md#part-2-the-profile); convention:
   [spec/virtualize/nd2.md](../../../spec/virtualize/nd2.md)
 - Rust core: [rust/vzip-ir/src/nd2.rs](../../../rust/vzip-ir/src/nd2.rs)
   (the parser) and [rust/vzip-ir/src/project/nd2.rs](../../../rust/vzip-ir/src/project/nd2.rs)

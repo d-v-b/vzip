@@ -1,4 +1,4 @@
-"""Hamamatsu NDPI slides (spec/virtualize/ndpi/profile.md)."""
+"""Hamamatsu NDPI slides (spec/virtualize/ndpi.md)."""
 
 from vzip.virtualize.ndpi.virtualize import detect, jpeg_header, virtualize_ndpi
 

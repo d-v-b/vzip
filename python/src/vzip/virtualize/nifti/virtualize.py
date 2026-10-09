@@ -1,4 +1,4 @@
-"""The NIfTI profile (spec/virtualize/nifti/profile.md, §7)."""
+"""The NIfTI profile (spec/virtualize.md, §7)."""
 
 from __future__ import annotations
 
@@ -489,7 +489,7 @@ def virtualize_nifti(url: str, read: Reader, size: int) -> Output:
         emit_plans(out, plans, declare({}, "nifti", None))
     out.json("0/zarr.json", array_json([shape[a] for a in axes], data_type, [chunk_shape[a] for a in axes],
                                        codecs, axes))
-    for coords, parts in voxel_chunks.items():  # spec/virtualize/nifti/profile.md §7.2
+    for coords, parts in voxel_chunks.items():  # spec/virtualize.md §7.2
         key = "0/c/" + "/".join(str(coords[stored.index(a)]) for a in axes)
         if isinstance(parts, bytes):
             out.bytes_entries[key] = parts

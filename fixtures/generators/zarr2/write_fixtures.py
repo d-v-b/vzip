@@ -1,5 +1,5 @@
 """Writes synthetic Zarr v2 hierarchies to fixtures/zarr2/<name>/,
-covering the rules of the Zarr v2 profile (spec/virtualize/zarr2/profile.md §10): C and F
+covering the rules of the Zarr v2 profile (spec/virtualize.md §10): C and F
 order, both dimension separators, every supported data type and byte order,
 each compressor (none, zlib, gzip, zstd, blosc with each shuffle), fill
 values (numbers, "NaN", "Infinity", "-Infinity", null), 0-d arrays, missing
@@ -213,7 +213,7 @@ def main() -> None:
 
     # OME-NGFF 0.4 attributes below a root that does not declare OME-NGFF 0.4
     # (spec/virtualize.md §1.4): the store is read by §10, and every attribute is
-    # copied unchanged (OME-Zarr 0.4 stores are read by spec/virtualize/ome-zarr/profile.md).
+    # copied unchanged (OME-Zarr 0.4 stores are read by spec/virtualize/ome-zarr.md).
     d = store("zarr2_ome_attrs")
     img = arr((2, 8, 10), "<u2")
     axes = [{"name": "c", "type": "channel"}, {"name": "y", "type": "space", "unit": "micrometer"},

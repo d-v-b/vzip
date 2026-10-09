@@ -1,4 +1,4 @@
-// Virtualizing a Zeiss CZI file by the CZI profile (spec/virtualize/czi/profile.md, spec/virtualize.md §13).
+// Virtualizing a Zeiss CZI file by the CZI profile (spec/virtualize/czi.md, spec/virtualize.md §13).
 
 import { REVISION } from "../revision.ts";
 import { batched, type ByteReader, declare, emitPlans, SOURCE_NODE, stringifyJson } from "../../../../../js/src/virtualize/common.ts";
@@ -19,7 +19,7 @@ import { emptyValues, MAX_XML, readXmlValues, type XmlValues } from "./xml.ts";
 
 export { CziError };
 
-const MAX_IMAGES = 2 ** 16; // series with an image (spec/virtualize/czi/profile.md §13.3)
+const MAX_IMAGES = 2 ** 16; // series with an image (spec/virtualize.md §13.3)
 const MAX_LEVELS = 64; // levels per image
 const MAX_EXTENT = 2 ** 31; // each dimension of an array's shape
 const MAX_OMERO = 64; // an image's channel indexes, for omero

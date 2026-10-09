@@ -1,4 +1,4 @@
-//! CZI codec headers (spec/virtualize/czi.md §3.1–§3.2, spec/virtualize/czi/profile.md §13.4): a
+//! CZI codec headers (spec/virtualize/czi.md §3.1–§3.2, spec/virtualize.md §13.4): a
 //! subblock's coded size from the first 2^16 bytes of its data at most. The
 //! readers are given the bytes read so far; one that needs more says how many
 //! (`Err(n)`), and is run again with them.

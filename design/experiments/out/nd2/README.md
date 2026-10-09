@@ -2,7 +2,7 @@
 
 `just archives-nd2` writes a `.vzip` here for each public ND2 file of
 [corpus_nd2.txt](../../../../conformance/virtualize/corpus_nd2.txt), by the ND2
-profile ([spec/virtualize/nd2/profile.md](../../../../spec/virtualize/nd2/profile.md))
+profile ([spec/virtualize/nd2.md](../../../../spec/virtualize/nd2.md#part-2-the-profile))
 (`python -m vzip.virtualize <url> <out>`), reading the file in place over
 HTTP. The archives are generated, so they are not version-controlled. The
 browser implementation (`js/src/virtualize/nd2/`) produces equivalent archives, and

@@ -2,7 +2,7 @@
 
 import { compareKeys, parseXml, type XmlElement } from "../store.ts";
 
-/** The input is rejected by the SAFE profile (spec/virtualize/safe/profile.md §12.5). */
+/** The input is rejected by the SAFE profile (spec/virtualize.md §12.5). */
 export class SafeError extends Error {}
 
 const reject = (m: string): never => {

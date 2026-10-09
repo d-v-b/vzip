@@ -557,7 +557,7 @@ class Store:
         raise NotImplementedError
 
     def read_range(self, key: str, offset: int, length: int) -> bytes:  # pragma: no cover - interface
-        """The bytes [offset, offset + length) of the object `key` (spec/virtualize/safe/profile.md §12.2)."""
+        """The bytes [offset, offset + length) of the object `key` (spec/virtualize.md §12.2)."""
         raise NotImplementedError
 
     def prefetch(self, keys, wanted: Callable[[str], bool | None] | None = None) -> None:

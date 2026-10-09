@@ -161,8 +161,8 @@ that the Python and browser outputs are equivalent on those files and on the
 [corpus_tiff.txt](../../../conformance/virtualize/corpus_tiff.txt), among
 them the 6.9 GB Hamamatsu-1.ndpi.
 
-- Profile: [spec/virtualize/ndpi/profile.md](../../../spec/virtualize/ndpi/profile.md), which builds on
-  [spec/virtualize/tiff/profile.md](../../../spec/virtualize/tiff/profile.md)
+- Profile: [spec/virtualize/ndpi.md](../../../spec/virtualize/ndpi.md#part-2-the-profile), which builds on
+  [spec/virtualize/tiff.md](../../../spec/virtualize/tiff.md#part-2-the-profile)
 - Python: [python/src/vzip/virtualize/ndpi/](../../../python/src/vzip/virtualize/ndpi/)
 - Browser: [js/src/virtualize/ndpi/](../../../js/src/virtualize/ndpi/)
 - Fixtures: [fixtures/ndpi/](../../../fixtures/ndpi/)

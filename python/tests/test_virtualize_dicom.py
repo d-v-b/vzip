@@ -1,4 +1,4 @@
-"""The Python DICOM virtualizer (spec/virtualize/dicom/profile.md) on the synthetic fixtures.
+"""The Python DICOM virtualizer (spec/virtualize/dicom.md) on the synthetic fixtures.
 
 Equivalence with the browser virtualizer is checked by
 conformance/virtualize/compare.py, and pixel correctness against pydicom by

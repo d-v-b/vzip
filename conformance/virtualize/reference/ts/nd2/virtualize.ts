@@ -1,5 +1,5 @@
 // Virtualizing a Nikon ND2 file (format version 3+) by the ND2 profile
-// (spec/virtualize/nd2/profile.md, §5): the frames become Zarr chunks that reference the file.
+// (spec/virtualize.md, §5): the frames become Zarr chunks that reference the file.
 
 import { REVISION } from "../revision.ts";
 import { type ByteReader, declare, emitPlans, jsonText, MAX_PAYLOAD, payloadSize, Prefetched, stringifyJson } from "../../../../../js/src/virtualize/common.ts";
@@ -15,10 +15,10 @@ const FILE_SIGNATURE = "ND2 FILE SIGNATURE CHUNK NAME01!";
 const MAP_SIGNATURE = "ND2 CHUNK MAP SIGNATURE 0000001!";
 const FILEMAP_NAME = "ND2 FILEMAP SIGNATURE NAME 0001!";
 const FRAME = /^ImageDataSeq\|(0|[1-9][0-9]*)!$/;
-const MAX_INFLATE = 2 ** 26; // the most a chunk the profile reads may inflate to (spec/virtualize/nd2/profile.md §5.1)
+const MAX_INFLATE = 2 ** 26; // the most a chunk the profile reads may inflate to (spec/virtualize.md §5.1)
 const MAX_RECORDS = 2 ** 20; // the most LV records and byte-array bytes of the chunks the profile reads (§5.1)
-const MAX_POSITIONS = 2 ** 16; // the most positions (spec/virtualize/nd2/profile.md §5.3)
-const MAX_POSITION_CHANNELS = 2 ** 20; // the most positions x components (spec/virtualize/nd2/profile.md §5.3)
+const MAX_POSITIONS = 2 ** 16; // the most positions (spec/virtualize.md §5.3)
+const MAX_POSITION_CHANNELS = 2 ** 20; // the most positions x components (spec/virtualize.md §5.3)
 const FRAME_HEAD = 16 + 4096; // the bytes prefetched at each frame chunk: its header and a padded name
 const FRAME_HEADS_IN_FLIGHT = 32; // as the Python reader's prefetch
 
@@ -281,7 +281,7 @@ export async function virtualizeNd2(
     chunks.set(name, Number(dv(mapData).getBigUint64(end + 1, true)));
     pos = end + 17;
   }
-  const room: [number] = [MAX_RECORDS]; // shared by the three chunks (spec/virtualize/nd2/profile.md §5.1)
+  const room: [number] = [MAX_RECORDS]; // shared by the three chunks (spec/virtualize.md §5.1)
   const chunk = async (name: string) => {
     const offset = chunks.get(name);
     if (offset === undefined) return undefined;
@@ -387,7 +387,7 @@ export async function virtualizeNd2(
     colors = labels.map(() => "FFFFFF");
   }
 
-  // spec/virtualize/nd2/profile.md §5.3: frames.
+  // spec/virtualize.md §5.3: frames.
   const total = loops.reduce((n, l) => n * l.count, 1);
   if (total > Number.MAX_SAFE_INTEGER) reject("more than 2^53 - 1 frames");
   const frameOffsets = new Map<number, number>();

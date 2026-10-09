@@ -56,12 +56,12 @@ in a directory and lists them at https://d-v-b.github.io/vzip-demo/).
 ## What is supported
 
 The rules are [spec/virtualize.md](../spec/virtualize.md)'s profiles:
-[TIFF](../spec/virtualize/tiff/profile.md), [NDPI](../spec/virtualize/ndpi/profile.md),
-[ND2](../spec/virtualize/nd2/profile.md), [DICOM](../spec/virtualize/dicom/profile.md),
-[NIfTI](../spec/virtualize/nifti/profile.md), [IMS](../spec/virtualize/ims/profile.md),
-[N5](../spec/virtualize/n5/profile.md), [Zarr v2](../spec/virtualize/zarr2/profile.md),
-[OME-Zarr](../spec/virtualize/ome-zarr/profile.md), [SAFE](../spec/virtualize/safe/profile.md) and
-[CZI](../spec/virtualize/czi/profile.md). TIFF, ND2 and CZI are virtualized by the
+[TIFF](../spec/virtualize/tiff.md#part-2-the-profile), [NDPI](../spec/virtualize/ndpi.md#part-2-the-profile),
+[ND2](../spec/virtualize/nd2.md#part-2-the-profile), [DICOM](../spec/virtualize/dicom.md#part-2-the-profile),
+[NIfTI](../spec/virtualize/nifti.md#part-2-the-profile), [IMS](../spec/virtualize/ims.md#part-2-the-profile),
+[N5](../spec/virtualize/n5.md#part-2-the-profile), [Zarr v2](../spec/virtualize/zarr2.md#part-2-the-profile),
+[OME-Zarr](../spec/virtualize/ome-zarr.md#part-2-the-profile), [SAFE](../spec/virtualize/safe.md#part-2-the-profile) and
+[CZI](../spec/virtualize/czi.md#part-2-the-profile). TIFF, ND2 and CZI are virtualized by the
 Rust core (`rust/vzip-ir`) built for wasm32: `src/virtualize/ir/` performs the
 requests its read planner asks for (several at once, multi-range ones under
 Node), under the reader policy, and writes its output. `just js::wasm` builds

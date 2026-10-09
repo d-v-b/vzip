@@ -4,12 +4,12 @@ zarr-python does not provide.
 `imagecodecs_jpeg2k`: each chunk is one JPEG 2000 codestream (as in TIFF
 compression 33003/33005/34712 with planar-separate tiles).
 `imagecodecs_jpeg`: each chunk is one complete JPEG stream (as virtualized
-JPEG-in-TIFF tiles are, spec/virtualize/tiff/profile.md §3.6).
+JPEG-in-TIFF tiles are, spec/virtualize.md §3.6).
 `imagecodecs_jpegxr`: each chunk is one JPEG XR file (ITU-T T.832, with its
 container), as CZI JpgXr subblocks are (spec/virtualize/czi.md §3.1).
 `zlib`: a zlib stream (RFC 1950), as Neuroglancer names it (conventions §3, §9, §10).
 `n5_default`: an N5 default-mode block, header included (zarr-extensions
-`codecs/n5_default`; spec/virtualize/n5/profile.md).
+`codecs/n5_default`; spec/virtualize/n5.md).
 
 The image codecs decode only; their encoders exist so zarr can create the
 array metadata.

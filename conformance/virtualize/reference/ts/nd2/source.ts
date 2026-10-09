@@ -230,7 +230,7 @@ export interface Source {
   arrays: Plan[];
 }
 
-/** What the image takes from the frames (spec/virtualize/nd2/profile.md §5.3). */
+/** What the image takes from the frames (spec/virtualize.md §5.3). */
 export interface Frames {
   count: number; // N
   placed: Map<number, number>; // each placed frame's chunk offset

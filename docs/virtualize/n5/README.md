@@ -176,7 +176,7 @@ browser outputs are equivalent on those stores and on the 7 OpenOrganelle
 stores of [corpus_n5.txt](../../../conformance/virtualize/corpus_n5.txt)
 (the full-resolution level with the Python command only).
 
-- Profile: [spec/virtualize/n5/profile.md](../../../spec/virtualize/n5/profile.md)
+- Profile: [spec/virtualize/n5.md](../../../spec/virtualize/n5.md#part-2-the-profile)
 - Python: [python/src/vzip/virtualize/n5/](../../../python/src/vzip/virtualize/n5/)
 - Browser: [js/src/virtualize/n5/](../../../js/src/virtualize/n5/)
 - Fixtures: [fixtures/n5/](../../../fixtures/n5/)

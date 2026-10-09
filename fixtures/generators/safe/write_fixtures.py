@@ -1,7 +1,7 @@
 """Writes synthetic Sentinel-2 SAFE products to fixtures/safe/: each a
 directory `<name>/` (the directory form, a store input), and some also as a
 zip file `<name>.SAFE.zip` (the zip form), covering the SAFE profile
-(spec/virtualize/safe/profile.md §12) and its convention (spec/virtualize/safe.md).
+(spec/virtualize.md §12) and its convention (spec/virtualize/safe.md).
 
 The products mimic real ones, scaled down. Band files are JPEG 2000 files
 written by rasterio's JP2OpenJPEG driver (OpenJPEG), tiled, with PLT markers

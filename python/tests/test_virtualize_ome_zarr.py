@@ -1,4 +1,4 @@
-"""The Python OME-Zarr virtualizer (spec/virtualize/ome-zarr/profile.md) on the synthetic stores.
+"""The Python OME-Zarr virtualizer (spec/virtualize/ome-zarr.md) on the synthetic stores.
 
 Equivalence with the browser virtualizer is checked by
 conformance/virtualize/compare.py, and the outputs against ome-zarr-models and

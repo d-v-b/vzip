@@ -1,4 +1,4 @@
-"""Reading a CZI file's segments (spec/virtualize/czi.md §2, spec/virtualize/czi/profile.md §13.2)."""
+"""Reading a CZI file's segments (spec/virtualize/czi.md §2, spec/virtualize.md §13.2)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from vzip.virtualize.common import MAX_SAFE, Reader, Rejected
 from vzip_reference.czi.coding import COMPRESSIONS, PIXEL_TYPES
 
-MAX_ENTRIES = 1 << 21  # directory entries (spec/virtualize/czi/profile.md §13.3)
+MAX_ENTRIES = 1 << 21  # directory entries (spec/virtualize.md §13.3)
 MAX_ATTACHMENTS = 1 << 16  # attachment entries
 MAX_WALK = 1 << 23  # segments the walk visits
 LETTERS = "XYZCTRSIHVBM"
@@ -346,7 +346,7 @@ def read_attachments(read: Reader, size: int, o: int) -> tuple[int, list[Attachm
 
 
 def walk(read: Reader, size: int, known: dict[int, tuple[bytes, int, int]]) -> tuple[list[tuple[int, bytes, int, int]], int]:
-    """The walk (spec/virtualize/czi/profile.md §13.2 step 6): the segments as (offset, id,
+    """The walk (spec/virtualize.md §13.2 step 6): the segments as (offset, id,
     AllocatedSize, UsedSize) in file order, and where the tail starts.
     `known` holds the headers already read, by offset."""
     out = []

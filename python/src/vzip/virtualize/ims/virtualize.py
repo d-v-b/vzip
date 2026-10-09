@@ -1,4 +1,4 @@
-"""The IMS profile (spec/virtualize/ims/profile.md, §8)."""
+"""The IMS profile (spec/virtualize.md, §8)."""
 
 from __future__ import annotations
 
@@ -196,7 +196,7 @@ def virtualize_ims(url: str, read: Reader, size: int) -> Output:
             if elapsed > 0:
                 period = elapsed / (times - 1)
 
-    # spec/virtualize/ims.md §4: output; spec/virtualize/ims/profile.md §8.8: the chunk references.
+    # spec/virtualize/ims.md §4: output; spec/virtualize.md §8.8: the chunk references.
     z0 = level_info[0][0][0]
     # A z axis also when chunks hold several z planes, so that they decode to Zarr chunks.
     has_z = z0 > 1 or any(info[1][0] > 1 for info in level_info)

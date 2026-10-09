@@ -147,7 +147,7 @@ those files and on the 12 public files of
 (nibabel's and NiiVue's test data, SPM templates and dcm2niix regression
 data).
 
-- Profile: [spec/virtualize/nifti/profile.md](../../../spec/virtualize/nifti/profile.md)
+- Profile: [spec/virtualize/nifti.md](../../../spec/virtualize/nifti.md#part-2-the-profile)
 - Python: [python/src/vzip/virtualize/nifti/](../../../python/src/vzip/virtualize/nifti/)
 - Browser: [js/src/virtualize/nifti/](../../../js/src/virtualize/nifti/)
 - Fixtures: [fixtures/nifti/](../../../fixtures/nifti/)

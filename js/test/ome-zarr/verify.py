@@ -1,4 +1,4 @@
-"""Checks the browser OME-Zarr virtualizer's output (spec/virtualize/ome-zarr/profile.md)
+"""Checks the browser OME-Zarr virtualizer's output (spec/virtualize/ome-zarr.md)
 against ome-zarr-models and zarr-python.
 
 Each store in fixtures/ome-zarr/ is served by the harness proxy (with

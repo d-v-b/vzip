@@ -1,5 +1,5 @@
 """Writes TIFFs to fixtures/tiff/ that exercise the edges of the TIFF
-profile (spec/virtualize/tiff/profile.md §3) which tifffile does not write: odd OME-XML,
+profile (spec/virtualize.md §3) which tifffile does not write: odd OME-XML,
 duplicate tags, SubIFD mismatches, tiles outside the file, and so on.
 
 They are compared between implementations (conformance/virtualize/

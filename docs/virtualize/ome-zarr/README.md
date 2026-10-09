@@ -157,8 +157,8 @@ equivalent on those stores and on the 15 IDR stores of
 (images, labels, plates and a bioformats2raw plate; the 102114-object plate
 with the Python command only).
 
-- Profile: [spec/virtualize/ome-zarr/profile.md](../../../spec/virtualize/ome-zarr/profile.md), which
-  builds on [spec/virtualize/zarr2/profile.md](../../../spec/virtualize/zarr2/profile.md)
+- Profile: [spec/virtualize/ome-zarr.md](../../../spec/virtualize/ome-zarr.md#part-2-the-profile), which
+  builds on [spec/virtualize/zarr2.md](../../../spec/virtualize/zarr2.md#part-2-the-profile)
 - Python: [python/src/vzip/virtualize/ome_zarr/](../../../python/src/vzip/virtualize/ome_zarr/)
 - Browser: [js/src/virtualize/ome-zarr/](../../../js/src/virtualize/ome-zarr/)
 - Fixtures: [fixtures/ome-zarr/](../../../fixtures/ome-zarr/)

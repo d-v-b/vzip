@@ -1,4 +1,4 @@
-"""Imaris IMS files, which are HDF5 files (spec/virtualize/ims/profile.md)."""
+"""Imaris IMS files, which are HDF5 files (spec/virtualize/ims.md)."""
 
 from vzip.virtualize.ims.virtualize import virtualize_ims
 

@@ -1,4 +1,4 @@
-"""The DICOM profile (spec/virtualize/dicom/profile.md, §6)."""
+"""The DICOM profile (spec/virtualize.md, §6)."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ PHOTOMETRIC = {
     ("jpeg", 1): {b"MONOCHROME1", b"MONOCHROME2"}, ("jpeg", 3): {b"RGB", b"YBR_FULL", b"YBR_FULL_422"},
     ("jpeg2k", 1): {b"MONOCHROME1", b"MONOCHROME2"}, ("jpeg2k", 3): {b"RGB", b"YBR_ICT", b"YBR_RCT"},
 }
-# SOI and the Adobe APP14 marker, without its last byte, the color transform (spec/virtualize/dicom/profile.md §6.5).
+# SOI and the Adobe APP14 marker, without its last byte, the color transform (spec/virtualize.md §6.5).
 ADOBE = bytes.fromhex("FFD8FFEE000E41646F6265006400000000")
 DECIMAL = re.compile(rb"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
 INTEGER = re.compile(rb"([+-]?)([0-9]+)")
@@ -231,7 +231,7 @@ def virtualize_dicom(url: str, read: Reader, size: int) -> Output:
     else:
         width_px, height_px, across = columns, rows, 1
 
-    # spec/virtualize/dicom/profile.md §6.5: each frame's ranges, and the samples' when planar.
+    # spec/virtualize.md §6.5: each frame's ranges, and the samples' when planar.
     planar_native = codec is None and spp == 3 and planar == 1
     frame_size = rows * columns * spp * (bits_allocated // 8)
     frame_ranges: list[list[tuple[int, int] | bytes]] = []
@@ -339,7 +339,7 @@ def virtualize_dicom(url: str, read: Reader, size: int) -> Output:
                 ranges = [ADOBE + bytes([0 if photometric == b"RGB" else 1]), (o + 2, length - 2)] + ranges[1:]
             frame_ranges.append(ranges)
 
-    # spec/virtualize/dicom.md §4; spec/virtualize/dicom/profile.md §6.6: the chunk references
+    # spec/virtualize/dicom.md §4; spec/virtualize.md §6.6: the chunk references
     # The frames are along t when the Frame Increment Pointer is Frame Time or Frame Time Vector.
     fa = "t" if increment in (0x00181063, 0x00181065) else "z"
     axes = (["c"] if spp == 3 else []) + ([fa] if not whole_slide and n > 1 else []) + ["y", "x"]

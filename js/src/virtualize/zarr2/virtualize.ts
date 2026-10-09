@@ -1,4 +1,4 @@
-// The Zarr v2 profile (spec/virtualize/zarr2/profile.md, §10): a Zarr v2 hierarchy as a
+// The Zarr v2 profile (spec/virtualize.md, §10): a Zarr v2 hierarchy as a
 // Zarr v3 one, each chunk a whole-object reference under its own key.
 
 import type { Profile } from "../common.ts";

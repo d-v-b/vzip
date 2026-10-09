@@ -1,4 +1,4 @@
-"""The Python SAFE virtualizer (spec/virtualize/safe/profile.md) on the synthetic products.
+"""The Python SAFE virtualizer (spec/virtualize/safe.md) on the synthetic products.
 
 Equivalence with the browser virtualizer is checked by
 conformance/virtualize/compare.py, and pixel correctness, georeferencing and
@@ -276,7 +276,7 @@ def test_folders():
 
 
 def test_texts_are_read_only_while_they_can_fit():
-    """The candidates are read in order, and no longer once one cannot fit (spec/virtualize/safe/profile.md §12.2)."""
+    """The candidates are read in order, and no longer once one cannot fit (spec/virtualize.md §12.2)."""
     sizes = {f"d{i:02d}.xml": 30000 for i in range(40)} | {"small.xml": 10, "big.xml": 70000}
     read = []
 
@@ -338,7 +338,7 @@ def _plt_counts(data: bytes, cs: jp2.Codestream) -> list[int]:
 
 
 def test_empty_packets_match_the_plt_markers():
-    """The packet count of spec/virtualize/safe/profile.md §12.6 against the PLT markers' packet lengths
+    """The packet count of spec/virtualize.md §12.6 against the PLT markers' packet lengths
     of every tile of every fixture band file, edge tiles included."""
     checked = 0
     for name in ("safe_l1c", "safe_l2a", "safe_big_header"):

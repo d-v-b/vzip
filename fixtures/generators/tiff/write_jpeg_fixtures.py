@@ -1,5 +1,5 @@
 """Writes JPEG-in-TIFF files to fixtures/tiff/ for the JPEG rule of
-spec/virtualize/tiff.md §4.3 and spec/virtualize/tiff/profile.md §3.3.
+spec/virtualize/tiff.md §4.3 and spec/virtualize.md §3.3.
 
 - `jpeg_aperio_rgb.tif`: like Aperio SVS. The IFD's JPEGTables holds the
   quantization and Huffman tables, and each tile is an abbreviated stream

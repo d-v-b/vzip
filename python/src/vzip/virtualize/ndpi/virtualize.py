@@ -1,4 +1,4 @@
-"""The NDPI profile (spec/virtualize/ndpi/profile.md, §4), a variant of the TIFF profile.
+"""The NDPI profile (spec/virtualize.md, §4), a variant of the TIFF profile.
 
 Hamamatsu NDPI is a little-endian classic TIFF with 64-bit offsets (an 8-byte
 first-IFD offset, 8-byte next-IFD offsets, and a high word per entry after
@@ -116,7 +116,7 @@ def read_ifds(read: Reader, size: int, first: int) -> tuple[list[dict[int, Field
 
 def values(read: Reader, memo: dict) -> Callable[..., dict[int, list]]:
     """A function that reads the values of an IFD's tags (all of §4's table, or `only`): the
-    first of a scalar, every value of an array (§4, and spec/virtualize/tiff/profile.md §3.1)."""
+    first of a scalar, every value of an array (§4, and spec/virtualize.md §3.1)."""
 
     def one(tag: int, f: Field) -> list:
         n = 1 if TAGS[tag][1] else f.count

@@ -1,5 +1,5 @@
 """Writes small synthetic Imaris (IMS) files to fixtures/ims/ with
-h5py, covering the rules of the IMS profile (spec/virtualize/ims/profile.md §8): both HDF5
+h5py, covering the rules of the IMS profile (spec/virtualize.md §8): both HDF5
 file formats (h5py's default, the earliest, and libver="latest": old and new
 object headers, symbol-table and compact or dense groups, compact and dense
 attributes, version 1 B-tree, single chunk and fixed array chunk indexes,
@@ -462,7 +462,7 @@ def review() -> None:
 
 
 def indexes() -> None:
-    """The chunk indexes of HDF5's newer format (spec/virtualize/ims/profile.md §8.5): an
+    """The chunk indexes of HDF5's newer format (spec/virtualize.md §8.5): an
     extensible array (one unlimited dimension), a version 2 B-tree (several),
     implicit (allocated early) and fixed arrays at maximum dimensions, with and
     without filters, for the image and for other datasets."""

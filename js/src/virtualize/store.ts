@@ -489,7 +489,7 @@ export interface Store {
   listed: number;
   requests: number;
   read(key: string): Promise<Uint8Array>;
-  /** The bytes [offset, offset + length) of the object `key` (spec/virtualize/safe/profile.md §12.2). */
+  /** The bytes [offset, offset + length) of the object `key` (spec/virtualize.md §12.2). */
   readRange?(key: string, offset: number, length: number): Promise<Uint8Array>;
   /** Documents read at a time by `prefetchDocuments`; read one at a time if absent or 1. */
   concurrency?: number;

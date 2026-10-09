@@ -18,17 +18,17 @@ who each one is for, what you get, and how to run it.
 
 | format | for | README | profile |
 |---|---|---|---|
-| TIFF | OME-TIFF, plain tiled TIFF, and JPEG-tiled slides such as Aperio SVS | [tiff](tiff/README.md) | [§3](../../spec/virtualize/tiff/profile.md) |
-| NDPI | Hamamatsu NDPI whole-slide images | [ndpi](ndpi/README.md) | [§4](../../spec/virtualize/ndpi/profile.md) |
-| ND2 | Nikon NIS-Elements ND2 files | [nd2](nd2/README.md) | [§5](../../spec/virtualize/nd2/profile.md) |
-| DICOM | DICOM files, including whole-slide images | [dicom](dicom/README.md) | [§6](../../spec/virtualize/dicom/profile.md) |
-| NIfTI | NIfTI-1 and NIfTI-2 volumes (`.nii`) | [nifti](nifti/README.md) | [§7](../../spec/virtualize/nifti/profile.md) |
-| IMS | Imaris `.ims` files | [ims](ims/README.md) | [§8](../../spec/virtualize/ims/profile.md) |
-| N5 | N5 containers on S3 | [n5](n5/README.md) | [§9](../../spec/virtualize/n5/profile.md) |
-| Zarr v2 | Zarr v2 hierarchies on S3 | [zarr2](zarr2/README.md) | [§10](../../spec/virtualize/zarr2/profile.md) |
-| OME-Zarr | OME-Zarr 0.4 hierarchies, migrated to OME-Zarr 0.5 in place | [ome-zarr](ome-zarr/README.md) | [§11](../../spec/virtualize/ome-zarr/profile.md) |
-| SAFE | Sentinel-2 Level-1C and Level-2A products, as a `.SAFE` directory or a `.SAFE.zip` | [convention](../../spec/virtualize/safe.md) | [§12](../../spec/virtualize/safe/profile.md) |
-| CZI | Zeiss CZI files | [convention](../../spec/virtualize/czi.md) | [§13](../../spec/virtualize/czi/profile.md) |
+| TIFF | OME-TIFF, plain tiled TIFF, and JPEG-tiled slides such as Aperio SVS | [tiff](tiff/README.md) | [§3](../../spec/virtualize/tiff.md#part-2-the-profile) |
+| NDPI | Hamamatsu NDPI whole-slide images | [ndpi](ndpi/README.md) | [§4](../../spec/virtualize/ndpi.md#part-2-the-profile) |
+| ND2 | Nikon NIS-Elements ND2 files | [nd2](nd2/README.md) | [§5](../../spec/virtualize/nd2.md#part-2-the-profile) |
+| DICOM | DICOM files, including whole-slide images | [dicom](dicom/README.md) | [§6](../../spec/virtualize/dicom.md#part-2-the-profile) |
+| NIfTI | NIfTI-1 and NIfTI-2 volumes (`.nii`) | [nifti](nifti/README.md) | [§7](../../spec/virtualize/nifti.md#part-2-the-profile) |
+| IMS | Imaris `.ims` files | [ims](ims/README.md) | [§8](../../spec/virtualize/ims.md#part-2-the-profile) |
+| N5 | N5 containers on S3 | [n5](n5/README.md) | [§9](../../spec/virtualize/n5.md#part-2-the-profile) |
+| Zarr v2 | Zarr v2 hierarchies on S3 | [zarr2](zarr2/README.md) | [§10](../../spec/virtualize/zarr2.md#part-2-the-profile) |
+| OME-Zarr | OME-Zarr 0.4 hierarchies, migrated to OME-Zarr 0.5 in place | [ome-zarr](ome-zarr/README.md) | [§11](../../spec/virtualize/ome-zarr.md#part-2-the-profile) |
+| SAFE | Sentinel-2 Level-1C and Level-2A products, as a `.SAFE` directory or a `.SAFE.zip` | [convention](../../spec/virtualize/safe.md) | [§12](../../spec/virtualize/safe.md#part-2-the-profile) |
+| CZI | Zeiss CZI files | [convention](../../spec/virtualize/czi.md) | [§13](../../spec/virtualize/czi.md#part-2-the-profile) |
 
 TIFF, NDPI, ND2, DICOM, NIfTI, IMS and CZI read one file (a URL, or a local
 path). N5, Zarr v2 and OME-Zarr read a store: a URL ending in `/` that

@@ -1,4 +1,4 @@
-// The NDPI profile (spec/virtualize/ndpi/profile.md, §4), a variant of the TIFF profile.
+// The NDPI profile (spec/virtualize.md, §4), a variant of the TIFF profile.
 //
 // Hamamatsu NDPI is a little-endian classic TIFF with 64-bit offsets (an
 // 8-byte first-IFD offset, 8-byte next-IFD offsets, and a high word per entry
@@ -115,7 +115,7 @@ async function readIfds(
 }
 
 /** A function that reads the values of an IFD's tags (all of §4's table, or `only`): the
- * first of a scalar, every value of an array (§4, and spec/virtualize/tiff/profile.md §3.1). */
+ * first of a scalar, every value of an array (§4, and spec/virtualize.md §3.1). */
 function values(read: ByteReader) {
   const memo = new Map<string, Values>(); // (type, count, offset) -> values, for shared tables
   const one = async (tag: number, f: Field): Promise<Values> => {

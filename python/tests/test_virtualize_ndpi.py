@@ -1,4 +1,4 @@
-"""The Python NDPI virtualizer (spec/virtualize/ndpi/profile.md): its JPEG header parser and
+"""The Python NDPI virtualizer (spec/virtualize/ndpi.md): its JPEG header parser and
 the data sources that hold the header.
 
 Whole files are checked by conformance/virtualize/compare.py and
@@ -107,7 +107,7 @@ def test_ndpi_records_every_ifd_in_its_own_group():
 
 
 def test_ndpi_reads_only_the_values_it_uses():
-    """spec/virtualize/ndpi/profile.md §4: the values of an IFD that is not a level are not read, so the
+    """spec/virtualize.md §4: the values of an IFD that is not a level are not read, so the
     macro image's McuStarts (LONG8, above 2^53 - 1) does not reject; its strip is kept."""
     path = Path(__file__).parents[2] / "fixtures" / "ndpi" / "ndpi_unused_values.ndpi"
     _, out = virtualize(str(path), url="https://data.test/x.ndpi")
