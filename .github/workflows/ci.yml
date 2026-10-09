@@ -1,9 +1,9 @@
 # Offline checks on every push and pull request: the Python package's tests, the
 # browser code's type check and Node tests, the IR core's tests, the fixture
-# comparison of the virtualizers against the frozen reference (VIRTUALIZE.md §1.1, with
-# SPEC.md's strict reading of every archive), and the reproducibility of the fixture
+# comparison of the virtualizers against the frozen reference (spec/virtualize.md §1.1, with
+# spec/archive.md's strict reading of every archive), and the reproducibility of the fixture
 # generators. TIFF, ND2 and CZI go through the Rust core (rust/vzip-ir), built natively
-# for Python (`just ir-build`) and for wasm32 for the browser code (`just web::wasm`).
+# for Python (`just ir-build`) and for wasm32 for the browser code (`just js::wasm`).
 name: ci
 
 on:
@@ -34,7 +34,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: js/package-lock.json
       - uses: extractions/setup-just@v2
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -46,10 +46,10 @@ jobs:
       - run: sudo apt-get install -y --no-install-recommends binaryen
       - run: uv sync --all-groups --locked
       - run: npm ci
-        working-directory: web
-      - run: just web::wasm
-      # builds the Rust core first; the ir job runs tests/ir
-      - run: just test --ignore=tests/ir
+        working-directory: js
+      - run: just js::wasm
+      # builds the Rust core first; the ir job runs python/tests/ir
+      - run: just test --ignore=python/tests/ir
 
   node:
     runs-on: ubuntu-latest
@@ -60,12 +60,12 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: js/package-lock.json
       - uses: extractions/setup-just@v2
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      # web::test also builds the test module (test-only hooks) in its own target directory,
+      # js::test also builds the test module (test-only hooks) in its own target directory,
       # rust/vzip-ir/target/test-hooks; cache it beside the shipped module's
       - uses: Swatinem/rust-cache@v2
         with:
@@ -75,8 +75,8 @@ jobs:
       # binaryen's wasm-opt shrinks the wasm32 module (rust/vzip-ir/wasm/build.sh; optional)
       - run: sudo apt-get install -y --no-install-recommends binaryen
       - run: npm ci
-        working-directory: web
-      - run: just web::test
+        working-directory: js
+      - run: just js::test
 
   ir:
     runs-on: ubuntu-latest
@@ -128,10 +128,10 @@ jobs:
       - run: sudo apt-get install -y --no-install-recommends binaryen
       - run: uv sync --all-groups --locked
       - run: just ir-build
-      - run: just web::wasm
+      - run: just js::wasm
       - run: >-
           uv run python conformance/virtualize/compare.py conformance/results/fixtures
-          --fixtures web/test/fixtures --shard ${{ matrix.shard }}/4
+          --fixtures fixtures --shard ${{ matrix.shard }}/4
       - if: failure()
         uses: actions/upload-artifact@v4
         with:

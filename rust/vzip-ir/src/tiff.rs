@@ -1,5 +1,5 @@
 //! A sans-IO parser of TIFF, BigTIFF and OME-TIFF files into the IR
-//! (profiles/tiff.md §3, conventions/tiff): it never reads; it asks for batches
+//! (spec/virtualize/tiff/profile.md §3, spec/virtualize/tiff.md): it never reads; it asks for batches
 //! of ranges (`step`), is given their bytes (`feed`), and holds them only until
 //! the step that uses them.
 //!
@@ -57,7 +57,7 @@ fn unsigned(t: u16) -> bool {
     matches!(t, 1 | 3 | 4 | 13 | 16 | 18)
 }
 
-/// A pointer tag (conventions/tiff §5): it leads to IFDs the IR describes.
+/// A pointer tag (spec/virtualize/tiff.md §5): it leads to IFDs the IR describes.
 fn pointer(tag: u16, typ: u16) -> bool {
     match tag {
         330 | 34665 | 34853 | 40965 => unsigned(typ),
@@ -823,11 +823,11 @@ impl Tiff {
     }
 }
 
-// ---- the layout (profiles/tiff.md §3.2–§3.4), as the profile reads it
+// ---- the layout (spec/virtualize/tiff/profile.md §3.2–§3.4), as the profile reads it
 
 type Vals = HashMap<u16, Loaded>;
 
-/// The OME-XML of conventions/tiff §3: the first image's name, its Pixels'
+/// The OME-XML of spec/virtualize/tiff.md §3: the first image's name, its Pixels'
 /// attributes, its TiffData elements, and its first Plane at (0, 0, 0).
 #[derive(Default, Debug)]
 struct Ome {
@@ -996,7 +996,7 @@ fn int_attr(rules: &Rules, attrs: &[(String, String)], key: &str, default: u64, 
     Ok(value as u64)
 }
 
-/// The `name = value` fields of an Aperio ImageDescription (conventions/tiff §4.4), or None.
+/// The `name = value` fields of an Aperio ImageDescription (spec/virtualize/tiff.md §4.4), or None.
 fn aperio_fields(d: &str) -> Option<Vec<(String, String)>> {
     if !d.starts_with("Aperio") {
         return None;
@@ -1259,7 +1259,7 @@ impl Tiff {
         let f0 = self.fmt(i0, &m0)?;
         let (bits, spp, sample_format, planar, compression, predictor, photometric) = f0;
         self.check("predictor", rules::env([("compression", num(compression as f64)), ("predictor", num(predictor as f64))]))?;
-        // the planes (conventions/tiff §3, §4.1), in (t, c, z) order, as main-chain IFD indices
+        // the planes (spec/virtualize/tiff.md §3, §4.1), in (t, c, z) order, as main-chain IFD indices
         let empty = vec![];
         let px = ome.as_ref().map(|o| &o.pixels).unwrap_or(&empty);
         let size_z = int_attr(self.rules, px, "SizeZ", 1, 1)?;
@@ -1348,7 +1348,7 @@ impl Tiff {
         let mapped = plane_ifd.iter().all(|&i| i >= 0 && (i as usize) < self.chain.len());
         self.check("plane_map", rules::env([("mapped", flag(mapped))]))?;
         let planes: Vec<usize> = plane_ifd.iter().map(|&i| self.chain[i as usize]).collect();
-        // the levels (conventions/tiff §4.2)
+        // the levels (spec/virtualize/tiff.md §4.2)
         let mut levels: Vec<Level> = Vec::new();
         let subs0 = self.ifds[i0].subs.clone();
         if !subs0.is_empty() {
@@ -1393,7 +1393,7 @@ impl Tiff {
                 self.check("pyramid", rules::env([("same", flag(same))]))?;
             }
         }
-        // data type and codecs (conventions/tiff §4.3)
+        // data type and codecs (spec/virtualize/tiff.md §4.3)
         let mut env = rules::env([
             ("bits", num(bits as f64)),
             ("sample_format", num(sample_format as f64)),
@@ -1469,7 +1469,7 @@ impl Tiff {
                 }
             }
         }
-        // pixel size and position (conventions/tiff §4.4)
+        // pixel size and position (spec/virtualize/tiff.md §4.4)
         let unit_of = |u: &str| self.rules.table("units").get(u).and_then(|x| x.as_str()).map(|x| x.to_string());
         let length = |u: &str| self.rules.table("lengths").get(u).and_then(|x| x.as_f64());
         let mut units: BTreeMap<char, String> = BTreeMap::new();
@@ -1723,7 +1723,7 @@ impl Tiff {
         Ok(())
     }
 
-    /// The pointer tags of the IFDs read, in tree order (conventions/tiff §5).
+    /// The pointer tags of the IFDs read, in tree order (spec/virtualize/tiff.md §5).
     fn start_pointers(&mut self) {
         self.todo.clear();
         let mut ks: Vec<usize> = (0..self.ifds.len()).collect();

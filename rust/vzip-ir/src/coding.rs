@@ -1,4 +1,4 @@
-//! CZI codec headers (conventions/czi §3.1–§3.2, profiles/czi.md §13.4): a
+//! CZI codec headers (spec/virtualize/czi.md §3.1–§3.2, spec/virtualize/czi/profile.md §13.4): a
 //! subblock's coded size from the first 2^16 bytes of its data at most. The
 //! readers are given the bytes read so far; one that needs more says how many
 //! (`Err(n)`), and is run again with them.
@@ -233,7 +233,7 @@ pub fn coded_size(pt: i32, comp: i32, w: u64, h: u64, n: u64, head: &Head) -> Re
     }
 }
 
-/// The codecs after `transpose` (conventions/czi §3.1), as JSON.
+/// The codecs after `transpose` (spec/virtualize/czi.md §3.1), as JSON.
 pub fn codec_chain(pt: i32, comp: i32, hilo: bool) -> serde_json::Value {
     use serde_json::json;
     let dt = pixel_type(pt).map(|x| x.0).unwrap_or("uint8");

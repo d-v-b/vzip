@@ -1,4 +1,4 @@
-# url|name of the public CZI files in the corpus (profiles/czi.md; conventions/czi/PLAN.md §6).
+# url|name of the public CZI files in the corpus (spec/virtualize/czi/profile.md; design/plans/czi.md §6).
 # OME sample images (idr0011 subset, (c) Ledesma-Fernández et al.; zenodo-10577186, (c) Stephan
 # Wagner-Conrad; zenodo-14968770, (c) Jürgen Bohl), and Zenodo records 19047136, 7015307, 10708864,
 # 8321543, 10724935, 8358320 (CC-BY-4.0) and 5823010 (CC0).

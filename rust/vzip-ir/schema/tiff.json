@@ -1,7 +1,7 @@
 {
   "source_model": "tiff",
   "version": 1,
-  "about": "The source model of a TIFF, BigTIFF or OME-TIFF file (TIFF 6.0, conventions/tiff, profiles/tiff.md §3): the elements a parser emits, the tags of the table it reads, and the roles an IFD, a value, an image or a tile plays, each with the constraints a file must meet to have the TIFF convention's layout. A parser checks this schema while it parses, at the point the profile meets each role; projections read a valid IR and check nothing.",
+  "about": "The source model of a TIFF, BigTIFF or OME-TIFF file (TIFF 6.0, spec/virtualize/tiff.md, spec/virtualize/tiff/profile.md §3): the elements a parser emits, the tags of the table it reads, and the roles an IFD, a value, an image or a tile plays, each with the constraints a file must meet to have the TIFF convention's layout. A parser checks this schema while it parses, at the point the profile meets each role; projections read a valid IR and check nothing.",
   "limits": {
     "max_safe": 9007199254740991,
     "max_ifds": 100000,
@@ -38,7 +38,7 @@
       "18": 8
     },
     "tags": {
-      "about": "The tags of the table (profiles/tiff.md §3.1): kind (the field types allowed), scalar (the first value is read, and there must be one), used (read for every IFD an image uses; ImageDescription only for IFD 0, SubIFDs where followed).",
+      "about": "The tags of the table (spec/virtualize/tiff/profile.md §3.1): kind (the field types allowed), scalar (the first value is read, and there must be one), used (read for every IFD an image uses; ImageDescription only for IFD 0, SubIFDs where followed).",
       "256": {"name": "ImageWidth", "kind": "integer", "scalar": true, "used": true},
       "257": {"name": "ImageLength", "kind": "integer", "scalar": true, "used": true},
       "258": {"name": "BitsPerSample", "kind": "integer", "scalar": false, "used": true},
@@ -193,7 +193,7 @@
       "constraints": [{"require": "present", "message": "IFD at {offset} has no tag {tag}"}]
     },
     "format": {
-      "about": "an IFD's sample format (profiles/tiff.md §3.2): BitsPerSample, SampleFormat, SamplesPerPixel, PlanarConfiguration",
+      "about": "an IFD's sample format (spec/virtualize/tiff/profile.md §3.2): BitsPerSample, SampleFormat, SamplesPerPixel, PlanarConfiguration",
       "given": {
         "bits": "BitsPerSample's values",
         "formats": "SampleFormat's values (default [1])",
@@ -224,7 +224,7 @@
       ]
     },
     "integer_attribute": {
-      "about": "an OME-XML attribute read as an integer (conventions/tiff §3): digits, after stripping white space, at most 2^53 - 1",
+      "about": "an OME-XML attribute read as an integer (spec/virtualize/tiff.md §3): digits, after stripping white space, at most 2^53 - 1",
       "given": {
         "key": "",
         "text": "its value as written",
@@ -238,7 +238,7 @@
       ]
     },
     "ome_pixels": {
-      "about": "the first image's Pixels (conventions/tiff §3, §4.1)",
+      "about": "the first image's Pixels (spec/virtualize/tiff.md §3, §4.1)",
       "given": {
         "order": "DimensionOrder (default XYZCT)",
         "spp": "IFD 0's SamplesPerPixel",
@@ -286,7 +286,7 @@
       "constraints": [{"require": "subs >= levels", "message": "the IFD at {offset} has fewer SubIFDs than IFD 0"}]
     },
     "size": {
-      "about": "an IFD a level uses, or a candidate level (conventions/tiff §2)",
+      "about": "an IFD a level uses, or a candidate level (spec/virtualize/tiff.md §2)",
       "given": {
         "offset": "",
         "width": "",
@@ -306,7 +306,7 @@
       ]
     },
     "samples": {
-      "about": "how an image's bytes hold its samples (conventions/tiff §4.3)",
+      "about": "how an image's bytes hold its samples (spec/virtualize/tiff.md §4.3)",
       "given": {
         "offset": "",
         "compression": "",
@@ -342,7 +342,7 @@
       "constraints": [{"require": "same", "message": "pyramid levels differ in sample format or compression"}]
     },
     "image": {
-      "about": "the image's sample type and codecs (conventions/tiff §4.3)",
+      "about": "the image's sample type and codecs (spec/virtualize/tiff.md §4.3)",
       "given": {
         "bits": "",
         "sample_format": "",
@@ -400,10 +400,10 @@
       "constraints": [{"require": "ifds >= 1", "message": "no images"}]
     },
     "translation": {
-      "about": "the image's translation (conventions/tiff §4.4: an OME-XML stage position, centred, or an Aperio corner), when it has one",
+      "about": "the image's translation (spec/virtualize/tiff.md §4.4: an OME-XML stage position, centred, or an Aperio corner), when it has one",
       "given": {"x": "", "y": ""},
       "constraints": [{"require": "finite(x) && finite(y)", "message": "a translation is not finite"}]
     }
   },
-  "about_builtins": "What the parser's code computes and the roles above check: the main chain (each next offset until 0) and the SubIFDs depth first to max_depth; the OME-XML of IFD 0's ImageDescription (ASCII, up to its first NUL, valid UTF-8, with an OME start tag) and its planes by TiffData (conventions/tiff §4.1: the stepping of DimensionOrder); the levels (IFD 0's SubIFDs per plane; else, without OME-XML, each later main-chain IFD that is tiled, has BitsPerSample, the format of IFD 0, and is smaller than the last level in both sizes); the format tuple (bits, samples, sample format, planar, compression, predictor, and photometric for JPEG); the JPEG prefix (an Adobe APP14 marker for 3 samples, then JPEGTables without its SOI and EOI)."
+  "about_builtins": "What the parser's code computes and the roles above check: the main chain (each next offset until 0) and the SubIFDs depth first to max_depth; the OME-XML of IFD 0's ImageDescription (ASCII, up to its first NUL, valid UTF-8, with an OME start tag) and its planes by TiffData (spec/virtualize/tiff.md §4.1: the stepping of DimensionOrder); the levels (IFD 0's SubIFDs per plane; else, without OME-XML, each later main-chain IFD that is tiled, has BitsPerSample, the format of IFD 0, and is smaller than the last level in both sizes); the format tuple (bits, samples, sample format, planar, compression, predictor, and photometric for JPEG); the JPEG prefix (an Adobe APP14 marker for 3 samples, then JPEGTables without its SOI and EOI)."
 }

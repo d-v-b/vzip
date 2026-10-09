@@ -1,4 +1,4 @@
-//! The intermediate representation (ARCHITECTURE.md §3), held as columns.
+//! The intermediate representation (design/ARCHITECTURE.md §3), held as columns.
 //!
 //! An element is one row of dense columns (kind, parent, name, name index, type,
 //! space, extent) plus sparse side tables, sorted by element id, for what few
@@ -48,7 +48,7 @@ fn escape_name(t: &str) -> String {
 }
 
 /// The (name, name index) of siblings named by texts the source gives (an ND2
-/// chunk's, LV record's or XML element's name; conventions/nd2 §5.3), in order:
+/// chunk's, LV record's or XML element's name; spec/virtualize/nd2.md §5.3), in order:
 /// a text that is not empty, holds no `/` or `~`, is none of the parent's `fixed`
 /// names and is the first of its siblings' with that text is the name itself, with
 /// no index; any other is the text with `%`, `/` and `~` percent-encoded, then `~`,
@@ -123,7 +123,7 @@ impl Interner {
     }
 }
 
-/// The resource limits of one run (ARCHITECTURE.md §3.5): exceeding one rejects.
+/// The resource limits of one run (design/ARCHITECTURE.md §3.5): exceeding one rejects.
 #[derive(Clone, Debug)]
 pub struct Budget {
     pub records: u64,

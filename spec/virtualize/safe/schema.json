@@ -1,0 +1,625 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/spec/virtualize/safe/schema.json",
+  "title": "vzip Sentinel-2 SAFE convention, version 0",
+  "description": "The zarr.json of a node that declares the vzip Sentinel-2 SAFE convention (https://github.com/d-v-b/vzip/blob/main/spec/virtualize/safe.md)",
+  "type": "object",
+  "properties": {
+    "zarr_format": {
+      "type": "integer",
+      "const": 3
+    },
+    "node_type": {
+      "type": "string",
+      "enum": [
+        "group",
+        "array"
+      ]
+    },
+    "attributes": {
+      "type": "object",
+      "properties": {
+        "ome": {
+          "type": "object",
+          "description": "OME-NGFF 0.5 metadata"
+        },
+        "zarr_conventions": {
+          "type": "array",
+          "contains": {
+            "$ref": "#/$defs/conventionMetadata"
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        "vzip_virtualized": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/rootProperty"
+            },
+            {
+              "$ref": "#/$defs/nodeProperty"
+            }
+          ]
+        },
+        "proj:code": {
+          "type": "string"
+        },
+        "proj:wkt2": {
+          "type": "string"
+        },
+        "spatial:dimensions": {
+          "type": "array"
+        },
+        "spatial:transform": {
+          "type": "array"
+        },
+        "spatial:shape": {
+          "type": "array"
+        },
+        "spatial:bbox": {
+          "type": "array"
+        },
+        "spatial:registration": {
+          "type": "string"
+        },
+        "multiscales": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "zarr_conventions",
+        "vzip_virtualized"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "zarr_format",
+    "node_type",
+    "attributes"
+  ],
+  "$defs": {
+    "conventionMetadata": {
+      "type": "object",
+      "description": "The Sentinel-2 SAFE convention's metadata object in zarr_conventions",
+      "properties": {
+        "uuid": {
+          "type": "string",
+          "const": "ef81346c-19e8-42ad-93b0-a279ccaf44c1"
+        },
+        "schema_url": {
+          "type": "string",
+          "const": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/spec/virtualize/safe/schema.json"
+        },
+        "spec_url": {
+          "type": "string",
+          "const": "https://github.com/d-v-b/vzip/blob/main/spec/virtualize/safe.md"
+        },
+        "name": {
+          "type": "string",
+          "const": "vzip_virtualized"
+        },
+        "description": {
+          "type": "string",
+          "const": "The Zarr layout of a Sentinel-2 SAFE source virtualized by vzip, and the source's metadata"
+        }
+      },
+      "required": [
+        "uuid"
+      ],
+      "additionalProperties": false
+    },
+    "rootProperty": {
+      "type": "object",
+      "description": "The root's property: the profile and version that produced the hierarchy, its source, and the root's source metadata",
+      "properties": {
+        "profile": {
+          "type": "string",
+          "const": "safe"
+        },
+        "version": {
+          "type": "integer",
+          "const": 0
+        },
+        "revision": {
+          "type": "integer",
+          "const": 24,
+          "description": "The spec/virtualize.md revision that produced the hierarchy (version 0 only)"
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "The URL of the source: a .SAFE directory's store URL, or a zip file's"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false
+        },
+        "safe": {
+          "$ref": "#/$defs/sourceMetadata"
+        }
+      },
+      "required": [
+        "profile",
+        "version",
+        "revision",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "sourceMetadata": {
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "The root's: the product's identity, from the product and tile metadata (§6.3)",
+          "properties": {
+            "PRODUCT_URI": {
+              "type": "string"
+            },
+            "PROCESSING_LEVEL": {
+              "type": "string"
+            },
+            "PRODUCT_TYPE": {
+              "type": "string"
+            },
+            "PROCESSING_BASELINE": {
+              "type": "string"
+            },
+            "TILE_ID": {
+              "type": "string"
+            },
+            "SENSING_TIME": {
+              "type": "string"
+            },
+            "HORIZONTAL_CS_NAME": {
+              "type": "string"
+            },
+            "HORIZONTAL_CS_CODE": {
+              "type": "string"
+            },
+            "Special_Values": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": [
+                    "number",
+                    "string"
+                  ]
+                }
+              },
+              "minItems": 1
+            },
+            "U": {
+              "type": [
+                "number",
+                "string"
+              ]
+            }
+          },
+          "required": [
+            "HORIZONTAL_CS_CODE"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "description": "A band array's: a derived convenience copied from the product metadata (§6.2), and the band file's SIZ segment",
+          "properties": {
+            "IMAGE_FILE": {
+              "type": "string"
+            },
+            "bandId": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "physicalBand": {
+              "type": "string"
+            },
+            "RESOLUTION": {
+              "type": [
+                "number",
+                "string"
+              ]
+            },
+            "Wavelength": {
+              "type": "object",
+              "properties": {
+                "MIN": {
+                  "anyOf": [
+                    {
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "value": {
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        },
+                        "unit": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "value",
+                        "unit"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "MAX": {
+                  "anyOf": [
+                    {
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "value": {
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        },
+                        "unit": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "value",
+                        "unit"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "CENTRAL": {
+                  "anyOf": [
+                    {
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "value": {
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        },
+                        "unit": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "value",
+                        "unit"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "minProperties": 1
+            },
+            "PHYSICAL_GAINS": {
+              "type": [
+                "number",
+                "string"
+              ]
+            },
+            "RADIO_ADD_OFFSET": {
+              "type": [
+                "number",
+                "string"
+              ]
+            },
+            "BOA_ADD_OFFSET": {
+              "type": [
+                "number",
+                "string"
+              ]
+            },
+            "SOLAR_IRRADIANCE": {
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "string"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "unit": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "unit"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "QUANTIFICATION_VALUE": {
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "string"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "unit": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "unit"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "BOA_QUANTIFICATION_VALUE": {
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "string"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "unit": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "unit"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "AOT_QUANTIFICATION_VALUE": {
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "string"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "unit": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "unit"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "WVP_QUANTIFICATION_VALUE": {
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "string"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "unit": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "unit"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "Scene_Classification_List": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": [
+                    "number",
+                    "string"
+                  ]
+                }
+              },
+              "minItems": 1
+            },
+            "siz": {
+              "type": "string",
+              "contentEncoding": "base64",
+              "description": "The band file's SIZ marker segment, which its chunks replace"
+            }
+          },
+          "required": [
+            "IMAGE_FILE",
+            "siz"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "description": "vzip_source's: the XML documents kept as text, the keys of those kept as arrays, of the empty objects, the empty directories, and the keys of the ignored objects (§6.3)",
+          "properties": {
+            "xml": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/text"
+              },
+              "minProperties": 1
+            },
+            "xml_arrays": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            },
+            "empty": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            },
+            "empty_dirs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            },
+            "ignored": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          },
+          "anyOf": [
+            {
+              "required": [
+                "xml"
+              ]
+            },
+            {
+              "required": [
+                "xml_arrays"
+              ]
+            }
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "headerValue": {
+      "description": "A translated header value (spec/conventions.md §6)",
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "$ref": "#/$defs/text"
+        },
+        {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "text": {
+      "description": "A text value: a string (UTF-8), or its ISO 8859-1 reading when it is not UTF-8",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "latin1": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "latin1"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "nodeProperty": {
+      "type": "object",
+      "description": "Any other node's property: its source metadata only",
+      "properties": {
+        "safe": {
+          "$ref": "#/$defs/sourceMetadata"
+        }
+      },
+      "required": [
+        "safe"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

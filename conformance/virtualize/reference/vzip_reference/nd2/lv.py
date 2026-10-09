@@ -1,4 +1,4 @@
-"""The lite variant (LV) metadata encoding of ND2 files (conventions/nd2/README.md §2.2)."""
+"""The lite variant (LV) metadata encoding of ND2 files (spec/virtualize/nd2.md §2.2)."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ class LVBytes(bytes):
 class LVObject(dict):
     """Any other level: its members by name (first position, last value), as the
     profile reads them. `records` keeps every record in order, with its exact
-    name (conventions/nd2/README.md §2.2), for the source metadata."""
+    name (spec/virtualize/nd2.md §2.2), for the source metadata."""
 
     records: list
 
@@ -52,7 +52,7 @@ def _units(data: bytes) -> bytes:
 
 def exact_text(units: bytes):
     """A string's exact JSON value: the text, or {"utf16": base64} when it is
-    not well-formed UTF-16 (conventions/nd2/README.md §5.1)."""
+    not well-formed UTF-16 (spec/virtualize/nd2.md §5.1)."""
     if _well_formed(units):
         return units.decode("utf-16-le")
     return {"utf16": base64.b64encode(units).decode("ascii")}
@@ -84,7 +84,7 @@ QUIET_NAN = struct.pack("<Q", 0x7FF8000000000000)  # the NaN that {"float": "NaN
 
 
 class Lossy(Rejected):
-    """LV data whose JSON would not keep every byte (conventions/nd2/README.md §5.1)."""
+    """LV data whose JSON would not keep every byte (spec/virtualize/nd2.md §5.1)."""
 
 
 class TooLarge(Rejected):
@@ -97,14 +97,14 @@ DEFLATE_RATIO = 1032  # the most bytes one byte of a deflate stream inflates to
 def _offset_table(records: list[tuple[int, bytes]], level: int, table: bytes) -> bool:
     """True if a level's skipped bytes are its offset table: each record's offset
     from the level record's start, as a u64, each record once, in any order
-    (conventions/nd2/README.md §5.1)."""
+    (spec/virtualize/nd2.md §5.1)."""
     offsets = sorted(struct.unpack(f"<{len(table) // 8}Q", table))
     return offsets == sorted(start - level for start, _ in records)
 
 
 def _records(data: bytes, pos: int, end: int, count: int | None, depth: int = 0, exact: bool = False,
              layout: list | None = None, room: list | None = None):
-    """The records in data[pos:end], which are at `depth` (conventions/nd2/README.md §2.2).
+    """The records in data[pos:end], which are at `depth` (spec/virtualize/nd2.md §2.2).
     With `exact`, data whose JSON would lose bytes raises Lossy. Each record's
     (start, name units) is appended to `layout`. `room` ([n]) is spent by 1 per
     record and by a byte array's length, each at least that many bytes of JSON:
@@ -224,9 +224,9 @@ def decode_lv(data: bytes, limit: int | None = None, inflated: list[int] | None 
     Compressed data may inflate to at most `limit` bytes; the inflated size is
     appended to `inflated`, or, when the stream does not inflate (it is invalid,
     or inflates past `limit`), the most it could: min(limit, 1032 x the data's
-    length) (conventions/nd2/README.md §5.1, the budget). With `exact`, data
+    length) (spec/virtualize/nd2.md §5.1, the budget). With `exact`, data
     that its JSON would not keep whole (up to the layout of compression and
-    offset tables) raises Lossy (the lossless test of conventions/nd2/README.md
+    offset tables) raises Lossy (the lossless test of spec/virtualize/nd2.md
     §5.1). With `room`, data of more records and array bytes than that raises
     TooLarge, its JSON being longer; `room` given as [n] is shared, and what
     the data spends is taken from it."""

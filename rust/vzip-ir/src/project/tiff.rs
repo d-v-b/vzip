@@ -1,4 +1,4 @@
-//! The TIFF image projection (conventions/tiff §4) from a valid IR: each level's
+//! The TIFF image projection (spec/virtualize/tiff.md §4) from a valid IR: each level's
 //! planes name the IR's tiles; the facts hold the format, sizes, scales and
 //! translation.
 

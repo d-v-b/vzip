@@ -1,7 +1,7 @@
-//! The CZI image projection (conventions/czi §4) from a valid IR: each image
+//! The CZI image projection (spec/virtualize/czi.md §4) from a valid IR: each image
 //! level's cells and each tile array's members name the IR's data elements. Row
 //! bands come from the facts: `rows` a band holds and `per` bands a tile row
-//! (conventions/czi §4.3, with the parser's band floor).
+//! (spec/virtualize/czi.md §4.3, with the parser's band floor).
 
 use super::{arr, key, n, obj, strs, translations, truthy};
 use crate::coding::{pixel_type, JPEG, JPEGXR, UNCOMPRESSED, ZSTD0, ZSTD1};
@@ -10,7 +10,7 @@ use crate::out::{array_json, declare, group_doc, group_json, image_ome, metadata
 use crate::refs::Refs;
 use serde_json::{json, Map, Value as J};
 
-/// The node of the tile arrays (conventions/czi §4.4).
+/// The node of the tile arrays (spec/virtualize/czi.md §4.4).
 const TILES: &str = "tiles";
 /// The most channel indexes of an image that get `omero` metadata.
 const MAX_OMERO: u64 = 64;
@@ -34,7 +34,7 @@ fn bytes_codec(data_type: &str) -> J {
     }
 }
 
-/// The codecs of a form (conventions/czi §3.1): `transpose` for samples, then the
+/// The codecs of a form (spec/virtualize/czi.md §3.1): `transpose` for samples, then the
 /// compression's.
 fn codecs(form: Form, data_type: &str, p: u64, axes: &[&str]) -> J {
     let mut out = if p > 1 { vec![transpose_codec(axes)] } else { vec![] };
@@ -90,7 +90,7 @@ fn times(v: &J, full: i64) -> J {
     }
 }
 
-/// The `omero` channels of an image (conventions/czi §4.2), or None past 64 channel indexes.
+/// The `omero` channels of an image (spec/virtualize/czi.md §4.2), or None past 64 channel indexes.
 fn omero(values: &J, form: Form, data_type: &str, p: u64, lo_c: i64, channels: u64) -> Option<J> {
     if channels * p > MAX_OMERO {
         return None;

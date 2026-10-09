@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/spec/virtualize/zarr2/schema.json",
+  "title": "vzip Zarr v2 convention, version 0",
+  "description": "The zarr.json of a node that declares the vzip Zarr v2 convention (https://github.com/d-v-b/vzip/blob/main/spec/virtualize/zarr2.md)",
+  "type": "object",
+  "properties": {
+    "zarr_format": {
+      "type": "integer",
+      "const": 3
+    },
+    "node_type": {
+      "type": "string",
+      "enum": [
+        "group",
+        "array"
+      ]
+    },
+    "attributes": {
+      "type": "object",
+      "properties": {
+        "ome": {
+          "type": "object",
+          "description": "OME-NGFF 0.5 metadata"
+        },
+        "zarr_conventions": {
+          "type": "array",
+          "contains": {
+            "$ref": "#/$defs/conventionMetadata"
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        "vzip_virtualized": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/rootProperty"
+            },
+            {
+              "$ref": "#/$defs/nodeProperty"
+            }
+          ]
+        }
+      },
+      "required": [
+        "zarr_conventions",
+        "vzip_virtualized"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "zarr_format",
+    "node_type",
+    "attributes"
+  ],
+  "$defs": {
+    "conventionMetadata": {
+      "type": "object",
+      "description": "The Zarr v2 convention's metadata object in zarr_conventions",
+      "properties": {
+        "uuid": {
+          "type": "string",
+          "const": "8e792619-d671-4687-ab51-752885dd3ee6"
+        },
+        "schema_url": {
+          "type": "string",
+          "const": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/spec/virtualize/zarr2/schema.json"
+        },
+        "spec_url": {
+          "type": "string",
+          "const": "https://github.com/d-v-b/vzip/blob/main/spec/virtualize/zarr2.md"
+        },
+        "name": {
+          "type": "string",
+          "const": "vzip_virtualized"
+        },
+        "description": {
+          "type": "string",
+          "const": "The Zarr layout of a Zarr v2 source virtualized by vzip, and the source's metadata"
+        }
+      },
+      "required": [
+        "uuid"
+      ],
+      "additionalProperties": false
+    },
+    "rootProperty": {
+      "type": "object",
+      "description": "The root's property: the profile and version that produced the hierarchy, its source, and the root's source metadata",
+      "properties": {
+        "profile": {
+          "type": "string",
+          "const": "zarr2"
+        },
+        "version": {
+          "type": "integer",
+          "const": 0
+        },
+        "revision": {
+          "type": "integer",
+          "const": 24,
+          "description": "The spec/virtualize.md revision that produced the hierarchy (version 0 only)"
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "pattern": "^[Hh][Tt][Tt][Pp][Ss]?://[^?#]*/$",
+              "description": "The store URL: http or https, its path ending in /, no query or fragment"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false
+        },
+        "zarr2": {
+          "$ref": "#/$defs/sourceMetadata"
+        }
+      },
+      "required": [
+        "profile",
+        "version",
+        "revision",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "sourceMetadata": {
+      "type": "object",
+      "properties": {
+        "attributes": {
+          "type": "object",
+          "minProperties": 1,
+          "description": "The node's .zattrs, as copied"
+        },
+        "empty": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "vzip_source only: the keys of the store's empty objects, empty chunk objects included"
+        },
+        "ignored": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "vzip_source only: the recorded keys of the listed objects that spec/virtualize.md §1.4 ignores"
+        },
+        "metadata": {
+          "type": "object",
+          "minProperties": 1,
+          "description": "The members of .zarray or .zgroup the Zarr metadata does not reproduce"
+        }
+      },
+      "additionalProperties": false
+    },
+    "headerValue": {
+      "description": "A translated header value (spec/conventions.md §6)",
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "$ref": "#/$defs/text"
+        },
+        {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "text": {
+      "description": "A text value: a string (UTF-8), or its ISO 8859-1 reading when it is not UTF-8",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "latin1": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "latin1"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "nodeProperty": {
+      "type": "object",
+      "description": "Any other node's property: its source metadata only",
+      "properties": {
+        "zarr2": {
+          "$ref": "#/$defs/sourceMetadata"
+        }
+      },
+      "required": [
+        "zarr2"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -12,7 +12,7 @@ use vzip_ir::out::Out;
 use vzip_ir::run::{run_bytes, Format};
 
 fn fixtures() -> Vec<(Format, std::path::PathBuf)> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/test/fixtures");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
     let mut v = Vec::new();
     for (f, dir, ext) in [(Format::Tiff, "tiff", "tif"), (Format::Czi, "czi", "czi"), (Format::Nd2, "nd2", "nd2")] {
         let mut ps: Vec<_> = std::fs::read_dir(root.join(dir)).unwrap().map(|e| e.unwrap().path())
@@ -349,7 +349,7 @@ fn flags_a_table_whose_root_is_named() {
 /// A fixture's output, its view document at `group` edited by `edit`, and what the
 /// validator's view check says of it.
 fn view_edited(fixture: &str, group: &str, edit: impl Fn(&mut serde_json::Value)) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/test/fixtures/tiff").join(fixture);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/tiff").join(fixture);
     let data = std::fs::read(path).unwrap();
     let (ir, _, _) = run_bytes(Format::Tiff, &data).unwrap();
     let mut out = Out::new("u");

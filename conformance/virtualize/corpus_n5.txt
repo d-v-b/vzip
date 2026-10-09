@@ -1,6 +1,6 @@
 # url|name[|py-only] of the public N5 stores in the corpus (store URLs end in "/"), from
 # OpenOrganelle's public bucket janelia-cosem-datasets (CC BY 4.0), listed anonymously with S3
-# ListObjectsV2. Small levels and groups only, so the browser limit (VIRTUALIZE.md §12, 100000
+# ListObjectsV2. Small levels and groups only, so the browser limit (spec/virtualize.md §12, 100000
 # objects) is never reached: COSEM multiscale groups (labels, with sparse blocks), and single
 # low-resolution levels (a dataset at the store root).
 https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/labels/gt/|hela2_labels_gt|listing-sha256=42573ca4f18593bd0a7d3bec145f2d5e4f41d731f43ebead59e476b58fd7dbf5

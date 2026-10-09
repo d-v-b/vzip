@@ -1,4 +1,4 @@
-//! The ND2 image projection (conventions/nd2 §4, and the root's source metadata
+//! The ND2 image projection (spec/virtualize/nd2.md §4, and the root's source metadata
 //! of §5.1) from a valid IR: the IR holds what it needs.
 
 use super::{arr, n, truthy};
@@ -15,12 +15,12 @@ const MAX_ROOT_JSON: usize = 1 << 14;
 const MAX_ROOT_TOTAL: usize = 1 << 16;
 /// The largest integer JSON holds exactly.
 const MAX_SAFE: i128 = (1 << 53) - 1;
-/// The names of the tags (conventions/nd2 §5.1).
+/// The names of the tags (spec/virtualize/nd2.md §5.1).
 const TAGS: [&str; 3] = ["utf16", "int", "float"];
 
 use crate::out::{js_string_size, json_size};
 
-// ---- values as JSON (conventions/nd2 §5.1)
+// ---- values as JSON (spec/virtualize/nd2.md §5.1)
 
 /// An integer as JSON: itself, or a tag when JSON cannot hold it exactly.
 fn int_json(v: i128) -> J {
@@ -86,7 +86,7 @@ fn exact_text(units: &[u8]) -> J {
     }
 }
 
-/// An XML variant value by its runtype (conventions/nd2 §5.1).
+/// An XML variant value by its runtype (spec/virtualize/nd2.md §5.1).
 fn scalar(runtype: Option<&str>, value: &str) -> J {
     const INTS: [&str; 8] = ["lx_int8", "lx_int16", "lx_int32", "lx_int64", "lx_uint8", "lx_uint16", "lx_uint32", "lx_uint64"];
     let unsigned = value.strip_prefix(['+', '-']).unwrap_or(value);
@@ -146,7 +146,7 @@ impl Values<'_> {
     }
 
     /// The name the source gives an LV record or an XML element: its element's name
-    /// with `source_names`'s rule undone (conventions/nd2 §5.3).
+    /// with `source_names`'s rule undone (spec/virtualize/nd2.md §5.3).
     fn source_name(&self, i: u32) -> String {
         source_text(self.ir.names.get(self.ir.name[i as usize]), self.ir.nidx[i as usize])
     }
@@ -230,7 +230,7 @@ fn frame_scaled(name: &[u8]) -> bool {
         && digits.iter().any(|&c| c != b'0')
 }
 
-/// The root's `chunks` (conventions/nd2 §5.1): the decoded chunks that do not grow
+/// The root's `chunks` (spec/virtualize/nd2.md §5.1): the decoded chunks that do not grow
 /// with the frames, have at most 16 KiB of JSON, and fit the root's budget.
 fn root_chunks(ir: &Ir, decoded: &[J]) -> Result<J, String> {
     let mut vals = Values { ir, types: HashMap::new() };
@@ -276,7 +276,7 @@ fn root_chunks(ir: &Ir, decoded: &[J]) -> Result<J, String> {
     Ok(J::Object(out))
 }
 
-// ---- the image (conventions/nd2 §4)
+// ---- the image (spec/virtualize/nd2.md §4)
 
 /// Each placed frame's pixels: f -> (start, length), runs expanded.
 fn placed_frames(ir: &Ir) -> BTreeMap<u64, (u64, u64)> {
@@ -303,7 +303,7 @@ fn int(v: &J) -> i64 {
     v.as_i64().unwrap_or_else(|| v.as_f64().unwrap_or(0.0) as i64)
 }
 
-/// Labels and colors (conventions/nd2 §4.2).
+/// Labels and colors (spec/virtualize/nd2.md §4.2).
 fn channels(planes: &J, comp: u64) -> (Vec<String>, Vec<String>) {
     let count = int(&planes["uiCount"]);
     let mut ps: BTreeMap<i64, (String, i64, i64)> = BTreeMap::new();

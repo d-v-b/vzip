@@ -76,7 +76,7 @@ fn object_members<'a>(item: Item<'a>, what: &str) -> Res<Vec<(String, Node<'a>)>
     }
 }
 
-/// A member read by its spec (conventions/nd2 §2.2): `item` None is a missing member.
+/// A member read by its spec (spec/virtualize/nd2.md §2.2): `item` None is a missing member.
 fn read(
     item: Option<Item<'_>>,
     spec: &J,
@@ -369,7 +369,7 @@ pub struct Loop {
     pub stage: Vec<(Option<f64>, Option<f64>)>,
 }
 
-/// The flattening of conventions/nd2 §3 (rules 1 to 3).
+/// The flattening of spec/virtualize/nd2.md §3 (rules 1 to 3).
 pub fn flatten(root: &V) -> Vec<Loop> {
     let mut loops: Vec<Loop> = Vec::new();
     fn visit(node: &V, depth: u32, loops: &mut Vec<Loop>) {
@@ -587,7 +587,7 @@ pub fn check_nd2(
         ("max_pixels_end".into(), V::Num(placed.5 as f64)),
     ]);
     env.insert("placed".into(), pl);
-    // stage translations (conventions/nd2 §4.3)
+    // stage translations (spec/virtualize/nd2.md §4.3)
     let calibrated = env.get("calibrated").is_some_and(|v| v.truthy());
     let det = num(&env, "det");
     let stages: Vec<(Option<f64>, Option<f64>)> = match find("p") {

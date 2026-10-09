@@ -1,11 +1,11 @@
-"""Series, layers, levels and tiles (conventions/czi/README.md §3.3–§4.4)."""
+"""Series, layers, levels and tiles (spec/virtualize/czi.md §3.3–§4.4)."""
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
 
-# libCZI's pyramid layer tables (conventions/czi/README.md §3.4): (v, delta, n).
+# libCZI's pyramid layer tables (spec/virtualize/czi.md §3.4): (v, delta, n).
 LAYERS_2 = [(2, 0.1, 1), (4, 0.2, 2), (8, 0.4, 3), (16, 0.8, 4), (32, 1, 5), (64, 1, 6), (128, 1, 7), (256, 2, 8),
             (512, 4, 9), (1024, 10, 10)]
 LAYERS_3 = [(3, 0.1, 1), (9, 0.2, 2), (27, 0.8, 3), (81, 1.5, 4), (243, 2, 5), (729, 5, 6), (2187, 15, 7)]
@@ -27,7 +27,7 @@ def layer(wl: int, hl: int, w: int, h: int) -> tuple[int, int] | None:
 
 @dataclass
 class Placed:
-    """A placed subblock (conventions/czi/README.md §3.2)."""
+    """A placed subblock (spec/virtualize/czi.md §3.2)."""
     index: int
     series: tuple
     plane: tuple[int, int, int]  # (t, c, z)
@@ -61,7 +61,7 @@ class Level:
 
 
 def classify(b: list[Placed]) -> Level | None:
-    """The level `b` is when it is regular (conventions/czi/README.md §3.5), else None."""
+    """The level `b` is when it is regular (spec/virtualize/czi.md §3.5), else None."""
     forms = {s.form for s in b}
     if len(forms) != 1:
         return None
@@ -116,7 +116,7 @@ def row_band(h: int, h2: int, w: int, q: int) -> int:
 
 def plane_axes(planes, p: int) -> tuple[list[str], dict[str, int], dict[str, int]]:
     """The axes of an image or tile array over its subblocks' planes, the least
-    t, c, z, and the extent along each (conventions/czi/README.md §4.2)."""
+    t, c, z, and the extent along each (spec/virtualize/czi.md §4.2)."""
     lo = {a: min(pl[k] for pl in planes) for k, a in enumerate("tcz")}
     hi = {a: max(pl[k] for pl in planes) for k, a in enumerate("tcz")}
     axes = (["t"] if hi["t"] > lo["t"] else []) + (["c"] if hi["c"] > lo["c"] or p > 1 else []) + (

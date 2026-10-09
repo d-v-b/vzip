@@ -18,7 +18,7 @@ conversion that duplicates hundreds of gigabytes.
 vzip reads the TIFF's image file directories and, for OME-TIFF, its OME-XML,
 and writes an archive in which every Zarr chunk is one tile of the file. A
 487 MB, 9-level OME-TIFF from the IDR became a 624 KB archive in a few
-seconds (at VIRTUALIZE.md revision 16, before the archive held the file's IR
+seconds (at spec/virtualize.md revision 16, before the archive held the file's IR
 mirror); the tiles are read from the IDR's server only when a reader asks
 for them.
 
@@ -53,7 +53,7 @@ level, `0` the full resolution.
 - **Name:** the OME `Image` name.
 - **Metadata:** the root's `vzip_virtualized.tiff` holds the byte order and
   whether the file is BigTIFF. Everything else is on `vzip_source`, the
-  file's IR mirror ([conventions §8](../../../conventions/README.md#8-the-ir-mirror)):
+  file's IR mirror ([conventions §8](../../../spec/conventions.md#8-the-ir-mirror)):
   a table under `vzip_source/ir/` that accounts for every byte of the file
   (every tag of every IFD, SubIFDs and EXIF IFDs included, every tile, and
   the gaps between them), so that the file can be rebuilt from it and the
@@ -76,7 +76,7 @@ reads only the tile from the file. SVS slides with JPEG 2000 tiles
 
 ## Try it
 
-The outputs below were recorded at VIRTUALIZE.md revision 16
+The outputs below were recorded at spec/virtualize.md revision 16
 ([overview](../README.md#formats)). The summary line now also has the
 members `planner` (the read planner's counts of batches, ranges and
 requests), `elements` (the size of the file's IR) and `folded` (how the
@@ -231,9 +231,9 @@ A file that is none of the formats vzip reads is rejected with
 
 ## How it's verified
 
-`web/test/tiff/verify.py` virtualizes each synthetic file with the browser
+`js/test/tiff/verify.py` virtualizes each synthetic file with the browser
 code (the Rust core as WebAssembly), reads every level back through
-`src/vzip` and zarr-python, and compares it with tifffile; it also rebuilds
+`python/src/vzip` and zarr-python, and compares it with tifffile; it also rebuilds
 each file from its archive's IR mirror and checks that it is the file, byte
 for byte. `compare.py` compares three virtualizers
 ([overview](../README.md#the-implementations-agree)) on the 73 synthetic
@@ -243,13 +243,13 @@ the Python and browser hosts of the core must write the same archive,
 `vzip_source` included, and both must match, outside `vzip_source`, the
 frozen reference: the Python TIFF profile vzip shipped before the core.
 
-- Profile: [profiles/tiff.md](../../../profiles/tiff.md); convention:
-  [conventions/tiff](../../../conventions/tiff/README.md)
+- Profile: [spec/virtualize/tiff/profile.md](../../../spec/virtualize/tiff/profile.md); convention:
+  [spec/virtualize/tiff.md](../../../spec/virtualize/tiff.md)
 - Rust core: [rust/vzip-ir/src/tiff.rs](../../../rust/vzip-ir/src/tiff.rs)
   (the parser) and [rust/vzip-ir/src/project/tiff.rs](../../../rust/vzip-ir/src/project/tiff.rs)
   (the projection)
-- Python host: [src/vzip/ir/](../../../src/vzip/ir/); browser host:
-  [web/src/virtualize/ir/](../../../web/src/virtualize/ir/)
+- Python host: [python/src/vzip/ir/](../../../python/src/vzip/ir/); browser host:
+  [js/src/virtualize/ir/](../../../js/src/virtualize/ir/)
 - Frozen reference: [conformance/virtualize/reference/vzip_reference/tiff/](../../../conformance/virtualize/reference/vzip_reference/tiff/)
-  and [web/conformance/reference/tiff/](../../../web/conformance/reference/tiff/)
-- Fixtures: [web/test/fixtures/tiff/](../../../web/test/fixtures/tiff/)
+  and [conformance/virtualize/reference/ts/tiff/](../../../conformance/virtualize/reference/ts/tiff/)
+- Fixtures: [fixtures/tiff/](../../../fixtures/tiff/)

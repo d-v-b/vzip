@@ -1,12 +1,12 @@
 """Writes corrupted copies of the synthetic fixtures, to compare how
-implementations treat malformed input (VIRTUALIZE.md §1.2: rejected, never
+implementations treat malformed input (spec/virtualize.md §1.2: rejected, never
 crashed, and the same decision everywhere).
 
 Each fixture file under 256 KiB gets `count` mutants: a byte set to a random
 value near the start or end of the file (where headers, IFDs and chunk maps
 are), a byte anywhere, or a truncation.
 
-Each synthetic store (a directory under web/test/fixtures/n5, zarr2, ome-zarr or
+Each synthetic store (a directory under fixtures/n5, zarr2, ome-zarr or
 safe, but the SAFE products made to be rejected) gets `count` mutants, copied to
 <out dir>/<format>/<name>.m<k>/, each with one change: a metadata document
 (attributes.json, .zarray, .zgroup, .zattrs, or a SAFE product's XML) mutated as
@@ -28,7 +28,7 @@ import shutil
 import sys
 from pathlib import Path
 
-FIXTURES = Path(__file__).resolve().parents[2] / "web" / "test" / "fixtures"
+FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
 STORE_FORMATS = ("n5", "zarr2", "ome-zarr", "safe")
 METADATA = ("attributes.json", ".zarray", ".zgroup", ".zattrs")
 

@@ -1,0 +1,679 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/spec/virtualize/ims/schema.json",
+  "title": "vzip IMS convention, version 0",
+  "description": "The zarr.json of a node that declares the vzip IMS convention (https://github.com/d-v-b/vzip/blob/main/spec/virtualize/ims.md)",
+  "type": "object",
+  "properties": {
+    "zarr_format": {
+      "type": "integer",
+      "const": 3
+    },
+    "node_type": {
+      "type": "string",
+      "enum": [
+        "group",
+        "array"
+      ]
+    },
+    "attributes": {
+      "type": "object",
+      "properties": {
+        "ome": {
+          "type": "object",
+          "description": "OME-NGFF 0.5 metadata"
+        },
+        "zarr_conventions": {
+          "type": "array",
+          "contains": {
+            "$ref": "#/$defs/conventionMetadata"
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        "vzip_virtualized": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/rootProperty"
+            },
+            {
+              "$ref": "#/$defs/nodeProperty"
+            }
+          ]
+        }
+      },
+      "required": [
+        "zarr_conventions",
+        "vzip_virtualized"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "zarr_format",
+    "node_type",
+    "attributes"
+  ],
+  "$defs": {
+    "conventionMetadata": {
+      "type": "object",
+      "description": "The IMS convention's metadata object in zarr_conventions",
+      "properties": {
+        "uuid": {
+          "type": "string",
+          "const": "5067a535-8261-4b25-a93c-1985ed333bde"
+        },
+        "schema_url": {
+          "type": "string",
+          "const": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/spec/virtualize/ims/schema.json"
+        },
+        "spec_url": {
+          "type": "string",
+          "const": "https://github.com/d-v-b/vzip/blob/main/spec/virtualize/ims.md"
+        },
+        "name": {
+          "type": "string",
+          "const": "vzip_virtualized"
+        },
+        "description": {
+          "type": "string",
+          "const": "The Zarr layout of a IMS source virtualized by vzip, and the source's metadata"
+        }
+      },
+      "required": [
+        "uuid"
+      ],
+      "additionalProperties": false
+    },
+    "rootProperty": {
+      "type": "object",
+      "description": "The root's property: the profile and version that produced the hierarchy, its source, and the root's source metadata",
+      "properties": {
+        "profile": {
+          "type": "string",
+          "const": "ims"
+        },
+        "version": {
+          "type": "integer",
+          "const": 0
+        },
+        "revision": {
+          "type": "integer",
+          "const": 24,
+          "description": "The spec/virtualize.md revision that produced the hierarchy (version 0 only)"
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "The URL of the source file"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false
+        },
+        "ims": {
+          "$ref": "#/$defs/sourceMetadata"
+        }
+      },
+      "required": [
+        "profile",
+        "version",
+        "revision",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "sourceMetadata": {
+      "type": "object",
+      "description": "An HDF5 group's or dataset's description, on its node under vzip_source/hdf5",
+      "properties": {
+        "attributes": {
+          "$ref": "#/$defs/attributes"
+        },
+        "attribute_collisions": {
+          "$ref": "#/$defs/attributeCollisions"
+        },
+        "names": {
+          "type": "object",
+          "description": "The members' names that are not UTF-8, by key",
+          "additionalProperties": {
+            "$ref": "#/$defs/text"
+          }
+        },
+        "collisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text"
+          },
+          "description": "The names of members that read like an earlier member's"
+        },
+        "links": {
+          "type": "object",
+          "description": "The members that are links other than a hard link to an object met first",
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "soft": {
+                    "$ref": "#/$defs/text"
+                  }
+                },
+                "required": [
+                  "soft"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "hard": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "The object's index in the object table"
+                  }
+                },
+                "required": [
+                  "hard"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "external": {
+                    "type": "object",
+                    "properties": {
+                      "file": {
+                        "$ref": "#/$defs/text"
+                      },
+                      "path": {
+                        "$ref": "#/$defs/text"
+                      }
+                    },
+                    "required": [
+                      "file",
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "external"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "user": {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "integer",
+                        "minimum": 2,
+                        "maximum": 255
+                      },
+                      "value": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "contentEncoding": "base64"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "value"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "user"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "images": {
+          "type": "object",
+          "description": "The members that are the image's Data datasets",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "level": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "t": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "c": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "shape": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "minItems": 3,
+                "maxItems": 3,
+                "description": "The dataset's dimensions, padding included"
+              },
+              "attributes": {
+                "$ref": "#/$defs/attributes"
+              },
+              "attribute_collisions": {
+                "$ref": "#/$defs/attributeCollisions"
+              }
+            },
+            "required": [
+              "level",
+              "t",
+              "c",
+              "shape"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "datatypes": {
+          "type": "object",
+          "description": "The members that are named datatypes",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "datatype": {
+                "$ref": "#/$defs/datatype"
+              },
+              "attributes": {
+                "$ref": "#/$defs/attributes"
+              },
+              "attribute_collisions": {
+                "$ref": "#/$defs/attributeCollisions"
+              }
+            },
+            "required": [
+              "datatype"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "unsupported": {
+          "type": "object",
+          "description": "The members not mapped: why, and what can be read",
+          "additionalProperties": {
+            "$ref": "#/$defs/unsupported"
+          }
+        },
+        "overflow": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The number of members beyond the walk's 100,000 objects plus 5 per Data dataset of the image, the root included"
+        },
+        "datatype": {
+          "$ref": "#/$defs/datatype"
+        },
+        "named": {
+          "$ref": "#/$defs/named"
+        },
+        "shape": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "description": "A family's or a null dataset's dimensions (null for a null dataspace)"
+        },
+        "fill": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "description": "The fill value's bytes, when the Zarr fill value is not it"
+        },
+        "spilled": {
+          "type": "string",
+          "pattern": "^spilled/[0-9]+$",
+          "description": "The family of vzip_source that holds the entries over the document's budget, each a JSON text (spec/virtualize/ims.md §5.6)"
+        }
+      },
+      "additionalProperties": false
+    },
+    "headerValue": {
+      "description": "A translated header value (spec/conventions.md §6)",
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "$ref": "#/$defs/text"
+        },
+        {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "text": {
+      "description": "A text value: a string (UTF-8), or its ISO 8859-1 reading when it is not UTF-8",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "latin1": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "latin1"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "attributes": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "An object's attributes by key, or null if they could not be read",
+      "additionalProperties": {
+        "$ref": "#/$defs/attributeValue"
+      }
+    },
+    "attributeValue": {
+      "description": "An attribute's value (spec/virtualize/ims.md §5.3): Imaris's form, a text value, or its datatype with its value, data, array or the reason it is not kept",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/text"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "datatype": {
+              "$ref": "#/$defs/datatype"
+            },
+            "named": {
+              "$ref": "#/$defs/named"
+            },
+            "name": {
+              "$ref": "#/$defs/text"
+            },
+            "shape": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "value": {},
+            "data": {
+              "type": "string",
+              "contentEncoding": "base64"
+            },
+            "array": {
+              "type": "string",
+              "description": "The array of vzip_source that holds the value"
+            },
+            "json": {
+              "type": "string",
+              "description": "The array of vzip_source that holds the value's JSON text"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "anyOf": [
+            {
+              "required": [
+                "datatype"
+              ]
+            },
+            {
+              "required": [
+                "named"
+              ]
+            },
+            {
+              "required": [
+                "reason"
+              ]
+            }
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "attributeCollisions": {
+      "type": "array",
+      "description": "Attributes whose names read like an earlier attribute's, with their names",
+      "items": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/attributeValue"
+          },
+          {
+            "type": "object",
+            "required": [
+              "name"
+            ]
+          }
+        ]
+      }
+    },
+    "named": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The committed datatype's index in the object table (its entry of datatypes describes it), or null if the walk did not meet it"
+    },
+    "selection": {
+      "type": "object",
+      "description": "A dataspace selection (spec/virtualize/ims.md §5.3)",
+      "properties": {
+        "select": {
+          "enum": [
+            "all",
+            "none",
+            "points",
+            "hyperslab"
+          ]
+        },
+        "rank": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "points": {
+          "type": "array"
+        },
+        "blocks": {
+          "type": "array"
+        },
+        "start": {
+          "type": "array"
+        },
+        "stride": {
+          "type": "array"
+        },
+        "count": {
+          "type": "array"
+        },
+        "block": {
+          "type": "array"
+        }
+      },
+      "required": [
+        "select"
+      ],
+      "additionalProperties": false
+    },
+    "unsupported": {
+      "type": "object",
+      "description": "An object that is not mapped (spec/virtualize/ims.md §5.5)",
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "datatype": {
+          "$ref": "#/$defs/datatype"
+        },
+        "named": {
+          "$ref": "#/$defs/named"
+        },
+        "shape": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "fill": {
+          "type": "string",
+          "contentEncoding": "base64"
+        },
+        "external": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "file": {
+                "$ref": "#/$defs/text"
+              },
+              "offset": {
+                "type": [
+                  "integer",
+                  "string"
+                ]
+              },
+              "size": {
+                "type": [
+                  "integer",
+                  "string"
+                ]
+              }
+            },
+            "required": [
+              "file",
+              "offset",
+              "size"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "virtual": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "file": {
+                "$ref": "#/$defs/text"
+              },
+              "dataset": {
+                "$ref": "#/$defs/text"
+              },
+              "source": {
+                "$ref": "#/$defs/selection"
+              },
+              "selection": {
+                "$ref": "#/$defs/selection"
+              }
+            },
+            "required": [
+              "file",
+              "dataset",
+              "source",
+              "selection"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "attributes": {
+          "$ref": "#/$defs/attributes"
+        },
+        "attribute_collisions": {
+          "$ref": "#/$defs/attributeCollisions"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "datatype": {
+      "type": "object",
+      "description": "An HDF5 datatype (spec/virtualize/ims.md §5.2)",
+      "properties": {
+        "class": {
+          "enum": [
+            "integer",
+            "float",
+            "time",
+            "string",
+            "bitfield",
+            "opaque",
+            "compound",
+            "reference",
+            "enum",
+            "variable-length",
+            "array"
+          ]
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "class",
+        "size"
+      ]
+    },
+    "nodeProperty": {
+      "type": "object",
+      "description": "Any other node's property: its source metadata only",
+      "properties": {
+        "ims": {
+          "$ref": "#/$defs/sourceMetadata"
+        }
+      },
+      "required": [
+        "ims"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

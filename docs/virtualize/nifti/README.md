@@ -17,7 +17,7 @@ A NIfTI file is a header followed by one block of voxels, so vzip reads the
 header (348 or 540 bytes) and writes an archive in which every Zarr chunk is
 a run of at most 128 KiB of that block: several z-slices, one slice, or
 some rows of a large slice. The SPM `avg152T1.nii` template became a 12 KB
-archive in under 4 s (at VIRTUALIZE.md revision 16).
+archive in under 4 s (at spec/virtualize.md revision 16).
 
 ## What you get
 
@@ -138,8 +138,8 @@ Rejected:
 
 ## How it's verified
 
-`web/test/nifti/verify.py` virtualizes 88 synthetic NIfTI files (including
-inputs to reject) with the browser code, reads them back through `src/vzip`
+`js/test/nifti/verify.py` virtualizes 88 synthetic NIfTI files (including
+inputs to reject) with the browser code, reads them back through `python/src/vzip`
 and zarr-python, and compares the values with nibabel's unscaled data.
 `compare.py` checks that the Python and browser outputs are equivalent on
 those files and on the 12 public files of
@@ -147,7 +147,7 @@ those files and on the 12 public files of
 (nibabel's and NiiVue's test data, SPM templates and dcm2niix regression
 data).
 
-- Profile: [profiles/nifti.md](../../../profiles/nifti.md)
-- Python: [src/vzip/virtualize/nifti/](../../../src/vzip/virtualize/nifti/)
-- Browser: [web/src/virtualize/nifti/](../../../web/src/virtualize/nifti/)
-- Fixtures: [web/test/fixtures/nifti/](../../../web/test/fixtures/nifti/)
+- Profile: [spec/virtualize/nifti/profile.md](../../../spec/virtualize/nifti/profile.md)
+- Python: [python/src/vzip/virtualize/nifti/](../../../python/src/vzip/virtualize/nifti/)
+- Browser: [js/src/virtualize/nifti/](../../../js/src/virtualize/nifti/)
+- Fixtures: [fixtures/nifti/](../../../fixtures/nifti/)

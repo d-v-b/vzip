@@ -1,4 +1,4 @@
-"""The ND2 profile (profiles/nd2.md, §5)."""
+"""The ND2 profile (spec/virtualize/nd2/profile.md, §5)."""
 
 from __future__ import annotations
 
@@ -21,10 +21,10 @@ MAP_SIGNATURE = b"ND2 CHUNK MAP SIGNATURE 0000001!"
 FILEMAP_NAME = b"ND2 FILEMAP SIGNATURE NAME 0001!"
 FRAME = re.compile(rb"ImageDataSeq\|(0|[1-9][0-9]*)!")
 MAX_SAFE = 2**53 - 1
-MAX_INFLATE = 1 << 26  # the most a chunk the profile reads may inflate to (profiles/nd2.md §5.1)
+MAX_INFLATE = 1 << 26  # the most a chunk the profile reads may inflate to (spec/virtualize/nd2/profile.md §5.1)
 MAX_RECORDS = 1 << 20  # the most LV records and byte-array bytes of the chunks the profile reads (§5.1)
-MAX_POSITIONS = 1 << 16  # the most positions (profiles/nd2.md §5.3)
-MAX_POSITION_CHANNELS = 1 << 20  # the most positions x components (profiles/nd2.md §5.3)
+MAX_POSITIONS = 1 << 16  # the most positions (spec/virtualize/nd2/profile.md §5.3)
+MAX_POSITION_CHANNELS = 1 << 20  # the most positions x components (spec/virtualize/nd2/profile.md §5.3)
 REQUIRED = object()
 
 
@@ -46,7 +46,7 @@ def _header(read: Reader, offset: int) -> tuple[int, int, bytes]:
     return name_length, data_length, read(offset + 16, name_length).split(b"\0", 1)[0]
 
 
-# ---- typed member access (conventions/nd2/README.md §2.2)
+# ---- typed member access (spec/virtualize/nd2.md §2.2)
 
 def _missing(what: str, default):
     if default is REQUIRED:
@@ -59,7 +59,7 @@ def number(value, what: str, default=REQUIRED):
         return _missing(what, default)
     if not isinstance(value, Scalar) or value.type not in (2, 3, 4, 5, 6):
         raise Rejected(f"{what} is not a number")
-    v = float(value.value)  # every number is used as binary64 (conventions/nd2/README.md §2.2)
+    v = float(value.value)  # every number is used as binary64 (spec/virtualize/nd2.md §2.2)
     if not math.isfinite(v):
         raise Rejected(f"{what} is not finite")
     return v
@@ -142,7 +142,7 @@ def _valid(items: list, flags, what: str) -> list:
     return [m for i, m in enumerate(items) if i < len(f) and f[i]]
 
 
-# ---- experiment (conventions/nd2/README.md §3)
+# ---- experiment (spec/virtualize/nd2.md §3)
 
 def _node_loop(node: dict):
     """A node's loop as (kind, count, period or step), "spectral", or None (skipped)."""
@@ -308,9 +308,9 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
         except TooLarge:
             raise Rejected(f"the profile's chunks hold more than {MAX_RECORDS} LV records and byte-array bytes") from None
 
-    room = [MAX_RECORDS]  # shared by the three chunks (profiles/nd2.md §5.1)
+    room = [MAX_RECORDS]  # shared by the three chunks (spec/virtualize/nd2/profile.md §5.1)
 
-    # conventions/nd2/README.md §3 attributes
+    # spec/virtualize/nd2.md §3 attributes
     attributes = chunk(b"ImageAttributesLV!")
     if attributes is None:
         raise Rejected("no ImageAttributesLV! chunk")
@@ -341,7 +341,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
     if compressed and width_bytes != row_bytes:
         raise Rejected("compressed frames with padded rows are not supported")
 
-    # conventions/nd2/README.md §3 experiment
+    # spec/virtualize/nd2.md §3 experiment
     exp = chunk(b"ImageMetadataLV!")
     loops = flatten_experiment(exp.get("SLxExperiment") if exp is not None else None)
     positions = next((l["count"] for l in loops if l["kind"] == "p"), 1)
@@ -349,7 +349,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
         raise Rejected(f"{positions} positions of {comp} components: more than {MAX_POSITIONS} positions, "
                        f"or more than {MAX_POSITION_CHANNELS} positions x components")
 
-    # conventions/nd2/README.md §3 picture metadata
+    # spec/virtualize/nd2.md §3 picture metadata
     seq = chunk(b"ImageMetadataSeqLV|0!")
     picture = (obj(seq.get("SLxPictureMetadata"), "SLxPictureMetadata", None) if seq is not None else None) or {}
     bcal = flag(picture.get("bCalibrated"), "bCalibrated", False)
@@ -357,7 +357,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
     aspect = number(picture.get("dAspect"), "dAspect", 1)
     camera = [number(picture.get(f"dStgLgCT{k}"), f"dStgLgCT{k}", default)
               for k, default in (("11", 1.0), ("12", 0.0), ("21", 0.0), ("22", 1.0))]
-    # The stage position without a position loop (conventions/nd2/README.md §4.3).
+    # The stage position without a position loop (spec/virtualize/nd2.md §4.3).
     picture_stage = (number(picture.get("dXPos"), "dXPos", None), number(picture.get("dYPos"), "dYPos", None))
     calibrated = bcal and cal is not None and cal > 0
     if not aspect > 0:
@@ -374,7 +374,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
                                  color(p.get("uiColor"), "uiColor", 0xFFFFFF),
                                  integer(p.get("uiCompCount"), "uiCompCount", 1))
 
-    # conventions/nd2/README.md §4.2
+    # spec/virtualize/nd2.md §4.2
     labels, colors = [], []
     if (plane_count >= 1 and len(planes) == plane_count
             and all(k in (1, 3) for _, _, k in planes.values())
@@ -391,7 +391,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
         labels = [f"C{k}" for k in range(comp)]
         colors = ["FFFFFF"] * comp
 
-    # profiles/nd2.md §5.3
+    # spec/virtualize/nd2/profile.md §5.3
     total = 1
     for l in loops:
         total *= l["count"]
@@ -448,7 +448,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
                 return [[(start(f), height * row_bytes)]]
             return [Rows(start(f) + j * width_bytes, width_bytes, row_bytes, h) for j in range(0, height, h)]
 
-    # conventions/nd2/README.md §4.3
+    # spec/virtualize/nd2.md §4.3
     def loop(kind):
         return next((l for l in loops if l["kind"] == kind), None)
 
@@ -471,7 +471,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
         codecs.append({"name": "zlib", "configuration": {"level": 1}})
     b = int(significant) if significant == int(significant) and 1 <= significant <= bpc else bpc
     window = {} if data_type == "float32" else {"window": {"min": 0, "max": 2**b - 1, "start": 0, "end": 2**b - 1}}
-    # conventions/nd2/README.md §4.3 stage positions: where each position's image goes.
+    # spec/virtualize/nd2.md §4.3 stage positions: where each position's image goes.
     translations = None
     m11, m12, m21, m22 = camera
     det = m11 * m22 - m12 * m21
@@ -486,7 +486,7 @@ def virtualize_nd2(url: str, read: Reader, size: int) -> Output:
                 raise Rejected("a stage position is not finite")
             translations.append([shift.get(a, 0) for a in axes])
     out = Output(url)
-    # The source metadata (conventions/nd2/README.md §5): the small file-level
+    # The source metadata (spec/virtualize/nd2.md §5): the small file-level
     # chunks at the root; the rest on vzip_source.
     stamps = {f: (starts[f][0] - 8 if compressed else start(f) - 8) for f in present}
     frames = Frames(total, offset, stamps, None if compressed else name_len,

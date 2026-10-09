@@ -1,7 +1,7 @@
 # Virtualization harness
 
-For [VIRTUALIZE.md](../../VIRTUALIZE.md) and its profiles in
-[profiles/](../../profiles/) (profiles version 0, draft). This
+For [spec/virtualize.md](../../spec/virtualize.md) and its profiles in
+[spec/virtualize/](../../spec/virtualize/) (version 0, draft). This
 document says how an implementation is run and checked. It adds no rules to
 the specification.
 
@@ -89,10 +89,10 @@ literal with every digit, so `9007199254740993` differs from
 `9007199254740992`), and a number against a non-integer by its binary64
 value (so `1` equals `1.0`); booleans are not numbers.
 
-`compare.py` also reads every vzip archive by SPEC.md before it compares it:
-the independent reader in `impls/python` (written from SPEC.md alone) must
-open it and see the same entries, and the archive must meet SPEC.md's writer
-requirements as `conformance/validate.py` checks them (canonical payloads,
+`compare.py` also reads every vzip archive by spec/archive.md before it compares it:
+the independent reader in `conformance/impls/python` (written from spec/archive.md alone) must
+open it and see the same entries, and the archive must meet spec/archive.md's writer
+requirements as `conformance/archive/validate.py` checks them (canonical payloads,
 reference bodies, no duplicate names or extra `__vz__/` entries, CRC-32s,
 local headers, the page index). A JSON document with a duplicate member is
 unreadable too. An archive that fails any of these counts as a crash of the
@@ -100,15 +100,15 @@ implementation that wrote it.
 
 ## Test inputs
 
-The synthetic files in `web/test/fixtures/`, one directory per format
+The synthetic files in `fixtures/`, one directory per format
 (`tiff/`, `ndpi/`, `nd2/`, `dicom/`, `nifti/`, `ims/`), and the synthetic
-stores in `web/test/fixtures/n5/`, `web/test/fixtures/zarr2/` and
-`web/test/fixtures/ome-zarr/` (one directory per store), are good first inputs. Their names say what they
+stores in `fixtures/n5/`, `fixtures/zarr2/` and
+`fixtures/ome-zarr/` (one directory per store), are good first inputs. Their names say what they
 exercise, and `unsupported_*`, `edge_reject_*` and `<profile>_reject_*`
 inputs must be rejected. To serve them the way the harness does, run:
 
 ```
-python conformance/virtualize/proxy.py web/test/fixtures /tmp/vzip-proxy-cache 8765
+python conformance/virtualize/proxy.py fixtures /tmp/vzip-proxy-cache 8765
 ```
 
 Then `http://127.0.0.1:8765/f/<format>/<file name>` is a fixture file, and
@@ -147,7 +147,7 @@ with the first's:
   shipped before these formats moved to the IR, unchanged but for their import
   paths); for every other profile, the shipped code.
 - `py`: `python -m vzip.virtualize --allow-private-hosts`.
-- `web`: the browser code under Node, `web/conformance/virtualize.ts
+- `web`: the browser code under Node, `js/conformance/virtualize.ts
   --allow-private-hosts`.
 
 For TIFF, ND2 and CZI, `py` and `web` are one implementation: the Rust core
@@ -176,7 +176,7 @@ implementations, and `ref` runs the same code as `py`.
 
 Since revision 21, `vzip_source` of these three profiles is the IR mirror of
 conventions §8; since revision 22 the mirror is canonical (conventions §8.8)
-and VIRTUALIZE.md §1.1 compares it entry for entry, as `py` against `web`
+and spec/virtualize.md §1.1 compares it entry for entry, as `py` against `web`
 does. `compare.py` also checks each archive's mirror on its own, in addition
 to that comparison: it loads the table, checks its invariants (conventions
 §8.4), checks that it describes a source of the size source 0 pins, and
@@ -187,7 +187,7 @@ implementation that wrote it.
 **The frozen reference records revision 20.** The frozen TIFF, ND2 and CZI
 profiles have their own revision constant
 (`conformance/virtualize/reference/vzip_reference/revision.py`,
-`web/conformance/reference/revision.ts`), 20, the last revision before the
+`conformance/virtualize/reference/ts/revision.ts`), 20, the last revision before the
 mirror, which their roots record with their old `vzip_source`; nothing else
 in them changed (an edit made so that a reference archive does not claim a
 revision it does not implement). `compare.py` compares a reference
@@ -196,7 +196,7 @@ number is the one difference it does not report; every other profile's
 reference is the shipped code, which records the current revision.
 
 **The frozen reference stays.** The frozen implementations
-(`conformance/virtualize/reference`, `web/conformance/reference`) are kept
+(`conformance/virtualize/reference`, `conformance/virtualize/reference/ts`) are kept
 unchanged as the independent check of the IR path's hierarchy, at least until
 the conventions have been revised around the IR and CI has run on the IR path
 for a while. Whether and when to delete them is the user's decision.

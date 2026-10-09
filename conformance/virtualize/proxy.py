@@ -14,7 +14,7 @@ refused (403), since no virtualizer needs one. Remote bytes are fetched in
 64 KiB blocks, once, and cached on disk, so that every implementation reads
 the same bytes and upstream servers see each block only once.
 
-Stores (VIRTUALIZE.md §1.4, §1.5) are listed with S3 ListObjectsV2, path
+Stores (spec/virtualize.md §1.4, §1.5) are listed with S3 ListObjectsV2, path
 style, in the buckets `f` and `u`: `GET /f/?list-type=2&prefix=n5/x/` lists
 the fixture directory `n5/x/`, and `GET /u/?list-type=2&prefix=<id>/<rest>`
 lists the remote store that `<id>` names (its own listing, fetched once and
@@ -152,7 +152,7 @@ class RemoteListings:
     def keys(self, store_url: str, rest: str) -> list[tuple[str, int]]:
         """(relative key, size) of the objects of the store at `store_url` whose
         relative key starts with `rest`."""
-        sys.path.insert(0, str(ROOT / "src"))
+        sys.path.insert(0, str(ROOT / "python" / "src"))
         from vzip.virtualize.store import listing_endpoint, parse_listing, query_encode
 
         f = self.upstream.cache / (hashlib.sha256(f"list:{store_url}|{rest}".encode()).hexdigest() + ".json")

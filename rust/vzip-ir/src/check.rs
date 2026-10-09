@@ -1,4 +1,4 @@
-//! The invariants (ARCHITECTURE.md §3.3) over an IR with runs: injectivity and
+//! The invariants (design/ARCHITECTURE.md §3.3) over an IR with runs: injectivity and
 //! coverage (`finish` establishes them, `check` verifies them), and the leaves in
 //! source order (the rebuild).
 //!

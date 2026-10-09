@@ -1,4 +1,4 @@
-"""The TIFF profile (profiles/tiff.md, §3)."""
+"""The TIFF profile (spec/virtualize/tiff/profile.md, §3)."""
 
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ from vzip_reference.tiff.tags import Translator
 JPEG2000 = {33003, 33004, 33005, 34712}
 MAX_PLANES = 100000
 JPEG = 7
-# The Adobe APP14 marker, with its color transform byte last (profiles/tiff.md §3.3).
+# The Adobe APP14 marker, with its color transform byte last (spec/virtualize/tiff/profile.md §3.3).
 ADOBE = bytes.fromhex("FFEE000E41646F626500640000000000")[:-1]
 
 
-# ---- OME-XML (conventions/tiff/README.md §3)
+# ---- OME-XML (spec/virtualize/tiff.md §3)
 
 WS = "[ \t\r\n]"
 NAME = "[A-Za-z0-9_.-]+"
@@ -50,7 +50,7 @@ def _decode(v: str) -> str:
 
 def scan(xml: str):
     """The tags of `xml` in order, as (start, end, closing, local name,
-    attributes, self-closing), and the spans of skipped sections (conventions/tiff/README.md §3)."""
+    attributes, self-closing), and the spans of skipped sections (spec/virtualize/tiff.md §3)."""
     tags, skipped = [], []
     for m in SCAN.finditer(xml):
         if m["skip"] is not None:
@@ -69,7 +69,7 @@ def is_ome(xml: str) -> bool:
 
 def parse_ome(xml: str):
     """(image name, Pixels attributes, TiffData list, Plane attributes or None)
-    of the first image (conventions/tiff/README.md §3)."""
+    of the first image (spec/virtualize/tiff.md §3)."""
     tags, skipped = scan(xml)
     image = next((t for t in tags if not t[2] and t[3] == "Image"), None)
     name = image[4].get("Name") if image else None
@@ -140,7 +140,7 @@ def _physical(attrs: dict, d: str):
 
 
 def _decimal(v: str | None, positive: bool = False):
-    """A decimal value (conventions/tiff/README.md §3), or None."""
+    """A decimal value (spec/virtualize/tiff.md §3), or None."""
     if v is None or not DECIMAL.fullmatch(v):
         return None
     x = float(v)
@@ -148,7 +148,7 @@ def _decimal(v: str | None, positive: bool = False):
 
 
 def aperio_fields(description: bytes) -> dict | None:
-    """The `name = value` fields of an Aperio ImageDescription (conventions/tiff/README.md §4.4), or None."""
+    """The `name = value` fields of an Aperio ImageDescription (spec/virtualize/tiff.md §4.4), or None."""
     if not description.startswith(b"Aperio"):
         return None
     try:
@@ -166,7 +166,7 @@ def aperio_fields(description: bytes) -> dict | None:
 # ---- profile
 
 def jpeg_prefix(ifd: Ifd, spp: int, photometric) -> bytes:
-    """What each JPEG tile's stream has after its SOI marker (profiles/tiff.md §3.3), a data
+    """What each JPEG tile's stream has after its SOI marker (spec/virtualize/tiff/profile.md §3.3), a data
     source: the Adobe color marker for 3 samples, and the IFD's tables."""
     out = b""
     if spp == 3:
@@ -202,7 +202,7 @@ def tiled(ifd: Ifd) -> bool:
 
 
 def check_size(ifd: Ifd) -> None:
-    """The size checks of conventions/tiff/README.md §2, for planes, levels and level-scan candidates."""
+    """The size checks of spec/virtualize/tiff.md §2, for planes, levels and level-scan candidates."""
     if ifd.num(256) < 1 or ifd.num(257) < 1:
         raise Rejected(f"the image at {ifd.offset} is empty")
     if tiled(ifd):
@@ -213,7 +213,7 @@ def check_size(ifd: Ifd) -> None:
 
 
 def check_samples(ifd: Ifd) -> None:
-    """How an image's bytes hold its samples (conventions/tiff/README.md §4.3): the codecs
+    """How an image's bytes hold its samples (spec/virtualize/tiff.md §4.3): the codecs
     decode full-resolution samples, most significant bit first."""
     compression = ifd.num(259, 1)
     if compression in (1, 8, 32946, 50000) and ifd.num(266, 1) != 1:
@@ -264,7 +264,7 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
     if compression not in JPEG2000 and predictor != 1:
         raise Rejected(f"unsupported predictor {predictor}")
 
-    # conventions/tiff/README.md §3, §4.1: planes, in (t, c, z) order, as main-chain IFD indices.
+    # spec/virtualize/tiff.md §3, §4.1: planes, in (t, c, z) order, as main-chain IFD indices.
     px = ome[1] if ome else {}
     size_z = _int(px, "SizeZ", 1, 1)
     size_t = _int(px, "SizeT", 1, 1)
@@ -322,7 +322,7 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
         raise Rejected("OME-XML planes do not match the TIFF's images")
     planes = [ifds[i] for i in plane_ifd]
 
-    # conventions/tiff/README.md §4.2: levels.
+    # spec/virtualize/tiff.md §4.2: levels.
     levels = []
     if ifd0.sub:
         s = len(ifd0.sub)
@@ -347,7 +347,7 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
             if fmt(i) != fmt(ifd0):
                 raise Rejected("pyramid levels differ in sample format or compression")
 
-    # conventions/tiff/README.md §4.3: data type and codecs.
+    # spec/virtualize/tiff.md §4.3: data type and codecs.
     kind = {1: "uint", 2: "int", 3: "float"}.get(sample_format)
     if kind is None or bits not in (8, 16, 32, 64) or (kind == "float" and bits < 32):
         raise Rejected(f"unsupported sample type: {bits}-bit, SampleFormat {sample_format}")
@@ -374,7 +374,7 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
     if contig:
         codecs.insert(0, transpose_codec(axes))
 
-    # conventions/tiff/README.md §4.4: pixel size and position.
+    # spec/virtualize/tiff.md §4.4: pixel size and position.
     units, sizes, centre, corner = {}, {}, None, None
     if ome is not None:
         for d, a in (("Z", "z"), ("Y", "y"), ("X", "x")):
@@ -464,7 +464,7 @@ def virtualize_tiff(url: str, read: Reader, size: int) -> Output:
     out.json("zarr.json", root_json(image_ome(axes, units, scales, name or None,
                                                [translation] * len(levels) if translation else None), "tiff", url,
                                     {"byte_order": "little" if little else "big", "bigtiff": big}, REVISION))
-    # The source metadata (conventions/tiff/README.md §5): one group per IFD (main chain,
+    # The source metadata (spec/virtualize/tiff.md §5): one group per IFD (main chain,
     # SubIFDs and the IFDs pointer tags lead to), and the strips or tiles of the IFDs
     # that are not images here, on vzip_source.
     order = "<" if little else ">"

@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/spec/virtualize/dicom/schema.json",
+  "title": "vzip DICOM convention, version 0",
+  "description": "The zarr.json of a node that declares the vzip DICOM convention (https://github.com/d-v-b/vzip/blob/main/spec/virtualize/dicom.md)",
+  "type": "object",
+  "properties": {
+    "zarr_format": {
+      "type": "integer",
+      "const": 3
+    },
+    "node_type": {
+      "type": "string",
+      "enum": [
+        "group",
+        "array"
+      ]
+    },
+    "attributes": {
+      "type": "object",
+      "properties": {
+        "ome": {
+          "type": "object",
+          "description": "OME-NGFF 0.5 metadata"
+        },
+        "zarr_conventions": {
+          "type": "array",
+          "contains": {
+            "$ref": "#/$defs/conventionMetadata"
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        "vzip_virtualized": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/rootProperty"
+            },
+            {
+              "$ref": "#/$defs/nodeProperty"
+            }
+          ]
+        }
+      },
+      "required": [
+        "zarr_conventions",
+        "vzip_virtualized"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "zarr_format",
+    "node_type",
+    "attributes"
+  ],
+  "$defs": {
+    "conventionMetadata": {
+      "type": "object",
+      "description": "The DICOM convention's metadata object in zarr_conventions",
+      "properties": {
+        "uuid": {
+          "type": "string",
+          "const": "acf17198-e5a5-48d3-8187-22ec4bb40ea5"
+        },
+        "schema_url": {
+          "type": "string",
+          "const": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/spec/virtualize/dicom/schema.json"
+        },
+        "spec_url": {
+          "type": "string",
+          "const": "https://github.com/d-v-b/vzip/blob/main/spec/virtualize/dicom.md"
+        },
+        "name": {
+          "type": "string",
+          "const": "vzip_virtualized"
+        },
+        "description": {
+          "type": "string",
+          "const": "The Zarr layout of a DICOM source virtualized by vzip, and the source's metadata"
+        }
+      },
+      "required": [
+        "uuid"
+      ],
+      "additionalProperties": false
+    },
+    "rootProperty": {
+      "type": "object",
+      "description": "The root's property: the profile and version that produced the hierarchy, its source, and the root's source metadata",
+      "properties": {
+        "profile": {
+          "type": "string",
+          "const": "dicom"
+        },
+        "version": {
+          "type": "integer",
+          "const": 0
+        },
+        "revision": {
+          "type": "integer",
+          "const": 24,
+          "description": "The spec/virtualize.md revision that produced the hierarchy (version 0 only)"
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "The URL of the source file"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false
+        },
+        "dicom": {
+          "$ref": "#/$defs/sourceMetadata"
+        }
+      },
+      "required": [
+        "profile",
+        "version",
+        "revision",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "sourceMetadata": {
+      "type": "object",
+      "properties": {
+        "preamble": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "description": "The 128-byte preamble, unless all zero"
+        },
+        "meta": {
+          "$ref": "#/$defs/dataset",
+          "description": "The File Meta Information (on vzip_source: its large attributes)"
+        },
+        "dataset": {
+          "$ref": "#/$defs/dataset",
+          "description": "The dataset (on vzip_source: the per-frame groups and the large attributes)"
+        },
+        "pixel_extra": {
+          "type": "string",
+          "description": "The array holding the native pixel data after the frames"
+        },
+        "pixel_unreferenced": {
+          "type": "string",
+          "description": "The family holding the pixel data the Extended Offset Table skips"
+        },
+        "pixel_unreferenced_headers": {
+          "const": true,
+          "description": "Whether pixel_unreferenced also holds the frames' item headers"
+        },
+        "pixel_fragments": {
+          "type": "string",
+          "description": "The array holding each fragment's frame and data length, when a frame has more than one"
+        },
+        "pixel_offset_table": {
+          "const": true,
+          "description": "Whether the Basic Offset Table is not empty"
+        },
+        "trailing": {
+          "type": "string",
+          "description": "The array holding the bytes after the last element"
+        }
+      },
+      "additionalProperties": false
+    },
+    "headerValue": {
+      "description": "A translated header value (spec/conventions.md §6)",
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "$ref": "#/$defs/text"
+        },
+        {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "text": {
+      "description": "A text value: a string (UTF-8), or its ISO 8859-1 reading when it is not UTF-8",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "latin1": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "latin1"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "dataset": {
+      "type": "object",
+      "properties": {
+        "duplicates": {
+          "type": "array",
+          "description": "The later elements with a tag already in the dataset, in file order",
+          "items": {
+            "type": "object",
+            "patternProperties": {
+              "^[0-9A-F]{8}$": {
+                "$ref": "#/$defs/attribute"
+              }
+            },
+            "additionalProperties": false,
+            "minProperties": 1,
+            "maxProperties": 1
+          }
+        }
+      },
+      "patternProperties": {
+        "^[0-9A-F]{8}$": {
+          "$ref": "#/$defs/attribute"
+        }
+      },
+      "additionalProperties": false
+    },
+    "attribute": {
+      "type": "object",
+      "properties": {
+        "vr": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$"
+        },
+        "Value": {
+          "type": "array"
+        },
+        "InlineBinary": {
+          "type": "string",
+          "contentEncoding": "base64"
+        },
+        "BulkDataURI": {
+          "type": "string",
+          "description": "The array (or family) of vzip_source that holds the value"
+        },
+        "Structures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dataset"
+          },
+          "description": "A gathered sequence's distinct item structures; vzip_source/<its path>/items/structure gives each item's"
+        },
+        "Gathered": {
+          "const": true,
+          "description": "A value in an item of a gathered sequence, at vzip_source/<the sequence's path>/items/<path within the item>/value, row or member <item index>"
+        },
+        "LittleEndian": {
+          "const": true,
+          "description": "An explicit UN value in explicit VR big endian, whose bytes are in little endian"
+        }
+      },
+      "required": [
+        "vr"
+      ],
+      "maxProperties": 3,
+      "additionalProperties": false
+    },
+    "nodeProperty": {
+      "type": "object",
+      "description": "Any other node's property: its source metadata only",
+      "properties": {
+        "dicom": {
+          "$ref": "#/$defs/sourceMetadata"
+        }
+      },
+      "required": [
+        "dicom"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

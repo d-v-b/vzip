@@ -1,4 +1,4 @@
-"""Nikon ND2 files (profiles/nd2.md)."""
+"""Nikon ND2 files (spec/virtualize/nd2/profile.md)."""
 
 from vzip_reference.nd2.virtualize import is_nd2, virtualize_nd2
 

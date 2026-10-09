@@ -1,4 +1,4 @@
-//! A projection's output (VIRTUALIZE.md §1.1, §1.2): the entries of a vzip archive
+//! A projection's output (spec/virtualize.md §1.1, §1.2): the entries of a vzip archive
 //! before it is written. The archive writer stays per host (Python's `Output.write`,
 //! the browser's `writeVzip`); an `Out` crosses to it as Python objects (py.rs) or
 //! as one binary buffer (`encode`, for wasm hosts).
@@ -193,7 +193,7 @@ pub fn payload_size(ranges: &[Part]) -> usize {
 // ---- documents (conventions §2–§5)
 
 pub const CONVENTION_KEY: &str = "vzip_virtualized";
-/// The revision of VIRTUALIZE.md the projections follow (`common.REVISION` in Python).
+/// The revision of spec/virtualize.md the projections follow (`common.REVISION` in Python).
 pub const REVISION: u64 = 24;
 
 /// (uuid, version, title) of a profile's convention.
@@ -216,8 +216,8 @@ pub fn convention(p: &str) -> J {
     };
     json!({
         "uuid": uuid,
-        "schema_url": format!("https://raw.githubusercontent.com/d-v-b/vzip/refs/{r}/conventions/{p}/schema.json"),
-        "spec_url": format!("https://github.com/d-v-b/vzip/blob/{blob}/conventions/{p}/README.md"),
+        "schema_url": format!("https://raw.githubusercontent.com/d-v-b/vzip/refs/{r}/spec/virtualize/{p}/schema.json"),
+        "spec_url": format!("https://github.com/d-v-b/vzip/blob/{blob}/spec/virtualize/{p}.md"),
         "name": CONVENTION_KEY,
         "description": format!("The Zarr layout of a {title} source virtualized by vzip, and the source's metadata"),
     })
@@ -489,7 +489,7 @@ pub fn grid_chunks(offset: u64, shape: &[u64], item: u64, limit: u64) -> Option<
     Some((cs, chunks))
 }
 
-// ---- JSON sizes, as ECMAScript's JSON.stringify writes values (conventions/nd2 §5.1,
+// ---- JSON sizes, as ECMAScript's JSON.stringify writes values (spec/virtualize/nd2.md §5.1,
 // conventions §8.7)
 
 /// The length of ECMAScript's Number::toString of a finite binary64.

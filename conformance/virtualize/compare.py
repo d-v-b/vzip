@@ -1,19 +1,19 @@
-"""Compares virtualizers (VIRTUALIZE.md §1.1, §14; HARNESS.md).
+"""Compares virtualizers (spec/virtualize.md §1.1, §14; HARNESS.md).
 
 Every implementation runs on every input of the corpus, which the caching
 proxy (proxy.py) serves over local HTTP: the synthetic files in
-web/test/fixtures/ (one directory per format), the synthetic stores in
-web/test/fixtures/n5/, zarr2/ and ome-zarr/ (one directory per store,
-served with the S3 listing of VIRTUALIZE.md §1.5), the synthetic SAFE
-products in web/test/fixtures/safe/ (directories, and .SAFE.zip files), the
-synthetic CZI files in web/test/fixtures/czi/, the 205 OME-TIFFs of IDR
+fixtures/ (one directory per format), the synthetic stores in
+fixtures/n5/, zarr2/ and ome-zarr/ (one directory per store,
+served with the S3 listing of spec/virtualize.md §1.5), the synthetic SAFE
+products in fixtures/safe/ (directories, and .SAFE.zip files), the
+synthetic CZI files in fixtures/czi/, the 205 OME-TIFFs of IDR
 idr0096, and the public files and stores in corpus_*.txt. For each input, all
 implementations must either reject it (exit status 3) or produce equivalent
 outputs; outputs are compared with the reference implementation's (the first
 one).
 
 Corpus lines are `url|name`, or `url|name|py-only` for an input larger than
-the browser implementation's limit (VIRTUALIZE.md §14): such inputs are
+the browser implementation's limit (spec/virtualize.md §14): such inputs are
 skipped unless `--large` is given, and then every implementation but `web` runs on them.
 Store URLs end in `/`. A line may end with the input's fingerprint, which
 corpus_hash.py records and checks.
@@ -43,7 +43,7 @@ Usage: uv run python conformance/virtualize/compare.py <out dir>
            [--shard k/n]  (only every n-th input, from the k-th: one of n parallel runs)
            [--idr-listing <file>]  (idr0096's listing, saved, instead of fetching it)
 
-Every archive is also read by SPEC.md's strict reading (`strict`): an archive the
+Every archive is also read by spec/archive.md's strict reading (`strict`): an archive the
 independent reader refuses, or reads differently, or that breaks a writer requirement,
 counts as a crash of the implementation that wrote it.
 """
@@ -66,8 +66,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
-sys.path.insert(0, str(ROOT / "conformance"))
-sys.path.insert(0, str(ROOT / "impls" / "python"))
+sys.path.insert(0, str(ROOT / "conformance" / "archive"))
+sys.path.insert(0, str(ROOT / "conformance" / "impls" / "python"))
 from corpus_hash import entries as corpus_entries  # noqa: E402
 from proxy import Proxy  # noqa: E402
 from validate import validate  # noqa: E402
@@ -80,9 +80,9 @@ from vzip.virtualize.common import REVISION, same  # noqa: E402
 IDR = "https://ftp.ebi.ac.uk/pub/databases/IDR/idr0096-tratwal-marrowquant/20210609-ftp-ome-tiffs/"
 BUILTIN = {
     "ref": ("vzip", ["uv", "run", "python", str(HERE / "reference" / "cli.py")]),
-    # the inputs are served from 127.0.0.1, which the reader policy refuses by default (SPEC.md §8.7)
+    # the inputs are served from 127.0.0.1, which the reader policy refuses by default (spec/archive.md §8.7)
     "py": ("vzip", ["uv", "run", "python", "-m", "vzip.virtualize", "--allow-private-hosts"]),
-    "web": ("vzip", ["node", str(ROOT / "web" / "conformance" / "virtualize.ts"), "--allow-private-hosts"]),
+    "web": ("vzip", ["node", str(ROOT / "js" / "conformance" / "virtualize.ts"), "--allow-private-hosts"]),
 }
 # The profiles whose shipped implementations write the IR's mirror under vzip_source.
 IR_PROFILES = ("tiff", "nd2", "czi")
@@ -92,7 +92,7 @@ REFERENCE_REVISION = 20
 
 
 class Unreadable(Exception):
-    """An archive that SPEC.md's strict reading refuses, or that breaks a writer requirement."""
+    """An archive that spec/archive.md's strict reading refuses, or that breaks a writer requirement."""
 
 
 def _no_duplicates(pairs: list) -> dict:
@@ -104,7 +104,7 @@ def _no_duplicates(pairs: list) -> dict:
 
 def from_vzip(path: Path) -> dict:
     """An archive's output (§1.1), once it has passed `strict`."""
-    try:  # first, so that zipfile never reads what SPEC.md does not
+    try:  # first, so that zipfile never reads what spec/archive.md does not
         strict_reader.Archive(str(path)).close()
     except VzError as e:
         raise Unreadable(f"strict reader: {e.cls} error: {e}") from e
@@ -145,10 +145,10 @@ def _b64(b: bytes) -> str:
 
 
 def strict(path: Path, view: dict) -> list[str]:
-    """The problems SPEC.md finds in an archive, by code that shares nothing with the
-    writers under test: the independent reader (impls/python, written from SPEC.md
+    """The problems spec/archive.md finds in an archive, by code that shares nothing with the
+    writers under test: the independent reader (conformance/impls/python, written from spec/archive.md
     alone) must open it and see exactly the output `view` holds, and the archive must
-    meet the writer requirements (SPEC.md §3, §4, §7, §9) as conformance/validate.py,
+    meet the writer requirements (spec/archive.md §3, §4, §7, §9) as conformance/archive/validate.py,
     with its own ZIP parser, checks them: canonical payloads, reference bodies,
     duplicate names, hidden entries, CRC-32s, local headers and the page index."""
     try:
@@ -276,7 +276,7 @@ def mirror_problem(path: Path, view: dict, read=None) -> str | None:
     the one the table and the source give (§8.7); else what is wrong. The array
     columns' bytes and the view's values are read from source 0 (small ranges;
     `read(offset, length)`, by default its URL). These are checks in addition to
-    comparing mirrors entry for entry (VIRTUALIZE.md §1.1)."""
+    comparing mirrors entry for entry (spec/virtualize.md §1.1)."""
     doc = view["entries"].get("vzip_source/zarr.json")
     own = (doc[1].get("attributes", {}).get("vzip_virtualized", {}) if doc and doc[0] == "json" else {})
     if not any(isinstance(v, dict) and "ir" in v for v in own.values()):
@@ -415,7 +415,7 @@ def main(argv: list[str]) -> int:
         if a == "--no-builtin":
             impls.pop(opts[i + 1], None)
     only = opts[opts.index("--only") + 1] if "--only" in opts else None
-    fixtures = Path(opts[opts.index("--fixtures") + 1]) if "--fixtures" in opts else ROOT / "web" / "test" / "fixtures"
+    fixtures = Path(opts[opts.index("--fixtures") + 1]) if "--fixtures" in opts else ROOT / "fixtures"
     proxy = Proxy(fixtures, Path("/tmp/vzip-proxy-cache"))
     listing = opts[opts.index("--idr-listing") + 1] if "--idr-listing" in opts else None
     items = corpus(proxy, fixtures, "--quick" in opts, "--fixtures" in opts, "--large" in opts, listing)

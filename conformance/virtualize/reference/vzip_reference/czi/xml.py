@@ -1,4 +1,4 @@
-"""The values the CZI layout reads from the metadata XML (conventions/czi/README.md §2.7)."""
+"""The values the CZI layout reads from the metadata XML (spec/virtualize/czi.md §2.7)."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ class XmlValues:
 
 
 class Tree:
-    """The scan's tags as nested elements (conventions/czi/README.md §2.7)."""
+    """The scan's tags as nested elements (spec/virtualize/czi.md §2.7)."""
 
     def __init__(self, xml: str) -> None:
         self.xml = xml

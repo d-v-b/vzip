@@ -1,4 +1,4 @@
-//! The values the CZI layout reads from the metadata XML (conventions/czi §2.7),
+//! The values the CZI layout reads from the metadata XML (spec/virtualize/czi.md §2.7),
 //! in one pass over the tag scan, with no tree: open elements are a stack, an end
 //! tag closes back to the innermost open element of its name (a count per name
 //! says at once whether there is one), and only elements on the paths the layout
