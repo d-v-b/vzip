@@ -16,6 +16,7 @@ from xml.sax.saxutils import escape
 import pytest
 
 import vzip.virtualize
+from vzip.policy import Policy
 from vzip.virtualize import Rejected, virtualize_store
 from vzip.virtualize.store import _Prefetch, object_url, open_store
 
@@ -207,7 +208,8 @@ def test_concurrent_reads_over_kept_alive_connections(s3_server):
     results = []
     for workers in (1, 8):
         state["reads"].clear()
-        fmt, out = virtualize_store(url, workers=workers)
+        # the server is on 127.0.0.1, which the reader policy refuses by default (SPEC.md §8.7)
+        fmt, out = virtualize_store(url, workers=workers, policy=Policy(allow_private_hosts=True))
         results.append((fmt, json.dumps(out.docs, sort_keys=True), out.chunks))
         assert set(state["reads"].values()) == {1}
     assert results[0] == results[1]

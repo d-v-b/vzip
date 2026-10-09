@@ -1,9 +1,9 @@
 // Virtualizes an image file, or a store (a URL ending in "/"), at an http(s)
 // URL with the browser code, under Node, by VIRTUALIZE.md:
 //   node web/conformance/virtualize.ts <url> <out.vzip> [--checksums] [--allow-private-hosts]
-// A file is read under the reader policy (SPEC.md §8.7), which refuses private
-// and special hosts unless --allow-private-hosts (UNSAFE; the harness serves its
-// inputs from 127.0.0.1); TIFF, ND2 and CZI are virtualized by the Rust core
+// A file or a store is read under the reader policy (SPEC.md §8.7), which refuses
+// private and special hosts unless --allow-private-hosts (UNSAFE; the harness serves
+// its inputs from 127.0.0.1); TIFF, ND2 and CZI are virtualized by the Rust core
 // (rust/vzip-ir, as WebAssembly), which plans the requests.
 // Source 0 (or each store object's source) pins its size, and a file's its ETag
 // when every response gave the same strong one; --checksums also records the
@@ -14,7 +14,8 @@
 import fs from "node:fs";
 import { isStoreUrl, virtualizeSource, virtualizeStore } from "../src/virtualize/index.ts";
 import { openHttpSource } from "../src/virtualize/ir/source.ts";
-import { openHttpStore } from "../src/virtualize/store.ts";
+import { openHttpStore, storeFetch } from "../src/virtualize/store.ts";
+import { VzipError } from "../src/archive.ts";
 import { writeVzip } from "../src/writer.ts";
 
 const args = process.argv.slice(2);
@@ -31,18 +32,19 @@ globalThis.fetch = (input, init) => {
   return nodeFetch(input, { ...init, headers });
 };
 
-// Transient statuses are retried too; what remains is the response.
-async function retryingFetch(u: string, init?: RequestInit): Promise<Response> {
+// Transient statuses are retried too; what remains is the response. A refusal of
+// the reader policy is not retried.
+async function retryingFetch(send: (u: string, init?: RequestInit) => Promise<Response>, u: string, init?: RequestInit): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
     try {
-      const r = await fetch(u, init);
+      const r = await send(u, init);
       if ((r.status === 429 || r.status >= 500) && attempt < 4) {
         await new Promise((res) => setTimeout(res, 1000 * 2 ** attempt));
         continue;
       }
       return r;
     } catch (e) {
-      if (attempt >= 4) throw e;
+      if (attempt >= 4 || e instanceof VzipError) throw e;
       await new Promise((res) => setTimeout(res, 1000 * 2 ** attempt));
     }
   }
@@ -54,7 +56,15 @@ const t0 = performance.now();
 try {
   let virtual;
   if (isStoreUrl(url)) {
-    const store = await openHttpStore(url, { fetch: (u, i) => { requests++; return retryingFetch(u, i); } });
+    const policy = { allowPrivateHosts };
+    const send = storeFetch(url, policy, { "User-Agent": UA });
+    const store = await openHttpStore(url, {
+      policy,
+      fetch: (u, i) => {
+        requests++;
+        return retryingFetch(send, u, i);
+      },
+    });
     virtual = await virtualizeStore(store, { checksums });
   } else {
     // retries (429, 5xx, network errors) are the source's

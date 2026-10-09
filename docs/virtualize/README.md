@@ -85,8 +85,8 @@ store by the objects at its root. Options:
 - `--checksums`: also record the CRC-32C of every referenced range
   ([SPEC.md §5.2](../../SPEC.md#52-range)), which reads every byte the
   archive references (off by default);
-- `--allow-private-hosts`: let a file at an http(s) URL be read from a
-  loopback, private or link-local host (below; unsafe);
+- `--allow-private-hosts`: let a file or store at an http(s) URL be read
+  from a loopback, private or link-local host (below; unsafe);
 - `--connections N` and `--byte-cost SECONDS_PER_MB`: for TIFF, ND2 and CZI,
   how many requests the read planner runs at a time (default 8), and how
   much wall time it charges for a megabyte read beyond those asked (default
@@ -99,11 +99,12 @@ file's source also records its ETag when every response gave the same
 strong one ([SPEC.md §6.1](../../SPEC.md#61-pins)). A reader then notices a
 source that has changed since the archive was written.
 
-**Reader policy.** A file at an http(s) URL is read under the reader policy
-of [SPEC.md §8.7](../../SPEC.md#87-reader-policy). A host that is, or
+**Reader policy.** A file or a store at an http(s) URL is read under the
+reader policy of [SPEC.md §8.7](../../SPEC.md#87-reader-policy) (a store's
+listing, every object read and every redirect). A host that is, or
 resolves to, a loopback, private, link-local or other special address is
 refused, and so is a request that would go through a proxy the reader cannot
-check. To virtualize a file served from your own machine or network (for
+check. To virtualize a file or store served from your own machine or network (for
 example `http://127.0.0.1:8000/...`), pass `--allow-private-hosts`. Reading
 an archive applies the same policy to its sources, so an archive that refers
 to such a host opens only with `VZipStore(path,
