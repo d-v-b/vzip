@@ -1666,3 +1666,48 @@ concurrently). They were applied as a 3-way merge with 4f41a32 as the base.
 | `conformance/run.py --impl ref=...` | 5,125/5,125 reads, 11/11 writes, 45/45 rejects, 4,973/4,973 cross-reads, 1,582/1,582 http |
 | actionlint | pass |
 | `just fixtures-check` (last, alone) | passes |
+
+## 47. Revision 24: the root is `""`, and every path is its own
+
+The user's decision: the empty name `""` is reserved for the IR's root, which
+denotes the whole source (JSON Pointer's `""`, Zarr's root node), in every
+single-file format's IR; archive keys stay non-empty.
+
+- **Before.** Every parser's root was already element 0, a struct named
+  `""` with no index, in space 0, with the extent `(0, size)` (`Ir::new`),
+  and every mirror stored it so; nothing required it. TIFF and CZI never gave
+  an element an empty full name or two siblings one path (fixtures and
+  probes). ND2 did: a list's LV members were named `""` (52 such elements on
+  the fixtures), objects with repeated keys and chunk names that read alike
+  gave siblings one path (14 fixtures), and chunk names could hold `/`.
+  Nothing required paths to be unique; the view kept the first of repeated
+  keys, and `Ir::path` cut paths at 64 levels.
+- **The rules** (conventions §8.1, `check::names`): the root as above, and not
+  a run; every other full name not empty; among siblings (a run's members
+  expanded, within the record budget) no full name equals another's or
+  another's followed by `/`. `check` and `canonical` run them, so `mirror`
+  rejects, readers (`Ir.check`, `rebuild_from_archive`) raise Violation, and
+  `canonical_problem` says "invalid". §8.8's tie-break and the
+  identical-siblings retargeting (§44) are gone: siblings no longer tie.
+- **ND2's names** (ND2 §5.3, `ir::source_names`, inverted by
+  `ir::source_text`): plain text when not empty, without `/` or `~`, not a
+  level's `header` or `table`, and first of its text; else the text with `%`,
+  `/`, `~` percent-encoded, then `~`, indexed by earlier occurrences. The
+  projection reads the texts back, so the root's `chunks` JSON is unchanged.
+
+Output: 16 of the 33 accepted ND2 fixtures change under `vzip_source` only;
+every TIFF and CZI output and every rejection is identical on every fixture
+and probe (compared entry by entry with a build of the previous commit). So
+revision 24, not an amendment.
+
+| check | result |
+|---|---|
+| `just test --ignore=tests/ir`, `just ir-test`, `just web::test`, `just web::build` | green (800; 261 + Rust 151; 611) |
+| fixtures, 4 shards of `compare.py` | 667 inputs: 293 equivalent, 374 rejected by all, 0 divergent |
+| mutants | 5,290: 1,895 equivalent, 3,395 rejected by all, 0 divergent |
+| `just verify`, CZI and SAFE verifiers | 0 failures |
+| `conformance/run.py --impl ref=...` | 5,125/5,125 reads, 11/11 writes, 45/45 rejects, 4,973/4,973 cross-reads, 1,582/1,582 http |
+| actionlint | pass |
+| `just fixtures-check` (last, alone) | see the hand-back |
+
+The offline corpus was not run (no EBI access in this round).
