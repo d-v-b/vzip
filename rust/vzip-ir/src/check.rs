@@ -393,9 +393,111 @@ fn sweep(ir: &Ir) -> Res<Vec<(u64, u64, u32, What)>> {
     items(ir, &lay, &blocks, expansion_limit(ir), None)
 }
 
+fn who_member(ir: &Ir, i: u32, j: u64) -> String {
+    match j {
+        0 => who(ir, i),
+        j => format!("member {j} of the run {}", who(ir, i)),
+    }
+}
+
+/// The root and the names (conventions §8.1). Element 0 is the **root**: a struct
+/// named `""` with no name index, in space 0, whose extent is `(0, size)`, the
+/// whole source, and which is not a run. Every other element has a full name that
+/// is not empty. Among the children of one element (each member of a run a child),
+/// no full name is another's, or another's followed by `/` and more: so every
+/// element's path is its own, and the root's, `""`, is no other's.
+pub fn names(ir: &Ir) -> Res<()> {
+    let n = ir.len();
+    if n == 0 {
+        return Err("the IR has no root (element 0)".into());
+    }
+    let kind = ir.kind[0];
+    if kind != STRUCT {
+        let k = KINDS.get(kind as usize).copied().unwrap_or("element of no kind");
+        return Err(format!("the root (element 0) is a {k}, not a struct"));
+    }
+    let name = ir.names.get(ir.name[0]);
+    if !name.is_empty() {
+        return Err(format!("the root (element 0) is named {name:?}, not \"\""));
+    }
+    if ir.nidx[0] != NO_INDEX {
+        return Err(format!("the root (element 0) has the name index {}", ir.nidx[0]));
+    }
+    if ir.space[0] != 0 {
+        return Err(format!("the root (element 0) is in space {}, not 0", ir.space[0]));
+    }
+    if (ir.start[0], ir.len[0]) != (0, ir.size) {
+        return Err(format!(
+            "the root's extent is ({}, {}), not (0, {}): the root spans the source",
+            ir.start[0], ir.len[0], ir.size
+        ));
+    }
+    if ir.run(0).is_some() {
+        return Err("the root (element 0) is a run".into());
+    }
+    let limit = expansion_limit(ir);
+    let mut extra = 0u64;
+    // (parent, full name, element, member)
+    let mut v: Vec<(u32, String, u32, u64)> = Vec::with_capacity(n);
+    for i in 1..n as u32 {
+        let iu = i as usize;
+        let (count, _) = ir.run(i).unwrap_or((1, 0));
+        extra = extra.saturating_add(count.saturating_sub(1));
+        if extra > limit {
+            return Err(format!("budget: more than {limit} members of runs to name"));
+        }
+        for j in 0..count.max(1) {
+            let full = if j == 0 {
+                ir.name_of(i)
+            } else {
+                match ir.nidx[iu].checked_add(j).filter(|&x| x != NO_INDEX && ir.nidx[iu] != NO_INDEX) {
+                    Some(x) => format!("{}{x}", ir.names.get(ir.name[iu])),
+                    None => ir.name_of(i), // no index to increase: member 0's name again
+                }
+            };
+            if full.is_empty() {
+                return Err(format!("{} has an empty full name", who_member(ir, i, j)));
+            }
+            v.push((ir.parent[iu], full, i, j));
+        }
+    }
+    v.sort_unstable();
+    let path = |p: u32, full: &str| -> String {
+        if p == 0 { full.to_string() } else { format!("{}/{full}", ir.path(p)) }
+    };
+    let mut a = 0;
+    while a < v.len() {
+        let p = v[a].0;
+        let b = a + v[a..].partition_point(|e| e.0 == p);
+        let group = &v[a..b];
+        for k in 0..group.len() {
+            let (_, f, i, j) = &group[k];
+            if let Some((_, g, i2, j2)) = group.get(k + 1).filter(|e| &e.1 == f) {
+                return Err(format!(
+                    "{} and {} have one path, {:?}",
+                    who_member(ir, *i, *j),
+                    who_member(ir, *i2, *j2),
+                    path(p, g)
+                ));
+            }
+            let key = format!("{f}/");
+            let at = group.partition_point(|e| e.1.as_str() < key.as_str());
+            if let Some((_, g, i2, j2)) = group.get(at).filter(|e| e.1.starts_with(&key)) {
+                return Err(format!(
+                    "the full name {g:?} of {} starts with that of its sibling {} and \"/\"",
+                    who_member(ir, *i2, *j2),
+                    who_member(ir, *i, *j)
+                ));
+            }
+        }
+        a = b;
+    }
+    Ok(())
+}
+
 /// Coverage and injectivity (the leaves partition [0, size)); parents precede
-/// their children; aliases name an element; each derived space with a size is
-/// partitioned by its leaves.
+/// their children; aliases name an element; the root and the names (`names`);
+/// each derived space with a size is partitioned by its leaves.
 pub fn check(ir: &Ir) -> Res<()> {
     let n = ir.len();
     for i in 0..n {
@@ -419,6 +521,7 @@ pub fn check(ir: &Ir) -> Res<()> {
             }
         }
     }
+    names(ir)?;
     let v = sweep(ir)?;
     let mut pos = 0u64;
     let mut last = NONE;

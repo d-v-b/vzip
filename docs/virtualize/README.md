@@ -49,7 +49,7 @@ Their public test inputs are listed in [corpus_safe.txt](../../conformance/virtu
 
 **Numbers in these pages.** The outputs, timings, request counts and archive
 sizes quoted in the format pages were measured at VIRTUALIZE.md revision 16.
-The current revision is 23. Since revision 16, the archives also keep the
+The current revision is 24. Since revision 16, the archives also keep the
 source's whole metadata (below), so they are larger than the sizes quoted.
 TIFF and ND2 are now read through a read planner, so their request counts
 differ too. Where a summary line or an attribute path has changed since
@@ -205,7 +205,7 @@ print(v["nifti"]["header"]["descrip"], v["nifti"]["scaling"])
 ```
 
 ```
-{'profile': 'nifti', 'version': 0, 'revision': 23, 'source': {'url': 'https://raw.githubusercontent.com/spm/spm/main/canonical/avg152T1.nii'}}
+{'profile': 'nifti', 'version': 0, 'revision': 24, 'source': {'url': 'https://raw.githubusercontent.com/spm/spm/main/canonical/avg152T1.nii'}}
 NIFTI-1 Image {'slope': 0.003921568859368563, 'inter': 0.0}
 ```
 

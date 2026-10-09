@@ -99,7 +99,7 @@
         },
         "revision": {
           "type": "integer",
-          "const": 23,
+          "const": 24,
           "description": "The VIRTUALIZE.md revision that produced the hierarchy (version 0 only)"
         },
         "source": {
@@ -378,7 +378,7 @@
                   "const": ""
                 }
               ],
-              "description": "The interned names"
+              "description": "The interned names, sorted; the first, \"\", is the root's (conventions §8.1)"
             },
             "types": {
               "type": "array",

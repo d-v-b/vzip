@@ -713,14 +713,18 @@ impl Nd2 {
         let candidates: std::collections::HashSet<usize> = self.candidates().into_iter().collect();
         let size = self.size;
         let chunks_el = self.ir.struct_(0, "chunks", NO_INDEX, 0, None)?;
+        let is_frame = |name: &[u8]| frame_index(name).is_some_and(|f| f < u64::MAX as u128);
+        // the chunks' names (conventions/nd2 §5.3): their texts, unique among `chunks`' children
+        let texts: Vec<String> = self.chunks.iter().filter(|c| !is_frame(&c.0)).map(|c| decode_text(&c.0)).collect();
+        let mut names = source_names(&texts, &[]).into_iter();
         let mut frames: Vec<(u64, usize)> = Vec::new();
         for k in 0..self.chunks.len() {
-            if let Some(f) = frame_index(&self.chunks[k].0) {
-                if f < u64::MAX as u128 {
-                    frames.push((f as u64, k));
-                    continue;
-                }
+            if is_frame(&self.chunks[k].0) {
+                let f = frame_index(&self.chunks[k].0).unwrap_or_default();
+                frames.push((f as u64, k));
+                continue;
             }
+            let (name, nidx) = names.next().ok_or("internal: a chunk without a name")?;
             let (tree, sm) = if candidates.contains(&k) {
                 self.sm_decode(k)?
             } else {
@@ -735,13 +739,12 @@ impl Nd2 {
                     false,
                 )
             };
-            let name = decode_text(&self.chunks[k].0);
             let o = self.chunks[k].1;
             let Some((magic, n, d)) = self.heads[k] else {
-                self.ir.struct_(chunks_el, &name, NO_INDEX, 0, None)?;
+                self.ir.struct_(chunks_el, &name, nidx, 0, None)?;
                 continue;
             };
-            let s = self.chunk(chunks_el, &name, NO_INDEX, o, magic, n, d)?;
+            let s = self.chunk(chunks_el, &name, nidx, o, magic, n, d)?;
             if magic != schema::limit("chunk_magic") as u32 {
                 continue;
             }
@@ -778,7 +781,8 @@ impl Nd2 {
                         (start, len),
                         &format!("{{\"transform\":\"{}\"}}", crate::transform::Transform::XmlVariant.name()),
                     )?;
-                    emit_xml(&mut self.ir, e, e, &el)?;
+                    let (name, nidx) = source_names(&[&el.name], &[]).remove(0);
+                    emit_xml(&mut self.ir, e, e, &el, &name, nidx)?;
                     Some(e)
                 }
                 None => {
@@ -976,7 +980,9 @@ impl Nd2 {
     }
 }
 
-fn emit_xml(ir: &mut Ir, parent: u32, space: u32, el: &xml::El) -> Res<()> {
+/// Emits XML element `el` under `parent` as `name` (with `nidx`); its children are
+/// named by their tags, made unique among siblings by `source_names` (conventions/nd2 §5.3).
+fn emit_xml(ir: &mut Ir, parent: u32, space: u32, el: &xml::El, name: &str, nidx: u64) -> Res<()> {
     match &el.value {
         Some((rt, v, span)) => {
             let ty = match rt {
@@ -985,8 +991,8 @@ fn emit_xml(ir: &mut Ir, parent: u32, space: u32, el: &xml::El) -> Res<()> {
             };
             ir.value(
                 parent,
-                &el.name,
-                NO_INDEX,
+                name,
+                nidx,
                 &ty,
                 space,
                 (span.0 as u64, (span.1 - span.0) as u64),
@@ -996,13 +1002,14 @@ fn emit_xml(ir: &mut Ir, parent: u32, space: u32, el: &xml::El) -> Res<()> {
         None => {
             let s = ir.struct_(
                 parent,
-                &el.name,
-                NO_INDEX,
+                name,
+                nidx,
                 space,
                 Some((el.span.0 as u64, (el.span.1 - el.span.0) as u64)),
             )?;
-            for c in &el.children {
-                emit_xml(ir, s, space, c)?;
+            let tags: Vec<&str> = el.children.iter().map(|c| c.name.as_str()).collect();
+            for (c, (cname, cidx)) in el.children.iter().zip(source_names(&tags, &[])) {
+                emit_xml(ir, s, space, c, &cname, cidx)?;
             }
         }
     }

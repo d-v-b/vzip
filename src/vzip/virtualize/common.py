@@ -440,7 +440,7 @@ def group_json(ome: dict) -> dict:
 CONVENTION_KEY = "vzip_virtualized"
 # The revision of VIRTUALIZE.md this implementation follows. Until the release, every
 # convention is at version 0 and the root property records it (conventions §1, §2).
-REVISION = 23
+REVISION = 24
 PROFILES = {
     "tiff": ("48e9ac4e-1156-4a62-955e-20467d9c2700", 0, "TIFF"),
     "ndpi": ("6cac71ef-dbb2-4acd-b60c-00389aa4238a", 0, "NDPI"),

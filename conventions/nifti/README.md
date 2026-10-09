@@ -12,7 +12,7 @@ Schema: [schema.json](schema.json)
 ## 1. Declaration
 
 The root declares the convention by [conventions §2](../README.md#2-attributes),
-with `"profile": "nifti"`, `"version": 0`, `"revision": 23` (README §1), the file's URL as `source.url`,
+with `"profile": "nifti"`, `"version": 0`, `"revision": 24` (README §1), the file's URL as `source.url`,
 and the source metadata of §5 as the member `"nifti"`. Its CMO is:
 
 ```json
@@ -420,7 +420,7 @@ root `zarr.json` has these attributes (`M` elided):
   "vzip_virtualized": {
     "profile": "nifti",
     "version": 0,
-    "revision": 23,
+    "revision": 24,
     "source": {"url": "https://example.org/brain.nii"},
     "nifti": {
       "nifti_version": 1,

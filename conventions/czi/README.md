@@ -28,7 +28,7 @@ file is in an array, referenced where the file holds it.
 ## 1. Declaration
 
 The root declares the convention by [conventions §2](../README.md#2-attributes),
-with `"profile": "czi"`, `"version": 0`, `"revision": 23` (README §1), the file's URL as `source.url`, and
+with `"profile": "czi"`, `"version": 0`, `"revision": 24` (README §1), the file's URL as `source.url`, and
 the source metadata of §5.1 as the member `"czi"`. Its CMO is:
 
 ```json
@@ -601,7 +601,8 @@ and unreferenced segments, spare bytes and dead space included.
 
 ### 5.3 Elements
 
-Paths are relative to the IR's root; `<i>`, `<k>` are decimal name indexes.
+Paths are relative to the IR's root, whose path is `""`
+([conventions §8.1](../README.md#81-elements)); `<i>`, `<k>` are decimal name indexes.
 Every segment struct's extent is its 32-byte header and its allocated
 size (or the header alone when the allocation does not lie within the
 file), and holds `header`, a value of type
@@ -609,6 +610,7 @@ file), and holds `header`, a value of type
 
 | path | kind | type | what |
 |---|---|---|---|
+| `""` | struct | | the root: the whole file, extent `(0, size)` |
 | `file_header` | struct | | the `ZISRAWFILE` segment |
 | `file_header/fields` | value | record | its fields (version, GUIDs, FilePart, the positions of the directory, metadata and attachment directory segments, UpdatePending) |
 | `directory` | struct | | the `ZISRAWDIRECTORY` segment |
@@ -660,7 +662,7 @@ JPEG XR, overlapping layer-0 tiles and five pyramid levels; this is
     "vzip_virtualized": {
       "profile": "czi",
       "version": 0,
-      "revision": 23,
+      "revision": 24,
       "source": {"url": "https://example.org/a.czi"},
       "czi": {
         "version": [1, 0],

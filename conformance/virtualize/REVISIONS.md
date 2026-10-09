@@ -1030,3 +1030,56 @@ no fixture, probe or corpus file has:
 - The planner's statistics count the batch that reads the shown values a
   parser did not keep (`fill`); it is empty on every fixture, probe and
   corpus file, and the tests require it.
+
+## Revision 24: the root is `""`, and every path is its own
+
+**What prompted it.** The user's decision that the IR's root is normative:
+in every single-file format's IR the empty name `""` is reserved for the
+root, which denotes the whole source, as `""` is the whole document in JSON
+Pointer and the root node in Zarr. The core already wrote the root that way,
+but nothing required it, and nothing required paths to be unique: ND2 named
+a list's members `""` and repeated names (an object's repeated keys, chunk
+names that read alike), so the view kept only the first of them and an
+alias's path could name several elements.
+
+**The changes.**
+- **conventions/README.md §8.1:** the root (element 0) is a struct named
+  `""` with no name index, in space 0, with the extent `(0, Z)`, and not a
+  run; its path is `""`. Every other element has a full name that is not
+  empty, and among siblings (a run's members included) no full name equals
+  another's, or another's followed by `/` and more; so every path is its
+  own. These rules hold for every single-file profile, and for any format a
+  later revision moves onto the IR. They are invariants: a table that breaks
+  them is invalid (§8.3), a reader rejects it (§8.4), a validator flags it.
+  Archive keys stay non-empty (SPEC.md §3.3).
+- **§8.7:** the root's document is `tree`'s; an alias's path names its
+  target alone.
+- **§8.8:** siblings no longer tie (their full names differ), so the
+  tie-break by the source model's order and the rule for aliases of
+  identical siblings (revision 23) are gone: no valid IR has such siblings.
+- **ND2 §5.3, names:** a chunk, an LV record or an XML element whose text
+  is not empty, holds no `/` or `~`, is not `header` or `table` in an LV
+  level, and is the first of its siblings with that text keeps it as its
+  name; any other is the text with `%`, `/` and `~` percent-encoded, then
+  `~`, indexed by the number of earlier siblings of that text (a list's
+  members are `~0`, `~1`, …; a repeated `uiWidth` is `uiWidth~1`). The
+  root's `chunks` JSON is unchanged: the projection reads the texts back.
+- **TIFF, ND2 and CZI §5:** the element tables list the root, `""`; the
+  TIFF example says that `names[0]` is the root's name.
+- **Conventions:** the root property records `"revision": 24`; the schemas
+  were regenerated.
+
+**Output.** Every TIFF and CZI output, and every rejection, is unchanged on
+every fixture and probe. ND2 outputs change only under `vzip_source`, where
+a file has lists, repeated names, or chunk or record names with `/` or `~`:
+16 of the 33 accepted ND2 fixtures. (An alias's path in the view is no
+longer cut at 64 levels; no fixture has an alias that deep.)
+
+**Implementations.** The Rust core: `check::names` checks the root and the
+names, and `check` runs it; `canonical` runs it, so `mirror` rejects an IR
+that breaks them and `canonical_problem` calls such a table invalid;
+`ir::source_names` and `ir::source_text` are ND2's naming rule and its
+inverse; the identical-siblings retargeting is removed. Python's
+`vzip_ir.Ir.check` raises Violation, and `vzip_ir.mirror` raises Rejected;
+the browser's run rejects with the message. The frozen reference still
+records 20.

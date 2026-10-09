@@ -2,7 +2,7 @@
 //! of §5.1) from a valid IR: the IR holds what it needs.
 
 use super::{arr, n, truthy};
-use crate::ir::{Ir, NO_INDEX, STRUCT};
+use crate::ir::{source_text, Ir, NO_INDEX, STRUCT};
 use crate::lv::{base64, well_formed};
 use crate::out::{array_json, group_json, image_ome, payload_size, root_json, transpose_codec, Out, Part, MAX_PAYLOAD};
 use crate::types::{self, Ty, Val};
@@ -145,6 +145,12 @@ impl Values<'_> {
         types::decode(ty.as_ref().ok_or("internal: a value of no type")?, raw)
     }
 
+    /// The name the source gives an LV record or an XML element: its element's name
+    /// with `source_names`'s rule undone (conventions/nd2 §5.3).
+    fn source_name(&self, i: u32) -> String {
+        source_text(self.ir.names.get(self.ir.name[i as usize]), self.ir.nidx[i as usize])
+    }
+
     /// An LV element's JSON: a level (struct) as an object, pairs or a list; a record by its type.
     fn lv_json(&mut self, i: u32) -> Result<J, String> {
         let ir = self.ir;
@@ -176,7 +182,7 @@ impl Values<'_> {
     }
 
     fn level(&mut self, members: &[u32], top: bool) -> Result<J, String> {
-        let names: Vec<String> = members.iter().map(|&m| self.ir.name_of(m)).collect();
+        let names: Vec<String> = members.iter().map(|&m| self.source_name(m)).collect();
         let items = members.iter().map(|&m| self.lv_json(m)).collect::<Result<Vec<J>, String>>()?;
         if !top && !members.is_empty() && names.iter().all(|n| n.is_empty()) {
             return Ok(if items.iter().all(pair_like) {
@@ -191,7 +197,7 @@ impl Values<'_> {
     fn xml_json(&mut self, i: u32) -> Result<J, String> {
         let ir = self.ir;
         if ir.kind[i as usize] == STRUCT {
-            let records = ir.children(i).iter().map(|&c| Ok((ir.name_of(c), self.xml_json(c)?))).collect::<Result<Vec<_>, String>>()?;
+            let records = ir.children(i).iter().map(|&c| Ok((self.source_name(c), self.xml_json(c)?))).collect::<Result<Vec<_>, String>>()?;
             return Ok(pairs_or_object(records));
         }
         let Val::Str(v) = self.value(i)? else {

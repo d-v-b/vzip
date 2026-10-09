@@ -6,7 +6,7 @@
 
 use std::path::Path;
 use vzip_ir::check::{check, leaves};
-use vzip_ir::ir::{Ir, VALUE};
+use vzip_ir::ir::{Ir, NO_INDEX, STRUCT, VALUE};
 use vzip_ir::mirror::{text_json, canonical, canonical_problem, load, mirror, ordered, shown, table, table_from_out, view_problem, write, Table};
 use vzip_ir::out::Out;
 use vzip_ir::run::{run_bytes, Format};
@@ -44,6 +44,9 @@ fn the_table_is_the_canonical_ir_rebuilds_the_source_and_is_a_fixed_point() {
         let back = load(&t, &mut read).unwrap_or_else(|e| panic!("{p:?}: {e}"));
         assert_eq!(ordered(&back), ordered(&ir), "{p:?}");
         check(&back).unwrap();
+        // the root: named "", no index, a struct in the source spanning it (§8.1)
+        assert_eq!((back.kind[0], back.name_of(0), back.nidx[0], back.space[0]), (STRUCT, String::new(), NO_INDEX, 0), "{p:?}");
+        assert_eq!((back.start[0], back.len[0]), (0, data.len() as u64), "{p:?}");
         let mut rebuilt = Vec::new();
         for (o, n) in leaves(&back).unwrap() {
             rebuilt.extend_from_slice(&data[o as usize..(o + n) as usize]);
@@ -160,8 +163,8 @@ fn flags_siblings_out_of_order() {
         t.nidx = vec![u64::MAX, 1, 0, 2];
         t.ty = vec![0; 4];
         t.space = vec![0; 4];
-        t.start = vec![0, 10, -20, 10];
-        t.length = vec![0, 10, 10, 10];
+        t.start = vec![0, -20, -20, 10];
+        t.length = vec![30, 10, 10, 10];
     }, false);
     assert_eq!(problem(&out), "row 1 is out of canonical order");
 }
@@ -178,8 +181,8 @@ fn flags_a_foldable_run_left_unfolded() {
         t.nidx = vec![u64::MAX, 0, 1, 2];
         t.ty = vec![0; 4];
         t.space = vec![0; 4];
-        t.start = vec![0; 4];
-        t.length = vec![0, 10, 10, 10];
+        t.start = vec![0, -30, 0, 0];
+        t.length = vec![30, 10, 10, 10];
     }, false);
     assert!(problem(&out).starts_with("stored row 2 is"));
 }
@@ -206,8 +209,8 @@ fn three() -> Table {
         nidx: vec![u64::MAX, 0],
         ty: vec![0, 0],
         space: vec![0, 0],
-        start: vec![0, 0],
-        length: vec![0, 10],
+        start: vec![0, -30],
+        length: vec![30, 10],
         cruns: vec![[1, 3, 1]],
         columns: vec![[0, 0, 2, 0, 0, 10], [0, 0, 0, 0, 0, 1]],
         names: vec!["".into(), "gaps/".into()],
@@ -317,24 +320,30 @@ fn rejects_a_mirror_past_the_row_budget() {
 }
 
 #[test]
-fn flags_an_alias_of_a_later_identical_sibling() {
-    // two identical empty structs `s`, and an alias `a` of the second
+fn the_mirror_of_an_ir_whose_names_break_the_rules_is_a_rejection() {
+    // two empty structs `s`: one path for two elements
     let mut ir = Ir::new(10);
     ir.budget = None;
     ir.gap(0, "gaps/", (0, 10)).unwrap();
     ir.struct_(0, "s", u64::MAX, 0, None).unwrap();
-    let second = ir.struct_(0, "s", u64::MAX, 0, None).unwrap();
-    ir.alias(0, "a", u64::MAX, second).unwrap();
+    ir.struct_(0, "s", u64::MAX, 0, None).unwrap();
     ir.finished = true;
     ir.build_children();
-    let y = canonical(&ir).unwrap();
-    // canonical order: the gap, then `a`, then the two `s`; `a` names the first
-    assert_eq!(y.targets, vec![(2, 3)]);
-    let (mut t, _) = table(&y, "tiff", &|_| None);
-    t.targets = vec![[2, 4]];
     let mut out = Out::new("u");
-    write(&t, &mut out, "tiff", false);
-    assert!(problem(&out).starts_with("table row 0 is"), "{}", problem(&out));
+    assert_eq!(
+        mirror(&ir, &mut out, "tiff").unwrap_err(),
+        "element 2 (struct \"s\") and element 3 (struct \"s\") have one path, \"s\""
+    );
+}
+
+#[test]
+fn flags_a_table_whose_root_is_named() {
+    // `names[0]`, the root's name, is "!" (still sorted first)
+    let out = edited(|t| t.names[0] = "!".into(), false);
+    assert_eq!(problem(&out), "invalid: the root (element 0) is named \"!\", not \"\"");
+    let t = table_from_out(&out).unwrap();
+    let back = load(&t, &mut no_read).unwrap();
+    assert_eq!(check(&back).unwrap_err(), "the root (element 0) is named \"!\", not \"\"");
 }
 
 /// A fixture's output, its view document at `group` edited by `edit`, and what the

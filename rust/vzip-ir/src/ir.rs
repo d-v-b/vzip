@@ -33,6 +33,71 @@ pub fn is_leaf(kind: u8) -> bool {
     matches!(kind, VALUE | DATA | DERIVED | GAP)
 }
 
+/// `%`, `/` and `~` of a source text, percent-encoded (`%25`, `%2F`, `%7E`).
+fn escape_name(t: &str) -> String {
+    let mut s = String::with_capacity(t.len());
+    for c in t.chars() {
+        match c {
+            '%' => s.push_str("%25"),
+            '/' => s.push_str("%2F"),
+            '~' => s.push_str("%7E"),
+            c => s.push(c),
+        }
+    }
+    s
+}
+
+/// The (name, name index) of siblings named by texts the source gives (an ND2
+/// chunk's, LV record's or XML element's name; conventions/nd2 §5.3), in order:
+/// a text that is not empty, holds no `/` or `~`, is none of the parent's `fixed`
+/// names and is the first of its siblings' with that text is the name itself, with
+/// no index; any other is the text with `%`, `/` and `~` percent-encoded, then `~`,
+/// with the number of earlier siblings of that text as its index. So no full name
+/// is empty, none repeats, and none holds `/`.
+pub fn source_names<S: AsRef<str>>(texts: &[S], fixed: &[&str]) -> Vec<(String, u64)> {
+    let mut seen: HashMap<&str, u64> = HashMap::new();
+    texts
+        .iter()
+        .map(|t| {
+            let t = t.as_ref();
+            let k = seen.entry(t).or_insert(0);
+            let earlier = *k;
+            *k += 1;
+            let plain = !t.is_empty() && !t.contains(['/', '~']) && !fixed.contains(&t);
+            if plain && earlier == 0 {
+                (t.to_string(), NO_INDEX)
+            } else {
+                (format!("{}~", escape_name(t)), earlier)
+            }
+        })
+        .collect()
+}
+
+/// The source text of a name [`source_names`] gave: the inverse of its rule.
+pub fn source_text(name: &str, nidx: u64) -> String {
+    let Some(e) = name.strip_suffix('~').filter(|_| nidx != NO_INDEX) else {
+        return name.to_string();
+    };
+    let mut out = Vec::with_capacity(e.len());
+    let b = e.as_bytes();
+    let mut k = 0;
+    while k < b.len() {
+        let code = if b[k] == b'%' { b.get(k + 1..k + 3) } else { None };
+        match code {
+            Some(b"25") => out.push(b'%'),
+            Some(b"2F") => out.push(b'/'),
+            Some(b"7E") => out.push(b'~'),
+            _ => {
+                out.push(b[k]);
+                k += 1;
+                continue;
+            }
+        }
+        k += 3;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| e.to_string())
+}
+
 /// Strings stored once: names, types, forms.
 #[derive(Default, Clone)]
 pub struct Interner {
@@ -140,6 +205,7 @@ impl Ir {
             ..Default::default()
         };
         ir.types.id(""); // type 0: none
+        // the root (conventions §8.1): a struct named "", no index, spanning the source
         ir.add(STRUCT, NONE, "", NO_INDEX, "", 0, Some((0, size)))
             .unwrap();
         ir
@@ -563,6 +629,8 @@ impl Ir {
 
     // ---- reading
 
+    /// The element's full name (conventions §8.1): its name followed by its name
+    /// index in decimal, if it has one.
     pub fn name_of(&self, i: u32) -> String {
         let s = self.names.get(self.name[i as usize]);
         match self.nidx[i as usize] {
@@ -571,9 +639,12 @@ impl Ir {
         }
     }
 
+    /// The element's path (conventions §8.1): the full names of its ancestors below
+    /// the root and its own, joined by `/`; the root's is `""`. (At most one part per
+    /// element, so that parents that loop, in a table not yet checked, still give one.)
     pub fn path(&self, mut i: u32) -> String {
         let mut parts = Vec::new();
-        while i != 0 && i != NONE && (i as usize) < self.len() && parts.len() < 64 {
+        while i != 0 && i != NONE && (i as usize) < self.len() && parts.len() < self.len() {
             parts.push(self.name_of(i));
             i = self.parent[i as usize];
         }

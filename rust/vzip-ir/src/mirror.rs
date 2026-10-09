@@ -94,7 +94,8 @@ fn shared_refs(form: &str) -> Vec<(usize, usize, usize)> {
     v
 }
 
-/// The canonical IR of `ir` (conventions §8.8): every run expanded; the elements in
+/// The canonical IR of `ir` (conventions §8.8), or why it has none (the root and the
+/// names of §8.1, `check::names`, do not hold): every run expanded; the elements in
 /// canonical order, numbered by it (a parent before its children, siblings by first
 /// byte, name, name index); the descendants of a derived element left out when they
 /// would bring the derived rows kept past 2^20 (derived elements in canonical order,
@@ -111,6 +112,8 @@ pub fn canonical(ir: &Ir) -> Result<Ir, String> {
     for r in roots {
         x.unfold(r)?;
     }
+    // the root and the names (§8.1): a table that breaks them is invalid
+    crate::check::names(&x)?;
     x.build_children();
     let (ord, _) = crate::canon::order(&x);
     let n = x.len();
@@ -238,127 +241,7 @@ pub fn canonical(ir: &Ir) -> Result<Ir, String> {
     }
     y.finished = true;
     y.build_children();
-    retarget(&mut y);
     Ok(y)
-}
-
-/// Whether the subtrees at `a` and `b` of a canonical IR are identical in every field
-/// (kind, name, name index, type, extent, space and parent relative to the subtree,
-/// form, value bytes).
-fn identical(y: &Ir, a: usize, b: usize, size: &[usize]) -> bool {
-    if size[a] != size[b] {
-        return false;
-    }
-    let rel = |x: u32, r: usize| -> (bool, u64) {
-        if x != NONE && (x as usize) >= r && (x as usize) < r + size[r] { (true, (x as usize - r) as u64) } else { (false, x as u64) }
-    };
-    (0..size[a]).all(|k| {
-        let (i, j) = (a + k, b + k);
-        y.kind[i] == y.kind[j]
-            && y.name[i] == y.name[j]
-            && y.nidx[i] == y.nidx[j]
-            && y.ty[i] == y.ty[j]
-            && y.start[i] == y.start[j]
-            && y.len[i] == y.len[j]
-            && rel(y.space[i], a) == rel(y.space[j], b)
-            && (k == 0 || rel(y.parent[i], a) == rel(y.parent[j], b))
-            && y.form_id(i as u32) == y.form_id(j as u32)
-            && y.value_bytes(i as u32) == y.value_bytes(j as u32)
-    })
-}
-
-/// A digest of the fields `identical` compares.
-fn subtree_digest(y: &Ir, a: usize, size: &[usize]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    let mut eat = |x: u64| {
-        h ^= x;
-        h = h.wrapping_mul(0x100000001b3);
-    };
-    for i in a..a + size[a] {
-        eat(y.kind[i] as u64);
-        eat(y.name[i] as u64);
-        eat(y.nidx[i]);
-        eat(y.ty[i] as u64);
-        eat(y.start[i]);
-        eat(y.len[i]);
-        eat(y.form_id(i as u32).map_or(u64::MAX, |f| f as u64));
-        if let Some(v) = y.value_bytes(i as u32) {
-            for &x in v {
-                eat(x as u64);
-            }
-        }
-    }
-    h
-}
-
-/// Aliases name the first of identical siblings (conventions §8.8): a target in the
-/// subtree of a sibling identical in every field to an earlier one moves to the same
-/// place in the earliest.
-fn retarget(y: &mut Ir) {
-    if y.targets.is_empty() {
-        return;
-    }
-    let n = y.len();
-    let mut size = vec![1usize; n];
-    for k in (1..n).rev() {
-        size[y.parent[k] as usize] += size[k];
-    }
-    let first = crate::canon::first_bytes(y);
-    // first[c]: the earliest sibling identical to c (siblings that tie in the order)
-    let mut rep: HashMap<u32, u32> = HashMap::new();
-    for p in 0..n as u32 {
-        // siblings that tie in the order are consecutive: compare within each such block
-        let kids = y.children(p);
-        let mut b = 0;
-        let mut seen: HashMap<u64, Vec<u32>> = HashMap::new(); // the block's subtrees by digest
-        for q in 0..kids.len() {
-            let (c, cu) = (kids[q], kids[q] as usize);
-            let tie = |d: usize| y.name[d] == y.name[cu] && y.nidx[d] == y.nidx[cu] && first[d] == first[cu];
-            if !tie(kids[b] as usize) {
-                b = q;
-                seen.clear();
-            }
-            if q == b && (q + 1 == kids.len() || !tie(kids[q + 1] as usize)) {
-                continue; // ties with no sibling
-            }
-            let list = seen.entry(subtree_digest(y, cu, &size)).or_default();
-            match list.iter().find(|&&d| identical(y, d as usize, cu, &size)) {
-                Some(&d) => {
-                    rep.insert(c, d);
-                }
-                None => list.push(c),
-            }
-        }
-    }
-    if rep.is_empty() {
-        return;
-    }
-    let depth_chain = |y: &Ir, t: u32| -> Vec<u32> {
-        let mut v = vec![t];
-        let mut x = t;
-        while y.parent[x as usize] != NONE {
-            x = y.parent[x as usize];
-            v.push(x);
-        }
-        v.reverse();
-        v
-    };
-    for e in 0..y.targets.len() {
-        let mut t = y.targets[e].1;
-        if t == NONE {
-            continue;
-        }
-        let mut d = 0;
-        loop {
-            let chain = depth_chain(y, t);
-            let Some(&a) = chain.get(d) else { break };
-            if let Some(&f) = rep.get(&a) {
-                t = f + (t - a);
-            }
-            d += 1;
-        }
-        y.targets[e].1 = t;
-    }
 }
 
 /// The fields of row `i` (of a canonical IR) a column may hold.

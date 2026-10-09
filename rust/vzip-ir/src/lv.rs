@@ -511,7 +511,9 @@ fn record_type(r: &Rec, bytes: &[u8]) -> String {
 
 /// Emits `records` (whose positions index `bytes`, which start at `base` in `space`)
 /// under `parent`: a scalar as one value element (the whole record), a level as a
-/// struct with its `header`, its records and its skipped `table`.
+/// struct with its `header`, its records and its skipped `table`. Each record is
+/// named by its name as JSON (§5.1), made unique among its siblings by
+/// [`source_names`] (conventions/nd2 §5.3).
 pub fn emit(
     ir: &mut Ir,
     parent: u32,
@@ -520,8 +522,24 @@ pub fn emit(
     bytes: &[u8],
     records: &[Rec],
 ) -> Res<()> {
-    for r in records {
-        let name = exact_name(&r.units);
+    emit_in(ir, parent, space, base, bytes, records, &[])
+}
+
+/// A level's fixed children, whose names its records do not take.
+const LEVEL_FIXED: [&str; 2] = ["header", "table"];
+
+fn emit_in(
+    ir: &mut Ir,
+    parent: u32,
+    space: u32,
+    base: u64,
+    bytes: &[u8],
+    records: &[Rec],
+    fixed: &[&str],
+) -> Res<()> {
+    let texts: Vec<String> = records.iter().map(|r| exact_name(&r.units)).collect();
+    let names = source_names(&texts, fixed);
+    for (r, (name, nidx)) in records.iter().zip(names) {
         let ext = (base + r.start as u64, (r.end - r.start) as u64);
         match &r.val {
             LvVal::Level {
@@ -529,7 +547,7 @@ pub fn emit(
                 records: members,
                 table,
             } => {
-                let s = ir.struct_(parent, &name, NO_INDEX, space, Some(ext))?;
+                let s = ir.struct_(parent, &name, nidx, space, Some(ext))?;
                 let hn = 2 + 2 * r.k as usize + 12;
                 ir.value(
                     s,
@@ -540,7 +558,7 @@ pub fn emit(
                     (ext.0, hn as u64),
                     Some(&bytes[r.start..r.start + hn]),
                 )?;
-                emit(ir, s, space, base, bytes, members)?;
+                emit_in(ir, s, space, base, bytes, members, &LEVEL_FIXED)?;
                 if *count > 0 {
                     ir.value(
                         s,
@@ -557,7 +575,7 @@ pub fn emit(
                 ir.value(
                     parent,
                     &name,
-                    NO_INDEX,
+                    nidx,
                     &record_type(r, bytes),
                     space,
                     ext,

@@ -427,16 +427,49 @@ element's full name is the name followed by the index in decimal, so
 `tags/` with index 256 is `tags/256`), a **type** (values), a **space** (0:
 its extent is in the source; `d`: in the derived bytes of element `d`), and
 an **extent** (start, length; length 0: none). An element's **path** is the
-full names of its ancestors below the root and its own, joined by `/`.
+full names of its ancestors below the root and its own, joined by `/`; the
+root's path is `""`.
+
+**The root.** Element 0, the **root**, is a struct with the name `""`, no
+name index, space 0 and the extent `(0, Z)`, `Z` the source's size (8.2):
+its path, `""`, denotes the whole source, as `""` is the whole document in
+JSON Pointer (RFC 6901) and the root node in Zarr. The root is not a run.
+Its extent states the range the leaves partition; it claims nothing itself,
+since a struct is not a leaf, so coverage and injectivity (below) concern
+the leaves alone and are unchanged by it. (When `Z` is 0 the root's length
+is 0, so it has no extent.) The empty path is an IR path only: archive keys
+stay non-empty ([SPEC.md §3.3](../SPEC.md#33-keys)).
+
+**Names.** Every element but the root has a full name that is not empty.
+Among the children of one element (each member of a run being one child),
+no full name equals another's, and none equals another's followed by `/`
+and more characters (so `tags/256` and `tags/256~1` may be siblings, but
+not `a` and `a/0`). Hence every element's path is its own, and no element
+but the root has the path `""`: two elements with one path would have, at
+the first depth where their chains from the root differ, two siblings
+(ancestors, or the elements themselves) whose full names are equal or one
+of which continues the other with `/`. A table that breaks these rules is
+invalid (8.3). A path
+therefore names one element; the view (8.7) gives an alias's target by its
+path. A format whose names come from the source (a chunk's name, a record's
+key, an XML tag), which may be empty, repeat, or hold `/`, names those
+elements so that this holds; [ND2 §5.3](nd2/README.md#53-elements) gives one
+rule for that, which any format may adopt.
+
+These rules are those of every single-file profile's IR: TIFF, ND2 and CZI
+today, and any format whose source model a later revision moves onto the
+IR (such as DICOM or NIfTI), without restating them. A format's convention
+lists its elements by their paths below the root.
 
 The **leaves** are the elements of kinds 1, 2, 3 and 5 with a length, in
 space 0. The invariants: **coverage**, the leaves' extents partition
 `[0, size)` of the source (they cover it and none overlap); **injectivity**,
 no byte is claimed by two leaves (two names for the same bytes are an alias
 and its target); every parent precedes its children; every alias's target
-chain ends at an element that is not an alias, within 64 steps; and for each
+chain ends at an element that is not an alias, within 64 steps; for each
 derived element whose form is a JSON object with a member `size`, the leaves
-in its space partition `[0, size)` of its derived bytes.
+in its space partition `[0, size)` of its derived bytes; and the root and
+the names are as above.
 
 A **run** is an element whose subtree stands for `count` copies of itself
 (its **members**): member `j` has every extent of the subtree shifted by
@@ -456,7 +489,8 @@ into runs; the canonical table (8.8) expands them, and a reader accepts them.
 - `Z`: the source's size in bytes; `n`: the elements, with every column
   run expanded (8.3); `m`: the rows the table stores;
 - `names`, `types`, `forms`: the interned strings, whose indexes the rows
-  and tables use; `names[0]` and `types[0]` are `""`.
+  and tables use; `names[0]` and `types[0]` are `""` (`names[0]` is the
+  root's name, 8.1).
 
 The table is two arrays under `vzip_source/ir/` (§3 documents, data type
 `int64`, `fill_value` 0, codecs `bytes` little-endian, which a reader also
@@ -553,7 +587,13 @@ differ, whose column refers to values past `column_values` or entries past
 its array, whose column run's member 0 is not `size` rows of sibling
 subtrees (every row's parent is the first row's parent or an earlier row of
 the member), whose up is 0 for a row other than the root or larger than the
-row's id, or whose kinds, names, types or forms are out of range.
+row's id, or whose kinds, names, types or forms are out of range. So is one
+whose expanded rows break the rules of the root or of the names (8.1): a
+root that is not a struct named `""` with no name index in space 0 with the
+extent `(0, Z)`; an element other than the root with an empty full name; or
+siblings whose full names are equal, or one of which is another's followed
+by `/` and more. A reader rejects such a table (8.4) and a validator flags it
+as invalid.
 
 ### 8.4 Reading the source back
 
@@ -561,7 +601,8 @@ A reader that rebuilds the source:
 
 1. reads `rows` and `tables`, and expands the column runs (8.3);
 2. checks the invariants of 8.1, with the runs expanded member by member
-   (a run whose members' leaves overlap one another is invalid);
+   (a run whose members' leaves overlap one another is invalid), the root
+   and the names among them;
 3. concatenates, for the leaves in order of their start, the bytes of
    source 0 at their extents.
 
@@ -609,7 +650,8 @@ space).
 `vzip_source/tree` and the groups under it show the canonical IR (8.8) as
 JSON. Each is a group whose source metadata `S` (§2) is a struct's **view
 document**, so it declares the convention when the document has a member. The
-document of the root is `tree`'s. Sizes are those of the JSON text
+document of the root, the element whose path is `""` (8.1), is `tree`'s.
+Sizes are those of the JSON text
 ECMAScript's `JSON.stringify` writes (no whitespace), in UTF-8 bytes.
 
 A document has a member per child, in canonical order, by the child's full
@@ -650,7 +692,8 @@ members `$vz`, `$form` and `$partial` below are never a child's):
   and `"$form"`, its form (`null`: none). A document is complete before it
   is sized: the groups its descendants store come first;
 - an **alias** whose target is neither data nor a gap:
-  `{"$vz": "alias", "path": p}`, the target's path;
+  `{"$vz": "alias", "path": p}`, the target's path, which names it alone
+  (8.1; `""` for the root);
 - data, gaps and aliases of data or gaps are not shown.
 
 Values JSON cannot hold are tagged: `{"$vz": "int", "v": digits}` past
@@ -698,20 +741,11 @@ compares mirrors entry for entry. In order:
    3. then by first byte.
 
    So differently named siblings follow the source's layout, and a family
-   (`tiles/0`, `tiles/1`, …) its indexes, wherever its members lie. Siblings
-   that tie on all of these keep the order of the format's source model (the
-   order its convention lists them in). Where two leaves claim one byte, the
-   one first in this order keeps it and the other becomes an alias (8.1,
-   injectivity).
-
-   **Identical siblings.** Siblings that tie are **identical** when their
-   subtrees agree row by row in every field: kind, name, name index, type,
-   extent, form, value bytes, and space and parent (each relative to the
-   subtree when inside it, else as is). Their order then does not change the
-   table, but an alias's target would: an alias whose target lies in the
-   subtree of a sibling identical to an earlier one names the same place in
-   the earliest of them instead (applied from the root down, so a target
-   nested in several such subtrees moves to the first at every level).
+   (`tiles/0`, `tiles/1`, …) its indexes, wherever its members lie. No two
+   siblings tie: siblings of one name differ in name index, since their full
+   names differ (8.1), so this order is total and depends on the IR alone.
+   Where two leaves claim one byte, the one first in this order keeps it and
+   the other becomes an alias (8.1, injectivity).
 3. **Derived spaces.** The derived elements are taken in order, skipping
    those inside another derived element. Each keeps its descendants when
    they, with the descendants kept so far, number at most 2^20; otherwise its

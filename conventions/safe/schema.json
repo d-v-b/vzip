@@ -123,7 +123,7 @@
         },
         "revision": {
           "type": "integer",
-          "const": 23,
+          "const": 24,
           "description": "The VIRTUALIZE.md revision that produced the hierarchy (version 0 only)"
         },
         "source": {

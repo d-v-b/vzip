@@ -179,7 +179,7 @@ export type Profile = "tiff" | "ndpi" | "nd2" | "dicom" | "nifti" | "ims" | "n5"
 /** Each profile's convention: its fixed UUID, its current version and its name in the description. */
 /** The revision of VIRTUALIZE.md this implementation follows. Until the release, every
  * convention is at version 0 and the root property records it (conventions §1, §2). */
-export const REVISION = 23;
+export const REVISION = 24;
 export const PROFILES: Record<Profile, [uuid: string, version: number, title: string]> = {
   tiff: ["48e9ac4e-1156-4a62-955e-20467d9c2700", 0, "TIFF"],
   ndpi: ["6cac71ef-dbb2-4acd-b60c-00389aa4238a", 0, "NDPI"],

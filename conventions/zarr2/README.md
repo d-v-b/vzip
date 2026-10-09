@@ -30,7 +30,7 @@ object of the store, but consolidated metadata, is kept whole (§5).
 ## 1. Declaration
 
 The root declares the convention by [conventions §2](../README.md#2-attributes),
-with `"profile": "zarr2"`, `"version": 0`, `"revision": 23` (README §1), the store's URL (ending in `/`)
+with `"profile": "zarr2"`, `"version": 0`, `"revision": 24` (README §1), the store's URL (ending in `/`)
 as `source.url`, and the root's source metadata (§4), if it has any, as
 the member `"zarr2"`. Every other node that has source metadata declares it
 with `{"zarr2": S}`. Its CMO is:

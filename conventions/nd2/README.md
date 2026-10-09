@@ -17,7 +17,7 @@ convention, and the profile rejects it.
 ## 1. Declaration
 
 The root declares the convention by [conventions §2](../README.md#2-attributes),
-with `"profile": "nd2"`, `"version": 0`, `"revision": 23` (README §1), the file's URL as `source.url`, and
+with `"profile": "nd2"`, `"version": 0`, `"revision": 24` (README §1), the file's URL as `source.url`, and
 the source metadata of §5 as the member `"nd2"`. Its CMO is:
 
 ```json
@@ -500,25 +500,47 @@ chunk, the chunk map, frames beyond the image, padding and dead space.
 
 ### 5.3 Elements
 
-Paths are relative to the IR's root; `<i>`, `<f>` are decimal name indexes.
-Every chunk struct holds `header`
+Paths are relative to the IR's root, whose path is `""`
+([conventions §8.1](../README.md#81-elements)); `<i>`, `<f>` are decimal name
+indexes. Every chunk struct holds `header`
 (`{magic:<u4,name_length:<u4,data_length:<u8}`) and `name` (`bytes[n]`).
 
 | path | kind | type | what |
 |---|---|---|---|
+| `""` | struct | | the root: the whole file, extent `(0, size)` |
 | `signature` | struct | | the signature chunk: `header`, `name` (`ascii[32]`), `data` (`ascii[64]`) |
 | `map` | struct | | the chunk map: `header`, `name`, `records/<i>` (`{name:bytes[k],offset:<u8,size:<u8}`), `end` (`bytes[32]`), `rest` |
 | `tail` | value | `{signature:ascii[32],offset:<u8}` | the file's last 40 bytes |
-| `chunks/<name>` | struct | | each chunk of the map (its name's last record) that is not a frame, named by its name read as text (conventions §6) |
+| `chunks/<name>` | struct | | each chunk of the map (its name's last record) that is not a frame, in map order, named (below) by its name read as text (conventions §6) |
 | `chunks/<name>/lv` | struct or derived | | a chunk that decodes as a lite variant (§5.1): its records in the source, or, for a compressed record (derived, transform `nd2-lv-zlib`, its inflated size in its form), in its inflated bytes |
 | `chunks/<name>/xml` | derived | | an XML variant (transform `xml-variant`): its elements as structs, its `value` attributes as values of type `xml:<runtype>` |
 | `chunks/<name>/data` | value | `bytes[d]` | a chunk that does not decode |
-| an LV scalar | value | `{lv:u1,k:u1,name:bytes[2k],v:T}` | named by the record's name; `T` its value's type (`u1` bool, `<i4`, `<u4`, `<u8`, `<f8`, `utf16[n]` string, `{n:<u8,v:bytes[n]}` byte array) |
-| an LV level | struct | | `header` (`{lv:u1,k:u1,name:bytes[2k],count:<u4,length:<u8}`), its records, and `table` (`bytes[8c]`, the bytes it skips) |
+| an LV scalar | value | `{lv:u1,k:u1,name:bytes[2k],v:T}` | named (below) by the record's name as JSON (§5.1); `T` its value's type (`u1` bool, `<i4`, `<u4`, `<u8`, `<f8`, `utf16[n]` string, `{n:<u8,v:bytes[n]}` byte array) |
+| an LV level | struct | | named as a scalar is; `header` (`{lv:u1,k:u1,name:bytes[2k],count:<u4,length:<u8}`), its records, and `table` (`bytes[8c]`, the bytes it skips) |
+| an XML element | struct or value | `xml:<runtype>` or `xml` | under `chunks/<name>/xml`, named (below) by its tag: an element with a `value` attribute is a value (its attribute's text), any other a struct of its child elements |
 | `frames/<f>` | struct | | each chunk `ImageDataSeq|<f>!`: `header`, `name`, and for a placed frame (§4.1) `timestamp` (`<f8`), `pixels` (data: the frame's pixels; its form's recipe the range, or the rows of padded rows) and `trailing` (`bytes`, data after the pixels), else `data` (`bytes[d]`) |
 | `gaps/<offset>` | gap | | name padding, replaced map records, row padding and any other bytes no element claims |
 
 A chunk whose bytes an earlier element claims is an alias of it.
+
+**Names.** The chunks under `chunks`, the records of a decoded chunk or of a
+level, and the child elements of an XML element take their names from the
+source, which may be empty (a list's members), repeat (an object with a
+repeated name; chunk names that read alike), or hold `/`; they are named so
+that conventions §8.1's rules hold. Among such siblings, in the source's
+order (map order for chunks, record order for records, document order for
+elements), one whose
+text `t` is not empty, holds no `/` or `~`, is not `header` or `table` (in
+an LV level, whose own children have those names) and is the first of its
+siblings with text `t` is named `t`, with no name index. Any other is named
+`t` with each `%`, `/` and `~` percent-encoded (`%25`, `%2F`, `%7E`) and
+then `~`, with the number of earlier siblings of text `t` as its name index.
+So the members of a list are `~0`, `~1`, …, the second record named
+`uiWidth` in a level is `uiWidth~1`, and a chunk `CustomData|a/b!` is
+`CustomData|a%2Fb!~0`. The rule is reversible: a name that ends in `~` and
+has an index is a text so encoded, any other is its text. The records' own
+names are in their `name` fields (and the chunks' in their `name` values),
+so the rule loses nothing.
 
 ### 5.4 Equivalence
 
@@ -537,7 +559,7 @@ channels:
 "vzip_virtualized": {
   "profile": "nd2",
   "version": 0,
-  "revision": 23,
+  "revision": 24,
   "source": {
     "url": "https://example.org/a.nd2"
   },

@@ -233,7 +233,8 @@ impl PyIr {
             .copied()
             .find(|&c| self.ir.name_of(c) == name))
     }
-    /// Coverage, injectivity and the other invariants; raises Violation.
+    /// Coverage, injectivity, the root and the names, and the other invariants
+    /// (conventions §8.1); raises Violation.
     fn check(&self) -> PyResult<()> {
         check::check(&self.ir).map_err(Violation::new_err)
     }
@@ -290,9 +291,12 @@ impl PyIr {
         Ok(PyIr::new(ir))
     }
 
-    /// An IR from a stored table (the mirror's), for checking and rebuilding.
+    /// An IR from a stored table (the mirror's), for checking and rebuilding: each
+    /// element's name (default `""`) and name index (default none) are `name` and
+    /// `nidx` when given.
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (size, kind, parent, start, len, space, runs, targets, name=None, nidx=None))]
     fn from_table(
         size: u64,
         kind: Vec<u8>,
@@ -302,6 +306,8 @@ impl PyIr {
         space: Vec<u32>,
         runs: Vec<(u32, u64, u64)>,
         targets: Vec<(u32, u32)>,
+        name: Option<Vec<String>>,
+        nidx: Option<Vec<Option<u64>>>,
     ) -> PyResult<PyIr> {
         let n = kind.len();
         let mut ir = Ir {
@@ -316,8 +322,14 @@ impl PyIr {
             .iter()
             .map(|&p| if p < 0 { NONE } else { p as u32 })
             .collect();
-        ir.name = vec![0; n];
-        ir.nidx = vec![NO_INDEX; n];
+        ir.name = match name {
+            Some(v) => v.iter().map(|s| ir.names.id(s)).collect(),
+            None => vec![0; n],
+        };
+        ir.nidx = match nidx {
+            Some(v) => v.into_iter().map(|x| x.unwrap_or(NO_INDEX)).collect(),
+            None => vec![NO_INDEX; n],
+        };
         ir.ty = vec![0; n];
         ir.space = space;
         ir.start = start;
@@ -330,6 +342,8 @@ impl PyIr {
             ir.start.len(),
             ir.len.len(),
             ir.space.len(),
+            ir.name.len(),
+            ir.nidx.len(),
         ]
         .iter()
         .any(|&m| m != n)

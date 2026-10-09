@@ -19,7 +19,7 @@ convention, and the profile rejects it.
 ## 1. Declaration
 
 The root declares the convention by [conventions §2](../README.md#2-attributes),
-with `"profile": "dicom"`, `"version": 0`, `"revision": 23` (README §1), the file's URL as `source.url`,
+with `"profile": "dicom"`, `"version": 0`, `"revision": 24` (README §1), the file's URL as `source.url`,
 and the source metadata of §5 as the member `"dicom"`. Its CMO is:
 
 ```json
@@ -672,7 +672,7 @@ referenced image sequence and shared functional groups
 "vzip_virtualized": {
   "profile": "dicom",
   "version": 0,
-  "revision": 23,
+  "revision": 24,
   "source": {
     "url": "https://example.org/a.dcm"
   },

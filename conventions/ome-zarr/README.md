@@ -44,7 +44,7 @@ whose keys are exactly Zarr v2's for either separator, and its `transpose`,
 ## 1. Declaration
 
 The root declares the convention by [conventions §2](../README.md#2-attributes),
-with `"profile": "ome-zarr"`, `"version": 0`, `"revision": 23` (README §1), the store's URL (ending in
+with `"profile": "ome-zarr"`, `"version": 0`, `"revision": 24` (README §1), the store's URL (ending in
 `/`) as `source.url`, and the root's source metadata (§8), if it has any,
 as the member `"ome-zarr"`. Every other node that has source metadata
 declares it with `{"ome-zarr": S}`. Its CMO is:
@@ -451,7 +451,7 @@ metadata:
     "vzip_virtualized": {
       "profile": "ome-zarr",
       "version": 0,
-      "revision": 23,
+      "revision": 24,
       "source": {
         "url": "https://example.org/i.zarr/"
       }

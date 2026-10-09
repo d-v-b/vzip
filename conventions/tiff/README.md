@@ -17,7 +17,7 @@ convention, and the profile rejects it.
 ## 1. Declaration
 
 The root declares the convention by [conventions §2](../README.md#2-attributes),
-with `"profile": "tiff"`, `"version": 0`, `"revision": 23` (README §1), the file's URL as `source.url`,
+with `"profile": "tiff"`, `"version": 0`, `"revision": 24` (README §1), the file's URL as `source.url`,
 and the source metadata of §5 as the member `"tiff"`. Its CMO is:
 
 ```json
@@ -366,13 +366,14 @@ space as gaps).
 
 ### 5.1 Elements
 
-Paths are relative to the IR's root; `<i>`, `<j>`, `<tag>` are decimal name
-indexes (conventions §8.1). Types are those of conventions §8.6, with `E` the
+Paths are relative to the IR's root, whose path is `""`; `<i>`, `<j>`,
+`<tag>` are decimal name indexes (conventions §8.1). Types are those of conventions §8.6, with `E` the
 file's byte order (`<` little, `>` big), `W` the offset type (`u4`, or `u8`
 for BigTIFF) and `C` the entry-count type (`u2`, or `u8`).
 
 | path | kind | type | extent: what |
 |---|---|---|---|
+| `""` | struct | | the root: the whole file, `(0, size)` |
 | `header` | struct | | the header (8 or 16 bytes) |
 | `header/byte_order` | value | `ascii[2]` | `II` or `MM` |
 | `header/magic` | value | `Eu2` | 42 or 43 |
@@ -434,7 +435,7 @@ property:
 {
   "profile": "tiff",
   "version": 0,
-  "revision": 23,
+  "revision": 24,
   "source": {
     "url": "https://example.org/image.ome.tif"
   },
@@ -470,8 +471,10 @@ Its 73 elements are 14 rows: IFD 0's 15 tags fold into one column run, its
 12 tiles into another, whose starts and lengths are stored as differences
 (conventions §8.8: encoding 2, which reads them from TileOffsets and
 TileByteCounts, needs 16 tiles or more), and the 7 gaps into a third, whose
-name indexes are their starts (encoding 3). The names and types are sorted.
-The view, `vzip_source/tree`, begins:
+name indexes are their starts (encoding 3). The names and types are sorted,
+so `names[0]` is `""`, the root's name; the root is row 0, with the extent
+`(0, 5319)`. The view, `vzip_source/tree`, is the root's document, and
+begins:
 
 ```json
 {

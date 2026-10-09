@@ -194,7 +194,7 @@ pub fn payload_size(ranges: &[Part]) -> usize {
 
 pub const CONVENTION_KEY: &str = "vzip_virtualized";
 /// The revision of VIRTUALIZE.md the projections follow (`common.REVISION` in Python).
-pub const REVISION: u64 = 23;
+pub const REVISION: u64 = 24;
 
 /// (uuid, version, title) of a profile's convention.
 pub fn profile(p: &str) -> (&'static str, u64, &'static str) {
