@@ -6,9 +6,9 @@ Nothing shipped imports this package. Every other format, and what the profiles
 share (`vzip.virtualize.common`), is the shipped code.
 
 `virtualize(location, url, checksums=...)` is `vzip.virtualize.virtualize` as it
-was: the same dispatch by first bytes, the same readers (no reader policy), with
-TIFF, ND2 and CZI going to the frozen modules. A store is read by the shipped
-store reader, under `policy` (default: `Policy()`, private hosts refused)."""
+was: the same dispatch by first bytes, the same readers, with TIFF, ND2 and CZI
+going to the frozen modules. A file or store at an http(s) URL is read by the
+shipped readers under `policy` (default: `Policy()`, private hosts refused)."""
 
 from __future__ import annotations
 
@@ -32,7 +32,10 @@ def virtualize(location: str, url: str | None = None, *, checksums: bool = False
                policy: Policy | None = None):
     if is_store(location):
         return virtualize_store(location, url, checksums=checksums, policy=policy)
-    read, size = http_reader(location) if location.startswith(("http://", "https://")) else file_reader(location)
+    if location.startswith(("http://", "https://")):
+        read, size = http_reader(location, policy=policy)
+    else:
+        read, size = file_reader(location)
     url = url or location
     fmt, out = _virtualize_file(url, read, size)
     out.size = size

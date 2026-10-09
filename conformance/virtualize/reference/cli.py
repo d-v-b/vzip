@@ -1,7 +1,7 @@
 """The frozen reference's command line (`python -m vzip.virtualize` as it was before
 the IR switch-over): python conformance/virtualize/reference/cli.py <url or path>
 <out.vzip> [--url <source url>] [--checksums] [--allow-private-hosts]. Exit status 3
-when rejected. A store is read under the reader policy (SPEC.md §8.7), which refuses
+when rejected. A url source is read under the reader policy (SPEC.md §8.7), which refuses
 private and special hosts unless --allow-private-hosts (UNSAFE)."""
 
 import json

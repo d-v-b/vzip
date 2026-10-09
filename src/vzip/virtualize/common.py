@@ -17,7 +17,9 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from vzip.archive import VZipWriter
+from vzip.errors import ResolutionError
 from vzip.pb import Range, Source
+from vzip.policy import Policy
 
 
 class Rejected(Exception):
@@ -544,26 +546,121 @@ def _retry(f):
         time.sleep(2**attempt)
 
 
-def http_reader(url: str, block: int = 1 << 16) -> tuple[Reader, int]:
-    """A cached range reader for an http(s) URL, and the object's size."""
+class _ThreadConnections:
+    """Kept-alive connections, one per thread and origin, with the interface of
+    `vzip.store._Pool`: each thread that reads closes its own (`release`) as it
+    ends. A new TLS connection per range costs a round trip or more, which
+    dominates many small reads, such as a SAFE product's band files'."""
 
+    def __init__(self) -> None:
+        self._local = threading.local()
+
+    def _conns(self) -> dict:
+        conns = getattr(self._local, "conns", None)
+        if conns is None:
+            conns = self._local.conns = {}
+        return conns
+
+    def get(self, scheme: str, host: str, port: int | None):
+        from vzip.store import new_connection
+
+        conn = self._conns().pop((scheme, host, port), None)
+        if conn is not None:
+            return conn, True
+        return new_connection(scheme, host, port, timeout=120), False
+
+    def put(self, scheme: str, host: str, port: int | None, conn) -> None:
+        old = self._conns().pop((scheme, host, port), None)
+        if old is not None:
+            old.close()
+        self._conns()[(scheme, host, port)] = conn
+
+    def release(self) -> None:
+        conns = self._conns()
+        while conns:
+            conns.popitem()[1].close()
+
+
+REDIRECTS = (301, 302, 303, 307, 308)
+
+
+def follow(base: str, url: str, send: Callable, policy: Policy):
+    """(url, status, headers, body) of the request `send(url)` makes, following at
+    most 5 redirects: the policy checks `url`, and each redirect's target before it
+    is requested, for the input at `base`. `send` does not follow redirects."""
+    from vzip.store import _check_http_url
+    from vzip.uri import is_uri_reference
+
+    for hop in range(6):
+        policy.check(base, url)
+        status, msg, body = send(url)
+        if status not in REDIRECTS:
+            return url, status, msg, body
+        locations = (msg.get_all("Location") if msg is not None else None) or []
+        if len(locations) != 1:
+            raise ResolutionError(f"{url}: HTTP {status} with {len(locations)} Location fields")
+        if not is_uri_reference(locations[0]):
+            raise ResolutionError(f"redirect with an invalid Location: {locations[0]!r}")
+        new = urllib.parse.urljoin(url, locations[0]).split("#", 1)[0]
+        if urllib.parse.urlsplit(new).scheme.lower() not in ("http", "https"):
+            raise ResolutionError(f"redirect to a non-http URL: {new}")
+        _check_http_url(new)
+        if hop == 5:
+            raise ResolutionError(f"{base}: more than 5 redirects")
+        url = new
+    raise AssertionError("unreachable")
+
+
+def http_reader(url: str, block: int = 1 << 16, policy: Policy | None = None) -> tuple[Reader, int]:
+    """A cached range reader for an http(s) URL, and the object's size. Every request
+    (the size's, each range's, prefetch's) is made under the reader policy `policy`
+    (SPEC.md §8.7, default `Policy()`), as `HttpStore`'s are: each redirect target is
+    checked before it is requested; unless the policy has `allow_private_hosts`, the
+    address each request is sent to is checked, on a new connection and on a
+    kept-alive one; and a request that would go through a proxy is refused unless
+    the policy has `allow_unchecked_proxy`."""
+    from vzip import store
+
+    policy = policy or Policy()
     etags = EtagLog()
+    # A kept-alive connection per thread: a new TLS connection per range costs a
+    # round trip or more each, which dominates many small reads.
+    conns = _ThreadConnections()
+
+    def request(method: str, headers: dict[str, str]):
+        """(status, headers, body) of one request of the object, redirects followed.
+        A status worth retrying is an HTTPError, as is a network error a URLError."""
+        headers = {"User-Agent": UA, **headers}
+
+        def send(u: str):
+            check = None if policy.allow_private_hosts else (lambda ip: policy.check_address(u, ip))
+            try:
+                return store._send(u, headers, check, policy.allow_unchecked_proxy, conns, method)
+            except (OSError, http.client.HTTPException) as e:
+                if isinstance(e, urllib.error.URLError):
+                    raise
+                raise urllib.error.URLError(e) from None
+
+        final, status, msg, body = follow(url, url, send, policy)
+        if status in (429, 500, 502, 503, 504):
+            raise urllib.error.HTTPError(final, status, f"HTTP {status}", msg, None)
+        if status in (200, 206):
+            etags.saw(msg.get("ETag"))
+        return status, msg, body
 
     def head():
-        try:
-            with urllib.request.urlopen(urllib.request.Request(url, method="HEAD", headers={"User-Agent": UA}), timeout=60) as r:
-                etags.saw(r.headers.get("ETag"))
-                return int(r.headers["Content-Length"])
-        except urllib.error.HTTPError as e:
-            if e.code in (429, 500, 502, 503, 504):
-                raise
+        status, msg, _ = request("HEAD", {})
+        length = (msg.get("Content-Length") or "").strip()
+        if status == 200 and length.isdigit():
+            return int(length)
         # The server refuses HEAD: take the size from a one-byte range request.
-        req = urllib.request.Request(url, headers={"Range": "bytes=0-0", "User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=60) as r:
-            total = (r.headers.get("Content-Range") or "").rpartition("/")[2]
-            if r.status != 206 or not total.isdigit():
-                raise Rejected(f"{url}: cannot determine the size")
-            return int(total)
+        status, msg, _ = request("GET", {"Range": "bytes=0-0"})
+        if status >= 300:
+            raise urllib.error.HTTPError(url, status, f"HTTP {status}", msg, None)
+        total = (msg.get("Content-Range") or "").rpartition("/")[2]
+        if status != 206 or not total.isdigit():
+            raise Rejected(f"{url}: cannot determine the size")
+        return int(total)
 
     size = _retry(head)
     from collections import OrderedDict
@@ -580,40 +677,16 @@ def http_reader(url: str, block: int = 1 << 16) -> tuple[Reader, int]:
 
     requests = [0, 0]  # requests, bytes
 
-    local = threading.local()
-    parts = urllib.parse.urlsplit(url)
-    target = parts.path + (f"?{parts.query}" if parts.query else "")
-
     def get_range(start: int, end: int) -> bytes:
         with lock:
             requests[0] += 1
             requests[1] += end - start
-        headers = {"Range": f"bytes={start}-{end - 1}", "User-Agent": UA}
 
         def get():
-            # A kept-alive connection per thread: a new TLS connection per range
-            # costs a round trip or more each, which dominates many small reads.
-            conn = getattr(local, "conn", None)
-            if conn is not None:
-                try:
-                    conn.request("GET", target, headers=headers)
-                    r = conn.getresponse()
-                    if r.status == 206:
-                        etags.saw(r.getheader("ETag"))
-                        return r.read()
-                    r.read()
-                except (OSError, http.client.HTTPException):
-                    pass
-                conn.close()
-                local.conn = None
-            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as r:
-                etags.saw(r.headers.get("ETag"))
-                data = r.read()
-                final = urllib.parse.urlsplit(r.geturl())
-                if final == parts and r.status == 206:  # no redirect: keep a connection for the next read
-                    cls = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
-                    local.conn = cls(parts.netloc, timeout=120)
-                return data
+            status, msg, body = request("GET", {"Range": f"bytes={start}-{end - 1}"})
+            if status not in (200, 206):
+                raise urllib.error.HTTPError(url, status, f"HTTP {status}", msg, None)
+            return body
 
         data = _retry(get)
         if len(data) != end - start:
@@ -627,10 +700,30 @@ def http_reader(url: str, block: int = 1 << 16) -> tuple[Reader, int]:
         with lock:
             have = {(o, o + len(exact[o])) for o in exact}
         todo = sorted({(o, min(size, o + n)) for o, n in ranges if 0 <= o < size and n > 0} - have)
+        if not todo:
+            return
+        pending = iter(todo)
+        got: dict[tuple[int, int], bytes] = {}
+
+        def work() -> None:
+            """Fetches ranges until none is left, then closes the thread's connections."""
+            try:
+                while True:
+                    with lock:
+                        r = next(pending, None)
+                    if r is None:
+                        return
+                    data = get_range(*r)
+                    with lock:
+                        got[r] = data
+            finally:
+                conns.release()
+
         with ThreadPoolExecutor(32) as pool:
-            got = list(zip(todo, pool.map(lambda r: get_range(*r), todo)))
+            for f in [pool.submit(work) for _ in range(min(32, len(todo)))]:
+                f.result()
         with lock:
-            for (o, _), data in got:
+            for (o, _), data in got.items():
                 exact[o] = data
             starts[:] = sorted(exact)
 

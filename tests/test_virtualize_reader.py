@@ -8,11 +8,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from vzip.policy import Policy
 from vzip.virtualize import common
 from vzip.virtualize.common import Rejected, http_reader
 
 BODY = bytes(random.Random(0).randrange(256) for _ in range(1000))
 BLOCK = 16
+LOCAL = Policy(allow_private_hosts=True)  # the test server is on 127.0.0.1
 
 
 @pytest.fixture
@@ -52,7 +54,7 @@ def server():
 
 def test_http_reader(server):
     url, state = server
-    read, size = http_reader(url, block=BLOCK)
+    read, size = http_reader(url, block=BLOCK, policy=LOCAL)
     assert size == len(BODY)
     # (offset, length, the ranges requested): a span of uncached blocks is one request;
     # cached blocks are not fetched again, and the uncached runs around them are one
@@ -71,7 +73,7 @@ def test_http_reader(server):
         assert read(offset, length) == BODY[offset : offset + length], (offset, length)
         assert state["ranges"] == ranges, (offset, length)
     # prefetched ranges are read in one request each, and reads inside one are not requested again
-    read, _ = http_reader(url, block=BLOCK)
+    read, _ = http_reader(url, block=BLOCK, policy=LOCAL)
     state["ranges"].clear()
     read.prefetch([(100, 50), (500, 4), (995, 100)])
     assert sorted(state["ranges"]) == [(100, 150), (500, 504), (995, 1000)]
@@ -84,7 +86,7 @@ def test_http_reader(server):
 def test_http_reader_is_shared_by_threads(server, monkeypatch):
     monkeypatch.setattr(common, "MAX_BLOCKS", 4)  # constant eviction
     url, _ = server
-    read, _ = http_reader(url, block=BLOCK)
+    read, _ = http_reader(url, block=BLOCK, policy=LOCAL)
     rng = random.Random(1)
     spans = [(o, rng.randrange(0, 80)) for o in (rng.randrange(0, 900) for _ in range(2000))]
     with ThreadPoolExecutor(16) as pool:
@@ -93,14 +95,14 @@ def test_http_reader_is_shared_by_threads(server, monkeypatch):
 
 
 def test_http_reader_rejects_a_read_outside_the_file(server):
-    read, _ = http_reader(server[0], block=BLOCK)
+    read, _ = http_reader(server[0], block=BLOCK, policy=LOCAL)
     with pytest.raises(Rejected, match="outside the 1000-byte file"):
         read(990, 11)
 
 
 def test_http_reader_fails_on_a_short_read(server):
     url, state = server
-    read, _ = http_reader(url, block=BLOCK)
+    read, _ = http_reader(url, block=BLOCK, policy=LOCAL)
     state["short"] = 1
     with pytest.raises(OSError, match="short read at 0"):
         read(0, 40)

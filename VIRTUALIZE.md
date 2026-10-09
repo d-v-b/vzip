@@ -177,10 +177,7 @@ is requested. A request the policy refuses is a failure, not a rejection. The
 implementations in this repository default to §8.7's defaults, so they refuse
 loopback, private, link-local and special hosts, and requests through a
 proxy, unless the application allows private hosts or unchecked proxies (the
-same settings, and `--allow-private-hosts` on their command lines). Under
-that policy they read stores, and TIFF, ND2 and CZI files, entirely; the
-Python implementation's other file profiles check only the input's first
-request against it.
+same settings, and `--allow-private-hosts` on their command lines).
 
 **Structure only.** The output MUST NOT depend on the file's pixel data.
 (Reading blocks that happen to include pixel bytes is fine.) Coding
