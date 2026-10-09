@@ -6,11 +6,13 @@ import math
 import re
 
 from vzip.virtualize.common import LENGTHS, UNITS, Output, Reader, Rejected, array_json, root_json, image_ome
-from vzip.virtualize.ims.source import source_json
+from vzip.virtualize.ims.source import source_tree
 from vzip.virtualize.ims.hdf5 import MAX_SAFE, Hdf5, attribute_value, le
 
 MAX_LEVELS = 64
 MAX_DATASETS = 100000
+MAX_CHANNELS = 64  # the most channels the root's omero lists
+MAX_NAME = 256  # the longest name or label in the root, in UTF-8 bytes
 WS = " \t\r\n"
 DECIMAL = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
 DIGITS = re.compile(r"[0-9]+")
@@ -119,7 +121,7 @@ def virtualize_ims(url: str, read: Reader, size: int) -> Output:
     data_type = None
     level_info = []  # per level: (sizes z, y, x; chunk z, y, x; compressed)
     chunk_refs: list[tuple[int, int, int, tuple[int, ...], tuple[int, int]]] = []
-    channel_groups: list[tuple[str, int]] = []  # for the source metadata
+    images: dict[int, dict] = {}  # the Data datasets, for the source metadata
     for r in range(levels):
         links = level_links[0] if r == 0 else f.links(group(dataset, f"ResolutionLevel {r}"))
         info = None
@@ -127,7 +129,6 @@ def virtualize_ims(url: str, read: Reader, size: int) -> Output:
             time_links = first_time if r == 0 and t == 0 else f.links(group(links, f"TimePoint {t}"))
             for c in range(channels):
                 channel = group(time_links, f"Channel {c}")
-                channel_groups.append((f"ResolutionLevel {r}/TimePoint {t}/Channel {c}", channel))
                 attrs = f.attributes(channel)
                 sizes = []
                 for axis in "ZYX":
@@ -135,7 +136,9 @@ def virtualize_ims(url: str, read: Reader, size: int) -> Output:
                     if s is None or not DIGITS.fullmatch(s.strip(WS)) or not 1 <= int(s.strip(WS)) <= MAX_SAFE:
                         raise Rejected(f"ImageSize{axis} of level {r} is not a positive integer")
                     sizes.append(int(s.strip(WS)))
-                ds = f.dataset(group(f.links(channel), "Data"))
+                data_at = group(f.links(channel), "Data")
+                ds = f.dataset(data_at)
+                images[data_at] = {"level": r, "t": t, "c": c, "shape": list(ds.dims)}
                 dt = _data_type(ds.datatype)
                 if len(ds.dims) != 3:
                     raise Rejected(f"a dataset of level {r} is not 3-dimensional")
@@ -171,11 +174,13 @@ def virtualize_ims(url: str, read: Reader, size: int) -> Output:
     ext_max = [decimal(text(image, f"ExtMax{i}")) for i in range(3)]
     unit_text = text(image, "Unit")
     name = text(image, "Name")
-    channel_attrs = [meta_attrs(f"Channel {c}") for c in range(channels)]
+    if name is not None and len(name.encode()) > MAX_NAME:
+        name = None
+    channel_attrs = [meta_attrs(f"Channel {c}") for c in range(channels)] if channels <= MAX_CHANNELS else []
     labels, colors, ranges = [], [], []
     for c, attrs in enumerate(channel_attrs):
         label = text(attrs, "Name")
-        labels.append(label if label else f"Channel {c}")
+        labels.append(label if label and len(label.encode()) <= MAX_NAME else f"Channel {c}")
         rgb = decimals(text(attrs, "Color"), 3)
         if rgb is not None and all(0 <= v <= 1 for v in rgb):
             colors.append("".join(f"{math.floor(v * 255 + 0.5):02X}" for v in rgb))
@@ -239,10 +244,11 @@ def virtualize_ims(url: str, read: Reader, size: int) -> Output:
         elif rng is not None:
             window = {"window": {"min": rng[0], "max": rng[1], "start": rng[0], "end": rng[1]}}
         channels_json.append({"label": label, "color": color, "active": True, **window})
-    ome["omero"] = {"channels": channels_json}
+    if channels <= MAX_CHANNELS:
+        ome["omero"] = {"channels": channels_json}
     out = Output(url)
     # The source metadata (conventions/ims/README.md §5).
-    out.json("zarr.json", root_json(ome, "ims", url, source_json(f, root, meta, channel_groups)))
+    out.json("zarr.json", root_json(ome, "ims", url))
     for r, array in enumerate(arrays):
         out.json(f"{r}/zarr.json", array)
     for r, t, c, coords, (offset, n) in chunk_refs:
@@ -260,6 +266,8 @@ def virtualize_ims(url: str, read: Reader, size: int) -> Output:
         "chunks": len(out.refs),
         "channels": labels,
     }
+    # The source metadata node (conventions/ims/README.md §5).
+    source_tree(f, read, images).emit(out)
     return out
 
 

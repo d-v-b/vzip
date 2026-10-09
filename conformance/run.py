@@ -1,7 +1,11 @@
 """Run the vzip conformance suite against one or more implementations.
 
-    uv run python conformance/run.py --impl ref="uv run python -m vzip.cli" \\
+    uv run python conformance/run.py --impl ref="uv run python -m vzip.cli --allow-private-hosts" \\
         --impl rust=/path/to/vzip --out conformance/results/round1
+
+The runner serves the HTTP sources on 127.0.0.1, which a reader following
+SPEC.md §8.7 rule 3 refuses by default: give each implementation's command
+the option that allows private hosts (HARNESS.md).
 
 For every implementation:
   1. read:  read every vector (archives written by the reference writer, and
@@ -163,7 +167,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--impl", action="append", required=True, help="name=command")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--ref", default="uv run python -m vzip.cli")
+    ap.add_argument("--ref", default="uv run python -m vzip.cli --allow-private-hosts")
     ap.add_argument("--skip", action="append", default=[], help="skip descriptions by name")
     args = ap.parse_args()
     out = Path(args.out).resolve()

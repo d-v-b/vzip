@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Earth_Explorer_File xmlns="http://gs2.esa.int/DATA_STRUCTURE/olqcReport">
+  <Data_Block type="xml">
+    <report date="2024-01-03T11:00:00Z" gippVersion="1.0" globalStatus="PASSED">
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_0" processingStatus="done"/><message contentType="text/plain">Check passed, value 726442</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_1" processingStatus="done"/><message contentType="text/plain">Check passed, value 943056</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_2" processingStatus="done"/><message contentType="text/plain">Check passed, value 881395</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_3" processingStatus="done"/><message contentType="text/plain">Check passed, value 511327</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_4" processingStatus="done"/><message contentType="text/plain">Check passed, value 940438</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_5" processingStatus="done"/><message contentType="text/plain">Check passed, value 976243</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_6" processingStatus="done"/><message contentType="text/plain">Check passed, value 970286</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_7" processingStatus="done"/><message contentType="text/plain">Check passed, value 80836</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_8" processingStatus="done"/><message contentType="text/plain">Check passed, value 453522</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_9" processingStatus="done"/><message contentType="text/plain">Check passed, value 607355</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_10" processingStatus="done"/><message contentType="text/plain">Check passed, value 283130</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_11" processingStatus="done"/><message contentType="text/plain">Check passed, value 376486</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_12" processingStatus="done"/><message contentType="text/plain">Check passed, value 626968</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_13" processingStatus="done"/><message contentType="text/plain">Check passed, value 801901</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_14" processingStatus="done"/><message contentType="text/plain">Check passed, value 580903</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_15" processingStatus="done"/><message contentType="text/plain">Check passed, value 174527</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_16" processingStatus="done"/><message contentType="text/plain">Check passed, value 675977</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_17" processingStatus="done"/><message contentType="text/plain">Check passed, value 871635</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_18" processingStatus="done"/><message contentType="text/plain">Check passed, value 219654</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_19" processingStatus="done"/><message contentType="text/plain">Check passed, value 543941</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="SENSOR_QUALITY" name="SENSOR_QUALITY_20" processingStatus="done"/><message contentType="text/plain">Check passed, value 338203</message></check>
+    </report>
+  </Data_Block>
+</Earth_Explorer_File>

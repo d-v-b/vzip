@@ -1,7 +1,7 @@
 """Writes synthetic NIfTI files to web/test/fixtures/nifti/, covering the rules of
 the NIfTI profile (profiles/nifti.md §7): NIfTI-1 and NIfTI-2 in both byte
 orders, 1 to 7 dimensions, every data type, color, units, value scaling,
-representable and oblique affines, extensions, row blocks, and the inputs the
+representable and oblique affines, extensions, chunking, and the inputs the
 profile rejects (`nifti_reject_*`).
 
 Most files are packed field by field here, so that every header value is
@@ -205,5 +205,143 @@ def main() -> None:
     nifti("nifti_reject_pair_magic", [3, 3, 2, 2], 2, magic=b"ni1\0")
 
 
+def reconstruction() -> None:
+    """A comment (text), a 100-byte DICOM extension (an array), a chain cut short
+    (the rest as bytes) and bytes after the voxels (conventions/nifti/README.md §5)."""
+    nifti("nifti_reconstruction", [3, 4, 3, 2], 2, extension=b"hello", vox_offset=496.0)
+    path = OUT / "nifti_reconstruction.nii"
+    content = bytearray(path.read_bytes())
+    dicom = struct.pack("<ii", 112, 2) + bytes(range(104))  # esize 112, ecode 2
+    cut = struct.pack("<ii", 4, 0) + bytes(8)  # esize 4: the chain stops here
+    content[368:496] = dicom + cut
+    path.write_bytes(bytes(content) + b"TRAILER!")
+
+
+def patched(name: str, region: bytes, dims=(3, 4, 3, 2), datatype: int = 2, header: dict | None = None,
+            **fields) -> None:
+    """A NIfTI-1 file whose bytes from the extender (348) to the voxels are `region`,
+    and whose header has the bytes of `header` (offset: bytes) as given."""
+    nifti(name, list(dims), datatype, vox_offset=348.0 + len(region), **fields)
+    path = OUT / f"{name}.nii"
+    content = bytearray(path.read_bytes())
+    content[348:348 + len(region)] = region
+    for offset, value in (header or {}).items():
+        content[offset:offset + len(value)] = value
+    path.write_bytes(bytes(content))
+
+
+def ext(ecode: int, data: bytes, esize: int | None = None) -> bytes:
+    """One extension, its data padded with NULs to a multiple of 16 bytes."""
+    esize = 8 + len(data) + (-(8 + len(data)) % 16) if esize is None else esize
+    return struct.pack("<ii", esize, ecode) + data.ljust(esize - 8, b"\0")
+
+
+def blocks_and_regions() -> None:
+    """Slices split into rows, rows split along x, the bytes between the header and the voxels,
+    the extensions' budget, char fields with bytes after their NUL, and a window that
+    overflows (conventions/nifti/README.md §4.1, §4.4, §5)."""
+    # A row of 160000 bytes: 2 chunks of 1 row and 10000 voxels.
+    nifti("nifti_block_x_split", [2, 20000, 1], 64, order=">")
+    # RGBA32, slices of 132000 bytes: 2 chunks of 110 rows.
+    nifti("nifti_block_rows_edge_rgba", [2, 150, 220], 2304)
+    # NIfTI-2 RGB24, a row of 135000 bytes: chunks of 22500 voxels, transposed.
+    nifti("nifti_block_x_split_rgb24", [3, 45000, 1, 2], 128, version=2)
+    # The extender's first byte is 0, and bytes that are not padding follow it.
+    patched("nifti_region_no_extender", bytes(4) + b"not padding, not an extension".ljust(44, b"\0"))
+    # Reserved extender bytes, one extension.
+    patched("nifti_region_extender_reserved", b"\1\7\x08\x09" + ext(6, b"hello"))
+    # A chain, then 4 bytes, too few for an extension.
+    patched("nifti_region_chain_tail", b"\1\0\0\0" + ext(6, b"abcdefg") + b"XYZW")
+    # A chain, then 16 zero bytes: padding.
+    patched("nifti_region_chain_zero_pad", b"\1\0\0\0" + ext(6, b"abcdefg") + bytes(16))
+    # 400 small binary extensions: over the root's budget, so on vzip_source.
+    patched("nifti_region_extensions_moved",
+            b"\1\0\0\0" + b"".join(ext(40, struct.pack("<4i", i, -i, 3 * i, 7)) for i in range(400)))
+    # A comment of 70000 bytes, over the limit of a text value, and one of 64 KiB, at it.
+    patched("nifti_region_text_large", b"\1\0\0\0" + ext(6, b"<" + b"x" * 69998 + b">")
+            + ext(6, b"y" * 65536, 65536 + 8))
+    # descrip, aux_file and intent_name with bytes after their first NUL.
+    patched("nifti_header_rest", bytes(4), header={
+        148: b"visible\0hidden after the NUL", 228: b"aux\0\0\0more", 328: b"\0x"})
+    # (cal_max - scl_inter) / scl_slope overflows binary64: the window is omitted. (NIfTI-1's
+    # binary32 values cannot overflow it.)
+    nifti("nifti_edge_n2_window_overflow", [3, 3, 2, 2], 4, version=2, scl_slope=1.0, scl_inter=-1.7e308,
+          cal_min=0.0, cal_max=1.7e308)
+
+
+def chunks_and_extensions() -> None:
+    """Chunks that hold many slices, a fifth dimension stored before the fourth, more
+    channels than get display windows, and extensions over the root's budget
+    (conventions/nifti/README.md §4.1, §4.4, §5)."""
+    # 40000 float32 values of one voxel: 2 chunks of 20000 values along t.
+    nifti("nifti_chunk_time_series", [4, 1, 1, 1, 40000], 16, version=2)
+    # 100 channels of 3 time points of a 2 x 2 slice: one chunk across c and t, transposed,
+    # and, with over 64 channels, no display windows.
+    nifti("nifti_chunk_many_channels", [5, 2, 2, 1, 3, 100], 4, version=2, order=">", cal_min=0.0, cal_max=100.0)
+    # A row of 131073 bytes: 2 chunks of 65537 voxels, the second padded with a literal zero byte.
+    nifti("nifti_chunk_edge_literal", [1, 131073], 2, version=2)
+    # Over the budget: a binary extension, a long comment and 900 short ones. The long comment
+    # and the first short ones fit on the root as text; the others' data is a family.
+    patched("nifti_region_extensions_compact", b"\1\0\0\0" + ext(2, bytes(range(100))) + ext(6, b"z" * 9000)
+            + b"".join(ext(6, b"comment %d" % i) for i in range(900)))
+    # A description that is not UTF-8: an ISO 8859-1 text value.
+    patched("nifti_header_latin1", bytes(4), header={148: b"caf\xe9"})
+
+
+def exact_bytes() -> None:
+    """Text extensions whose esize is not the fewest NULs' (one shorter than that, one
+    longer), on the root and over its budget, and float header fields whose bits a JSON
+    number or "NaN" does not keep: negative zeros and NaNs other than the canonical one
+    (conventions/nifti/README.md §5)."""
+    patched("nifti_region_text_esize", b"\1\0\0\0" + ext(6, b"abc", 32) + ext(6, b"hello", 13) + ext(4, b"<x/>")
+            + ext(6, b"12345678") + bytes(3))
+    patched("nifti_region_extensions_compact_esize",
+            b"\1\0\0\0" + b"".join(ext(6, b"note %d" % i, 48) for i in range(700)))
+    f32 = lambda bits: struct.pack("<I", bits)  # noqa: E731
+    patched("nifti_header_float_bits", bytes(4), header={
+        56: f32(0x80000000),  # intent_p1: -0.0
+        96: f32(0x80000000),  # pixdim[5]: -0.0
+        112: f32(0x7FA00000),  # scl_slope: a signaling NaN (no scaling)
+        128: f32(0x7FC00000),  # cal_min: the canonical NaN, "NaN"
+        132: f32(0xFFC00000),  # slice_duration: a negative NaN
+        136: f32(0x7FC00001),  # toffset: a NaN with a payload
+        284: f32(0x80000000),  # srow_x[1]: -0.0
+    })
+    nifti("nifti_header_n2_float_bits", [3, 3, 2, 2], 2, version=2, order=">")
+    path = OUT / "nifti_header_n2_float_bits.nii"
+    content = bytearray(path.read_bytes())
+    f64 = lambda bits: struct.pack(">Q", bits)  # noqa: E731
+    for offset, value in {80: f64(1 << 63), 200: f64(0x7FF8000000000000), 208: f64(0xFFF8000000000000),
+                          216: f64(0x7FF8000000000001), 112: f64(0x7FF4000000000000)}.items():
+        content[offset:offset + 8] = value  # intent_p1, cal_min, slice_duration, toffset, pixdim[1]
+    path.write_bytes(bytes(content))
+
+
+def packed_extensions() -> None:
+    """Chains kept as packed columns (conventions/nifti/README.md §5): over the budget once
+    built (760 empty comments), over it by their count alone (2500, of which the first that
+    fit are on the root as text), and a family whose data is cut in 2 chunks, the second
+    holding over a payload's worth of ranges (so its bytes are copied), with members inlined
+    as text and members of no bytes."""
+    patched("nifti_region_extensions_built_over", b"\1\0\0\0" + ext(6, b"") * 760)
+    patched("nifti_region_extensions_count_over", b"\1\0\0\0" + ext(6, b"") * 2500)
+    chain = []
+    for i in range(24000):
+        if i % 1000 == 500:
+            chain.append(ext(6, b"note %d" % i))
+        elif i % 1000 == 700:
+            chain.append(struct.pack("<ii", 8, 0))
+        elif i == 2000:
+            chain.append(ext(0, bytes(range(256)) * 4100))
+        else:
+            chain.append(struct.pack("<ii", 17, 0) + bytes([i % 251]) * 9)
+    patched("nifti_region_extensions_family_chunks", b"\1\0\0\0" + b"".join(chain))
+
+
 if __name__ == "__main__":
     main()
+    reconstruction()
+    blocks_and_regions()
+    chunks_and_extensions()
+    exact_bytes()
+    packed_extensions()

@@ -8,6 +8,7 @@ message Range {
   uint64 offset = 3;
   uint64 length = 4;
   optional bytes data = 5;
+  optional uint32 crc32c = 6;
 }
 
 message Concat {
@@ -27,6 +28,7 @@ message Source {
 
 message SourceTable {
   repeated Source sources = 1;
+  optional uint32 revision = 2;
 }
 
 message CdIndex {

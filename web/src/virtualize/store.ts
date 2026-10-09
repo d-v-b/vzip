@@ -3,7 +3,7 @@
 // chunk object). Shared by the N5 (§9), Zarr v2 (§10) and OME-Zarr (§11) profiles.
 
 import { isUriReference } from "../uri.ts";
-import { declare, type Profile } from "./common.ts";
+import { CONVENTION_KEY, declare, type Profile, stringifyJson } from "./common.ts";
 import type { ArchiveDesc, EntryDesc } from "../writer.ts";
 
 /** The store input is rejected for a reason no single store profile owns (§1.4–§1.6). */
@@ -22,7 +22,7 @@ const reject = (message: string): never => {
 export const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 export const MAX_DOCUMENT = 1 << 24;
 const MAX_DEPTH = 256;
-/** The browser implementation's limit on listed objects (§12). */
+/** The browser implementation's limit on listed objects (§14). */
 export const MAX_OBJECTS = 100000;
 
 const SPLIT = /^(?:([^:/?#]+):)?(?:\/\/([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/;
@@ -125,18 +125,26 @@ export interface XmlElement {
   name: string;
   children: XmlElement[];
   text: string[];
+  /** The attributes, [name, value] in document order, values with references replaced. */
+  attributes: [string, string][];
 }
 
-/** The XML subset of §1.5 (the same algorithm as the Python reference). */
+/** The XML subset of §1.5 (the same algorithm as the Python reference); `what` names the
+ * document in rejections, and `fail` makes the error. */
 class Xml {
   pos = 0;
+  depth = 0; // of the element being read
   readonly s: string;
-  constructor(s: string) {
+  readonly what: string;
+  readonly error: (m: string) => Error;
+  constructor(s: string, what = "listing", error: (m: string) => Error = (m) => new StoreError(m)) {
     this.s = s;
+    this.what = what;
+    this.error = error;
   }
 
   fail(why: string): never {
-    throw new StoreError(`listing is not well formed: ${why} at ${this.pos}`);
+    throw this.error(`${this.what} is not well formed: ${why} at ${this.pos}`);
   }
   ws() {
     while (this.pos < this.s.length && WS.has(this.s[this.pos])) this.pos++;
@@ -193,14 +201,20 @@ class Xml {
   }
   element(): XmlElement {
     if (!this.at("<")) this.fail("expected an element");
+    if (++this.depth > MAX_DEPTH) this.fail(`elements nest more than ${MAX_DEPTH} deep`);
+    const el = this.elementBody();
+    this.depth--;
+    return el;
+  }
+  elementBody(): XmlElement {
     this.pos++;
-    const el: XmlElement = { name: this.name(), children: [], text: [] };
+    const el: XmlElement = { name: this.name(), children: [], text: [], attributes: [] };
     const s = this.s;
     for (;;) {
       if (this.pos < s.length && WS.has(s[this.pos])) {
         this.ws();
         if (this.pos < s.length && NAME_START.test(s[this.pos])) {
-          this.name();
+          const name = this.name();
           this.ws();
           if (!this.at("=")) this.fail("expected =");
           this.pos++;
@@ -208,14 +222,16 @@ class Xml {
           const q = this.pos < s.length ? s[this.pos] : "";
           if (q !== "'" && q !== '"') this.fail("expected a quoted value");
           this.pos++;
+          const value: string[] = [];
           for (;;) {
-            this.chardata(q);
-            if (this.at("&")) this.reference();
+            value.push(this.chardata(q));
+            if (this.at("&")) value.push(this.reference());
             else if (this.at(q)) {
               this.pos++;
               break;
             } else this.fail("bad attribute value");
           }
+          el.attributes.push([name, value.join("")]);
           continue;
         }
       }
@@ -264,6 +280,11 @@ class Xml {
   }
 }
 
+/** The root element of a document in the XML subset of §1.5, or a rejection (naming `what`). */
+export function parseXml(s: string, what: string, error: (m: string) => Error): XmlElement {
+  return new Xml(s, what, error).document();
+}
+
 function text(el: XmlElement): string {
   if (el.children.length) reject(`listing: <${el.name}> has a child element`);
   return el.text.join("");
@@ -302,6 +323,8 @@ export function parseListing(body: Uint8Array, prefix: string): { objects: [stri
   }
   if (text(truncated[0]) === "true") {
     if (!token) reject("truncated listing without a NextContinuationToken");
+    // A page that lists nothing could be followed forever.
+    if (objects.length === 0) reject("truncated listing without a Contents");
     return { objects, token };
   }
   return { objects };
@@ -321,6 +344,38 @@ function checkNumbers(v: unknown): void {
   }
 }
 
+// JSON.rawJSON and JSON.isRawJSON (Node 21+; not yet in TypeScript's lib).
+const RawJSON = JSON as unknown as { rawJSON(text: string): object; isRawJSON(v: unknown): boolean };
+const INTEGER = /^-?(?:0|[1-9][0-9]*)$/;
+
+/** JSON.parse gave the reviver no source text (an engine without JSON.parse source text
+ * access): an integer beyond 2^53 − 1 would silently lose digits, so reading fails. This
+ * is a failure of the implementation, not a rejection of the input. */
+export class NoSourceText extends Error {
+  constructor() {
+    super("JSON.parse gives the reviver no source text (needs JSON.parse source text access, as in Node 21+)");
+  }
+}
+
+/** The JSON.parse reviver that keeps an integer literal beyond 2^53 − 1 exact, as the
+ * raw JSON of its digits, so that a copied value keeps every digit (as Python's
+ * parser does), and reads the literal `-0` as the integer 0. A literal whose binary64
+ * value is infinite stays a number, which §1.6 rejects. */
+export function keepIntegers(_key: string, value: unknown, context?: { source?: string }): unknown {
+  if (typeof value !== "number") return value;
+  if (context?.source === undefined) throw new NoSourceText();
+  // A non-integer literal of -0 (such as -0.0) stays -0.0, as Python writes it.
+  if (!INTEGER.test(context.source)) return Object.is(value, -0) ? RawJSON.rawJSON("-0.0") : value;
+  if (Object.is(value, -0)) return 0;
+  if (Math.abs(value) <= MAX_SAFE || !Number.isFinite(value)) return value;
+  return RawJSON.rawJSON(context.source);
+}
+
+/** Is `v` an integer that the reader kept exact (beyond 2^53 − 1)? */
+export function isRawInteger(v: unknown): boolean {
+  return v !== null && typeof v === "object" && RawJSON.isRawJSON(v);
+}
+
 /** A metadata document by §1.6, or a rejection. */
 export function parseJson(data: Uint8Array): Json {
   if (data.length > MAX_DOCUMENT) reject(`JSON document of ${data.length} bytes exceeds ${MAX_DOCUMENT}`);
@@ -331,22 +386,37 @@ export function parseJson(data: Uint8Array): Json {
   } catch {
     reject("JSON document is not UTF-8");
   }
-  let depth = 0;
-  let deepest = 0;
-  for (const m of s.matchAll(/"(?:[^"\\]|\\[\s\S])*"|[[\]{}]/g)) {
-    const t = m[0];
-    if (t === "[" || t === "{") deepest = Math.max(deepest, ++depth);
-    else if (t === "]" || t === "}") depth--;
-  }
-  if (deepest > MAX_DEPTH) reject(`JSON nests more than ${MAX_DEPTH} deep`);
+  if (nesting(s) > MAX_DEPTH) reject(`JSON nests more than ${MAX_DEPTH} deep`);
   let v: Json = null;
   try {
-    v = JSON.parse(s);
+    v = JSON.parse(s, keepIntegers);
   } catch (e) {
+    if (e instanceof NoSourceText) throw e;
     reject(`invalid JSON: ${(e as Error).message}`);
   }
   checkNumbers(v);
   return v;
+}
+
+/** The deepest nesting of brackets in `s`, outside strings: a character loop, since a
+ * regular expression overflows V8's stack on strings of millions of characters. After a
+ * quote with no closing quote, later quotes are plain characters (as Python's scan reads them). */
+export function nesting(s: string): number {
+  let depth = 0, deepest = 0, open = true;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 0x22 && open) {
+      let j = i + 1;
+      while (j < s.length && s.charCodeAt(j) !== 0x22) j += s.charCodeAt(j) === 0x5c ? 2 : 1;
+      if (j >= s.length) open = false;
+      else i = j;
+    } else if (c === 0x5b || c === 0x7b) {
+      deepest = Math.max(deepest, ++depth);
+    } else if (c === 0x5d || c === 0x7d) {
+      depth--;
+    }
+  }
+  return deepest;
 }
 
 /** A value for a message (`JSON.stringify` gives undefined for undefined). */
@@ -354,18 +424,25 @@ export function show(v: unknown): string {
   return String(JSON.stringify(v));
 }
 
-export function isNumber(v: unknown): v is number {
-  return typeof v === "number";
+/** Is `v` a JSON number (an integer kept exact included)? */
+export function isNumber(v: unknown): boolean {
+  return typeof v === "number" || isRawInteger(v);
+}
+
+/** A number as the layout reads it (§1.6): its binary64 value. */
+export function num(v: unknown): number {
+  return isRawInteger(v) ? Number((v as { rawJSON: string }).rawJSON) : (v as number);
 }
 
 /** `v` as an integer of §1.6 within [lo, hi], or undefined. */
 export function asInt(v: unknown, lo = -MAX_SAFE, hi = MAX_SAFE): number | undefined {
+  if (isRawInteger(v)) v = num(v) + 0; // + 0: -0.0 reads as 0
   if (typeof v !== "number" || !Number.isInteger(v) || Math.abs(v) > MAX_SAFE) return undefined;
   return v >= lo && v <= hi ? v : undefined;
 }
 
 export function isObject(v: unknown): v is { [k: string]: Json } {
-  return v !== null && typeof v === "object" && !Array.isArray(v);
+  return v !== null && typeof v === "object" && !Array.isArray(v) && !RawJSON.isRawJSON(v);
 }
 
 /** Object.hasOwn, for JSON objects (whose members may include `__proto__`). */
@@ -396,13 +473,24 @@ function ignored(rel: string): boolean {
   return rel === "" || rel.endsWith("/") || rel.split("/").some((s) => s === "" || s === "." || s === "..");
 }
 
+/** An ignored object whose key is not recorded (§1.4): an empty one whose relative key is empty or ends in /. */
+function folderMarker(rel: string, size: number): boolean {
+  return size === 0 && (rel === "" || rel.endsWith("/"));
+}
+
 export interface Store {
   url: string;
   /** Relative key → size, of the objects that are not ignored (§1.4). */
   objects: Map<string, number>;
+  /** The relative keys of the ignored objects that are recorded (§1.4). */
+  ignored?: string[];
+  /** The relative keys of the empty objects whose keys end in `/` (directories, to the SAFE profile). */
+  folders?: string[];
   listed: number;
   requests: number;
   read(key: string): Promise<Uint8Array>;
+  /** The bytes [offset, offset + length) of the object `key` (profiles/safe.md §12.2). */
+  readRange?(key: string, offset: number, length: number): Promise<Uint8Array>;
   /** Documents read at a time by `prefetchDocuments`; read one at a time if absent or 1. */
   concurrency?: number;
   /** Bytes read ahead and not yet taken, at most (but always one document). */
@@ -532,13 +620,18 @@ export function closeStore(store: Store) {
   store.prefetch?.close();
 }
 
-/** Adds listed objects to `store`, rejecting a key listed twice (§1.5). */
+/** Adds listed objects to `store`, rejecting a key listed twice (§1.5), and
+ * records the keys of the ignored ones that are not folder markers (§1.4). */
 export function addListed(store: Store, listed: [string, number][], prefix: string, seen: Set<string>) {
+  store.ignored ??= [];
+  store.folders ??= [];
   for (const [key, size] of listed) {
     if (seen.has(key)) reject(`key ${JSON.stringify(key)} is listed twice`);
     seen.add(key);
     const rel = key.slice(prefix.length);
     if (!ignored(rel)) store.objects.set(rel, size);
+    else if (!folderMarker(rel, size)) store.ignored.push(rel);
+    else if (rel && !ignored(rel.slice(0, -1))) store.folders.push(rel);
   }
   store.listed = seen.size;
 }
@@ -592,8 +685,23 @@ export async function openHttpStore(
       if (data.length !== size) throw new StoreReadError(`${u}: read ${data.length} bytes, the listing says ${size}`);
       return data;
     },
+    async readRange(key, offset, length) {
+      if (length === 0) return new Uint8Array(0);
+      const u = objectUrl(url, key);
+      let r: Response;
+      try {
+        r = await f(u, { headers: { Range: `bytes=${offset}-${offset + length - 1}` } });
+      } catch (e) {
+        throw new StoreReadError(`${u}: ${(e as Error).message}`);
+      }
+      if (r.status !== 206 && !(r.status === 200 && offset === 0)) throw new StoreReadError(`${u}: HTTP ${r.status}`);
+      const data = new Uint8Array(await r.arrayBuffer());
+      if (data.length !== length) throw new StoreReadError(`${u}: read ${data.length} bytes at ${offset}, not ${length}`);
+      return data;
+    },
   };
   const seen = new Set<string>();
+  const tokens = new Set<string>();
   let token: string | undefined;
   for (;;) {
     let q = `?list-type=2&prefix=${queryEncode(prefix)}`;
@@ -614,15 +722,21 @@ export async function openHttpStore(
     if (store.listed > maxObjects) throw new StoreLimitError(`the store lists more than ${maxObjects} objects`);
     token = listing.token;
     if (token === undefined) break;
+    // The listing would repeat itself (§1.5).
+    if (tokens.has(token)) reject(`the listing gives the continuation token ${JSON.stringify(token.slice(0, 80))} again`);
+    tokens.add(token);
   }
   return store;
 }
 
 /** The store profile that the root keys select (§1.4). */
-export function chooseProfile(store: Store): "n5" | "zarr2" {
+export function chooseProfile(store: Store): "n5" | "zarr2" | "safe" {
   if (store.objects.has(".zarray") || store.objects.has(".zgroup")) return "zarr2";
   if (store.objects.has("attributes.json")) return "n5";
-  return reject("not an N5 or Zarr v2 store: the root has no .zarray, .zgroup or attributes.json");
+  if (store.objects.has("manifest.safe")) return "safe";
+  return reject(
+    "not an N5, Zarr v2 or SAFE store: the root has no .zarray, .zgroup, attributes.json or manifest.safe",
+  );
 }
 
 // ---------------------------------------------------------------- hierarchy and output
@@ -645,25 +759,58 @@ export function byDepth(paths: Iterable<string>): string[] {
   return [...paths].sort((a, b) => depth(a) - depth(b) || compareKeys(a, b));
 }
 
-/** Is `path` a proper descendant of one of `arrays`? */
-export function insideArray(path: string, arrays: Set<string>): boolean {
-  let p = path;
-  while (p !== "") {
-    p = parentOf(p);
-    if (arrays.has(p)) return true;
+/** Paths (the root `""` included), each with a value, as a tree of their segments:
+ * finding a key's nearest ancestor among them takes time linear in the key's
+ * length, without rebuilding any prefix. */
+export class PathTrie<T> {
+  children = new Map<string, PathTrie<T>>();
+  value: T | undefined = undefined;
+
+  add(path: string, value: T): void {
+    let node: PathTrie<T> = this;
+    if (path !== "") {
+      for (const s of path.split("/")) {
+        let child = node.children.get(s);
+        if (child === undefined) node.children.set(s, (child = new PathTrie<T>()));
+        node = child;
+      }
+    }
+    node.value = value;
   }
-  return false;
+
+  /** [value, j] of the nearest proper ancestor of the key with segments `segs`
+   * that has a value, at the path `segs.slice(0, j)`; or undefined. */
+  nearest(segs: string[]): [T, number] | undefined {
+    let node: PathTrie<T> | undefined = this;
+    let best: [T, number] | undefined;
+    if (this.value !== undefined && !(segs.length === 1 && segs[0] === "")) best = [this.value, 0];
+    for (let j = 0; j < segs.length - 1; j++) {
+      node = node.children.get(segs[j]);
+      if (node === undefined) break;
+      if (node.value !== undefined) best = [node.value, j + 1];
+    }
+    return best;
+  }
 }
 
-/** The implicit groups: proper ancestors of nodes that are not nodes. */
+/** Is `path` a proper descendant of one of the paths of `arrays`? */
+export function insideArray(path: string, arrays: PathTrie<true>): boolean {
+  return arrays.nearest(path.split("/")) !== undefined;
+}
+
+/** The implicit groups: proper ancestors of nodes that are not nodes. Each walk
+ * stops at a path already seen, so the time is that of the paths it adds. */
 export function implicitGroups(nodes: Iterable<string>): Set<string> {
   const all = new Set(nodes);
   const out = new Set<string>();
   for (const path of all) {
-    let p = path;
-    while (p !== "") {
-      p = parentOf(p);
-      if (!all.has(p)) out.add(p);
+    let i = path.length;
+    while (i > 0) {
+      i = path.lastIndexOf("/", i - 1);
+      const p = i > 0 ? path.slice(0, i) : "";
+      if (all.has(p) || out.has(p)) break;
+      out.add(p);
+      i = Math.max(i, 0);
     }
   }
   return out;
@@ -681,16 +828,13 @@ export function grid(shape: number[], chunks: number[]): number[] {
 
 /** The chunk objects (§1.4): each object's nearest ancestor array decides. Sorted by key. */
 export function findChunks(objects: Map<string, number>, arrays: Map<string, (rest: string) => boolean>): [string, number][] {
+  const trie = new PathTrie<(rest: string) => boolean>();
+  for (const [path, test] of arrays) trie.add(path, test);
   const out: [string, number][] = [];
   for (const [key, size] of objects) {
     const segs = key.split("/");
-    for (let j = segs.length - 1; j >= 0; j--) {
-      const test = arrays.get(segs.slice(0, j).join("/"));
-      if (test !== undefined) {
-        if (test(segs.slice(j).join("/"))) out.push([key, size]);
-        break;
-      }
-    }
+    const found = trie.nearest(segs);
+    if (found !== undefined && found[0](segs.slice(found[1]).join("/"))) out.push([key, size]);
   }
   return out.sort((a, b) => compareKeys(a[0], b[0]));
 }
@@ -724,10 +868,86 @@ export interface StoreResult {
   docs: Map<string, Json>;
   /** (key, size) of the chunk entries, sorted, sizes > 0. */
   chunks: [string, number][];
+  /** The source key of each entry whose key is not its object's (the objects under vzip_source/objects/). */
+  origins?: Map<string, string>;
+}
+
+export const SOURCE_GROUP = "vzip_source";
+export const OBJECTS = "vzip_source/objects/";
+/** The empty objects' keys under a root array (conventions/zarr2/README.md §5). */
+export const EMPTY_KEY = "vzip_source/empty.json";
+// A last segment that a Zarr reader takes for a node's document, followed by any number of `~`.
+const NODE_NAME = /^(?:zarr\.json|\.zarray|\.zgroup)~*$/;
+
+/** The hierarchy's key of the other object `key` (conventions/zarr2/README.md §5,
+ * conventions/n5/README.md §6): `vzip_source/objects/<key>`, with `~` appended to a last
+ * segment that is `zarr.json`, `.zarray` or `.zgroup` followed by any number of `~`, so
+ * that no Zarr reader opens a node there, and the key maps back one to one. */
+export function objectKey(key: string): string {
+  return OBJECTS + key + (NODE_NAME.test(key.slice(key.lastIndexOf("/") + 1)) ? "~" : "");
+}
+
+/** A store node's source metadata S (conventions/zarr2/README.md §4, conventions/n5/README.md §5,
+ * conventions/ome-zarr/README.md §8): `{"attributes": A, "metadata": M, "unversioned": U}`,
+ * each member only when it is not empty. */
+export function sourceMetadata(
+  attributes: { [k: string]: Json },
+  metadata: { [k: string]: Json },
+  unversioned: string[] = [],
+): { [k: string]: Json } {
+  const s: { [k: string]: Json } = {};
+  if (Object.keys(attributes).length) s.attributes = attributes;
+  if (Object.keys(metadata).length) s.metadata = metadata;
+  if (unversioned.length) s.unversioned = unversioned;
+  return s;
+}
+
+/** Adds every nonempty object of the store that is not in `used` (the node documents
+ * the hierarchy represents, the nonempty chunk objects, the objects referenced under
+ * their own key, and those the convention leaves out), whole, at its `objectKey`, lists
+ * the keys of the empty ones (empty chunk objects included) and the recorded `ignored`
+ * keys (§1.4), and adds the group `vzip_source` when there is one
+ * (conventions/zarr2/README.md §5, conventions/n5/README.md §6). Returns how many objects
+ * are kept. A hierarchy with a node at `vzip_source` or below it then rejects the input
+ * (`nodes`: every node path). */
+export function keepObjects(
+  result: StoreResult,
+  objects: Map<string, number>,
+  used: Set<string>,
+  nodes: Iterable<string>,
+  fail: (m: string) => never,
+  ignoredKeys: string[] = [],
+): number {
+  const empty = [...objects].filter(([k, n]) => n === 0 && !used.has(k)).map(([k]) => k).sort(compareKeys);
+  const kept = [...objects].filter(([k, n]) => n > 0 && !used.has(k));
+  const ignored = [...ignoredKeys].sort(compareKeys);
+  if (kept.length === 0 && empty.length === 0 && ignored.length === 0) return 0;
+  const own = empty.length || ignored.length
+    ? { ...(empty.length ? { empty } : {}), ...(ignored.length ? { ignored } : {}) }
+    : undefined;
+  const root = result.docs.get(docKey(""))! as { node_type?: string; attributes: Record<string, any> };
+  if (root.node_type !== "array") {
+    for (const p of nodes) {
+      if (p === SOURCE_GROUP || p.startsWith(SOURCE_GROUP + "/")) {
+        fail(`the node ${p} is where the store's other objects go (${OBJECTS}...)`);
+      }
+    }
+    // The keys of empty and ignored objects are the source metadata of vzip_source.
+    const profile = root.attributes[CONVENTION_KEY].profile as Profile;
+    result.docs.set(docKey(SOURCE_GROUP), { zarr_format: 3, node_type: "group", attributes: declare({}, profile, undefined, own) as Json });
+  } else if (own) {
+    // An array has no children: under a root array, the keys are plain keys of the archive.
+    result.docs.set(EMPTY_KEY, own);
+  }
+  result.origins ??= new Map();
+  for (const [k] of kept) result.origins.set(objectKey(k), k);
+  result.chunks = [...result.chunks, ...kept.map(([k, n]): [string, number] => [objectKey(k), n])]
+    .sort((a, b) => compareKeys(a[0], b[0]));
+  return kept.length;
 }
 
 /** The archive of a store profile's output (§1.4): one url source per chunk entry. */
-export function storeArchive(url: string, { docs, chunks }: StoreResult): ArchiveDesc {
+export function storeArchive(url: string, { docs, chunks, origins }: StoreResult): ArchiveDesc {
   for (const key of [...docs.keys(), ...chunks.map(([k]) => k)]) {
     if (utf8.encode(key).length > 65535) reject("an output key is longer than 65535 bytes");
     if (key.startsWith("__vz__/")) reject(`output key ${JSON.stringify(key)} is in the reserved __vz__/ space`);
@@ -735,8 +955,13 @@ export function storeArchive(url: string, { docs, chunks }: StoreResult): Archiv
   const entries: EntryDesc[] = chunks.map(([key, size], i) => ({
     key, ranges: [{ source: i, offset: 0n, length: BigInt(size) }],
   }));
-  for (const [key, doc] of docs) entries.push({ key, bytes: utf8.encode(JSON.stringify(doc, null, 2)) });
-  return { sources: chunks.map(([key]) => ({ url: objectUrl(url, key) })), entries };
+  for (const [key, doc] of docs) {
+    // vzip_source's documents (the empty objects' keys) are read only when asked for: compressed.
+    const compress = key.startsWith(SOURCE_GROUP + "/");
+    entries.push({ key, bytes: utf8.encode(stringifyJson(doc)), ...(compress ? { compress } : {}) });
+  }
+  // Each source pins its object's listed size (§1.4).
+  return { sources: chunks.map(([key, size]) => ({ url: objectUrl(url, origins?.get(key) ?? key), size: BigInt(size) })), entries };
 }
 
 export const GROUP_IMPLICIT = (): Json => ({ zarr_format: 3, node_type: "group", attributes: {} });

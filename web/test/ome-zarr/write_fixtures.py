@@ -25,6 +25,7 @@ Usage: uv run python web/test/ome-zarr/write_fixtures.py
 from __future__ import annotations
 
 import importlib.util
+import json
 import shutil
 from pathlib import Path
 
@@ -370,9 +371,54 @@ def main() -> None:
     image(d, "0", "yx", (4, 4), 1, write_chunks=False)
     group(d, "OME", {"series": ["0", "1"]})
 
+    # ------------------------------------------------------------ source metadata and other objects
+
+    # The attributes A of an OME group keep only what the inverse of conventions/ome-zarr/README.md §5
+    # does not give back from `ome` (§8): an omero without a version, and a non-OME member; an
+    # OME group with only OME members of version 0.4 has no attributes there.
+    # The Zarr v2 metadata M (a .zgroup member, a null fill value) is kept as in the Zarr v2
+    # convention, and so are the objects that are not documents or chunks: OME-XML outside a
+    # bioformats2raw collection, a README. Written after the stores above, so that their
+    # random data does not change.
+    d = store("ome_zarr_source_metadata")
+    write_json(d / ".zgroup", {"zarr_format": 2, "creator": "a writer"})
+    write_json(d / ".zattrs", {"well": {"version": "0.4", "images": [{"path": "0"}, {"path": "1"}]}})
+    o = omero(1)
+    del o["version"]
+    image(d, "0", "yx", (4, 4), 1, attrs={"omero": o, "note": {"big": 18446744073709551615}})
+    image(d, "1", "yx", (4, 4), 1, attrs={"omero": omero(1)})
+    write_json(d / "1/0/.zarray", {**json.loads((d / "1/0/.zarray").read_text()), "fill_value": None})
+    put(d / "OME/METADATA.ome.xml", b"<OME/>\n")
+    put(d / "README.md", b"# a well\n")
+
     total = sum(f.stat().st_size for f in OUT.rglob("*") if f.is_file())
     print(f"{sum(1 for _ in OUT.iterdir())} stores, {total} bytes")
 
 
+def exact_members() -> None:
+    """An empty OME-XML object, which is an empty object of the Zarr v2 convention, and a
+    plate whose wells and images have no version: unversioned members, given back by name
+    (conventions/ome-zarr/README.md §5, §7, §8). Fixed data, no RNG."""
+    d = store("ome_zarr_empty_xml")
+    group(d, "", {"bioformats2raw.layout": 3})
+    group(d, "OME", {"series": ["0"]})
+    put(d / "OME/METADATA.ome.xml", b"")
+    ms = {k: v for k, v in multiscale("yx", 1).items() if k != "version"}
+    group(d, "0", {"multiscales": [{**ms, "version": "0.4"}]})
+    array(d, "0/0", np.arange(4, dtype="|u1").reshape(2, 2), [2, 2], sep="/")
+    d = store("ome_zarr_plate_unversioned")
+    rows, cols = ["A", "B"], ["1", "2", "3"]
+    wells = [{"path": f"{r}/{c}", "rowIndex": i, "columnIndex": j} for i, r in enumerate(rows) for j, c in enumerate(cols)]
+    group(d, "", {"plate": {"version": "0.4", "rows": [{"name": r} for r in rows],
+                            "columns": [{"name": c} for c in cols], "wells": wells, "field_count": 1}})
+    for w in wells:
+        group(d, w["path"], {"well": {"images": [{"path": "0"}]}})
+        group(d, f"{w['path']}/0", {"multiscales": [ms], "omero": {k: v for k, v in omero(1).items() if k != "version"}})
+        array(d, f"{w['path']}/0/0", np.arange(4, dtype="|u1").reshape(2, 2), [2, 2], sep="/", write_chunks=False)
+
+
+
+
 if __name__ == "__main__":
     main()
+    exact_members()

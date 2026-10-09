@@ -614,6 +614,137 @@ the bytes of the ranges, which a combined read with gaps does not.
 Neuroglancer driver (d-v-b/neuroglancer, `vzip` branch). An ND2 frame of 877
 padded rows is now one request.
 
+## Revision 9: reader policy, range checksums, recorded revision
+
+Format version 0, specification revision 9. **Status: provisional.**
+**Incompatible:** a reader following revision 9 refuses some reads that
+revision 8 required it to make (rule 1 of the new §8.7), and archives
+written under revision 9 carry fields that revision 8 readers skip. The
+revision 8 conformance suite applies, with the harness policy that
+HARNESS.md now states; the new rules have no cases yet.
+
+**What prompted it.** An architecture review (ARCHITECTURE.md §2.4, §2.6,
+§4) found that:
+- readers resolved any scheme an archive named, with their own access: an
+  archive on a web server could read `file:///etc/hosts` or a private
+  bucket, and one value could fan out to about 10,000 requests. §10 only
+  said SHOULD, and no reader did it;
+- nothing detected a changed source unless the archive was pinned, the
+  profiles wrote no pins, and pins cannot be checked across CORS, where a
+  browser cannot see the headers;
+- archives of different revisions of format version 0 could not be told
+  apart.
+
+**The changes.**
+- **§8.7 (new): reader policy.** A `url` source, and every URL requested
+  for it, is refused when its scheme differs from the archive's (`http`
+  and `https` count as one) unless the application allows that scheme; an
+  application may give a URL prefix list instead, which then decides alone.
+  Readers have, and document, a maximum number of sources (archive error at
+  open), a maximum number of reads per `get` after coalescing (request
+  error, before any read), and a maximum inflated size of a format entry,
+  enforced while inflating (archive error). An application may let a
+  reader skip pins it cannot see (a browser, cross-origin). The defaults of
+  the project's readers are in a table: no other schemes, no prefix list,
+  2^22 sources, 1024 reads per `get`, 256 MiB, unverifiable pins fail.
+- **§5.2: `Range.crc32c` (field 6).** An optional CRC-32C of a source
+  range's bytes. A reader that needs any part of such a range reads it
+  whole and checks it before returning anything (§8.3); a mismatch is a
+  resolution error. A literal range with a checksum is malformed, and a
+  writer rejects it (§9.1). It depends on no header, so it works where pins
+  cannot be checked.
+- **§6.1: pins.** Writers SHOULD pin `size` on every `url` source whose
+  size they know, and `etag` when they saw a strong tag; the one exception
+  to "pins fail closed" is §8.7 rule 6.
+- **§1.3, §6: the recorded revision, and the release rule.**
+  `SourceTable.revision` (field 2) records the revision a writer followed
+  (9 here); readers never reject on it. Until the first release archives are
+  version 0; at release the text becomes version 1, tagged `vzip-format-v1`,
+  and every later breaking change increments the version and is tagged
+  `vzip-format-v<N>`.
+- **§10** points to §8.7, and says what it does not cover: hosts on a
+  private network reached over the archive's own scheme, for which an
+  application should give a prefix list.
+
+**Implementations.** The reference reader (`src/vzip/store.py`) and the
+browser reader (`web/src/archive.ts`) implement the policy, the limits and
+the checksum, and both writers write the revision and accept checksums. The
+virtualizers (VIRTUALIZE.md revision 19) now pin `size`, and `etag` where
+they saw one, and record checksums when asked to. The independent
+implementations in `impls/` predate the revision.
+
+## Revision 10: secure defaults for schemes, hosts and proxies
+
+Format version 0, specification revision 10. **Status: provisional.**
+**Incompatible:** with the default policy, a reader following revision 10
+makes some reads that revision 9 refused (a local archive's `http` and
+`https` sources on public hosts) and refuses some that it made (requests to
+loopback, private, link-local and other special addresses from any
+archive, and requests through a proxy). The revision 8 conformance suite
+applies; its archives' HTTP sources are on `127.0.0.1`, so the runner
+gives each reader the option that allows private hosts (HARNESS.md). The
+new rules have no cases yet.
+
+**What prompted it.** The project's principle for the reader policy is that
+the default is secure, and that every unsafe behavior is an explicit
+opt-out whose name says it is unsafe. Revision 9's rule 1 was symmetric:
+it kept a remote archive from local files, but also kept a local archive
+from the web, which every local archive of web sources had to opt out of
+(the harness, the CLI and every verify script passed a "web and files"
+policy). And §10 conceded that any archive could reach any host on the
+reader's private network, or a cloud metadata address, over `http`.
+
+**The changes.**
+- **§8.7 rule 1 (schemes)** is asymmetric: every archive may read `http`
+  and `https`; only a local archive may read `file`; every other scheme
+  needs the application's permission. Allowing `file` for a remote archive
+  is a separate setting, named as unsafe, not one of the allowed schemes.
+- **§8.7 rule 3 (hosts, new):** IP addresses fall into the classes
+  loopback, private, link-local, special and public (a table of ranges;
+  IPv6 forms that embed IPv4 take the IPv4 address's class). A request,
+  redirects included, may go to a non-public address only if the
+  application allows private hosts, a setting named as unsafe. No archive
+  is an exception, local ones and ones on a private host included. The
+  check applies to the address the request is sent to: readers that
+  resolve names connect only to an address they checked, and check a
+  reused connection's peer. A request through a proxy cannot be checked,
+  so it is refused unless the application allows unchecked proxies, a
+  second unsafe setting that the error names; the reader then checks what
+  the name resolves to locally. Readers that cannot see addresses
+  (browsers) check IP literals and `localhost` in the URL, and rely on
+  Private Network Access for the rest. A prefix list does not lift the
+  rule.
+- **§8.7 rules 3–6** become rules 4–7.
+- **§8.7's table of defaults** gains the scheme, host and proxy defaults
+  and the names of the unsafe settings in the project's readers.
+- **§10** says what the policy now covers, and what it does not: public
+  hosts, readers that cannot see addresses, and the unsafe settings.
+
+**Implementations.** The reference reader (`src/vzip/policy.py`,
+`src/vzip/store.py`) resolves each host itself, checks every address, and
+connects to the checked address, keeping the host name for `Host` and TLS;
+it checks the peer of a kept-alive connection before reusing it, and
+refuses the proxies that urllib would use (`http_proxy`, `https_proxy`, the
+system's settings, less `no_proxy`; `all_proxy` is not used). Its unsafe
+settings are `allow_files_from_remote_archives`, `allow_private_hosts` and
+`allow_unchecked_proxy`; its CLI takes `--allow-private-hosts`. The
+TypeScript reader (`web/src/archive.ts`) has `allowFilesFromRemoteArchives`,
+`allowPrivateHosts` and `allowUncheckedProxy`. In a browser it checks hosts
+as written; under Node, `#net` (`web/src/net_node.ts`) checks the addresses
+it connects to as the Python reader does, follows redirects itself, and
+refuses the proxy that `NODE_USE_ENV_PROXY` would use. `WEB_AND_FILES` is
+gone; the verify scripts, the comparison benchmark and the tests whose
+servers are on `127.0.0.1` allow private hosts by name. Both writers record
+revision 10.
+
+The harness itself had two failures that came from this branch's earlier
+work, not from the revision: the model expected `__vz__/sources` without
+the recorded revision (`conformance/model.py` now takes it from the
+archive, since the value is the writer's), and the
+`url_not_a_uri_reference` case added sources through a writer internal
+that the bulk url-source path had replaced (`conformance/cases.py` now uses
+`VZipWriter.source`).
+
 ## Open feedback: browser readers (from the Neuroglancer driver)
 
 The Neuroglancer driver

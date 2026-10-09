@@ -5,16 +5,21 @@ from __future__ import annotations
 from vzip.virtualize.common import UNITS, Rejected
 from vzip.virtualize.store import (
     GROUP_IMPLICIT,
+    PathTrie,
     Store,
     StoreOutput,
     as_int,
     canonical_index,
     classify,
+    depth,
     doc_key,
     find_chunks,
     grid,
     is_number,
     join,
+    num,
+    parent_of,
+    source_metadata,
 )
 
 DATA_TYPES = {"uint8": 1, "int8": 1, "uint16": 2, "int16": 2, "uint32": 4, "int32": 4, "float32": 4,
@@ -23,6 +28,8 @@ BLOSC_NAMES = ("blosclz", "lz4", "lz4hc", "snappy", "zlib", "zstd")
 SHUFFLES = {0: "noshuffle", 1: "shuffle", 2: "bitshuffle"}
 UNIT_NAMES = set(UNITS.values())
 MAX_BLOCK = 2**31 - 1
+# The layout members of a dataset's attributes.json: the Zarr array metadata holds them.
+LAYOUT_KEYS = ("dimensions", "blockSize", "dataType", "compression", "compressionType", "n5")
 
 
 def blosc_codec(c: dict, typesize: int, shuffles: dict) -> dict:
@@ -44,20 +51,41 @@ def blosc_codec(c: dict, typesize: int, shuffles: dict) -> dict:
                                                "typesize": typesize, "blocksize": blocksize}}
 
 
-def compressor(compression: dict, b: int) -> dict | None:
+# The levels a compression may have (Java's Deflater level -1, its default, is zlib's level 6),
+# and the levels Java N5 uses when the member is absent.
+LEVELS = {"gzip": (-1, 9, 6), "zstd": (-131072, 22, 3)}
+
+
+def level(t: str, compression: dict) -> int:
+    """The level of a gzip or zstd compression (conventions/n5/README.md §3)."""
+    lo, hi, default = LEVELS[t]
+    if "level" not in compression:
+        return default
+    v = as_int(compression["level"], lo, hi)
+    if v is None:
+        raise Rejected(f"{t} level {str(compression['level'])[:20]} is not an integer from {lo} to {hi}")
+    return 6 if v == -1 and t == "gzip" else v
+
+
+def compressor(compression: dict, b: int) -> tuple[dict | None, dict]:
+    """The compression's codec, and its members the codec does not carry."""
     t = compression["type"]
     if t == "raw":
-        return None
-    if t == "gzip":
+        codec, carried = None, ("type",)
+    elif t == "gzip":
         z = compression.get("useZlib", False)
         if not isinstance(z, bool):
             raise Rejected(f"gzip useZlib {z!r} is not a boolean")
-        return {"name": "zlib" if z else "gzip", "configuration": {"level": 1}}
-    if t == "zstd":
-        return {"name": "zstd", "configuration": {"level": 0, "checksum": False}}
-    if t == "blosc":
-        return blosc_codec(compression, b, SHUFFLES)
-    raise Rejected(f"N5 compression {t!r} is not supported")
+        codec = {"name": "zlib" if z else "gzip", "configuration": {"level": level(t, compression)}}
+        carried = ("type", "useZlib", "level")
+    elif t == "zstd":
+        codec = {"name": "zstd", "configuration": {"level": level(t, compression), "checksum": False}}
+        carried = ("type", "level")
+    elif t == "blosc":
+        codec, carried = blosc_codec(compression, b, SHUFFLES), ("type", "cname", "clevel", "shuffle", "blocksize")
+    else:
+        raise Rejected(f"N5 compression {t!r} is not supported")
+    return codec, {k: v for k, v in compression.items() if k not in carried}
 
 
 def dataset(path: str, doc: dict) -> dict:
@@ -81,9 +109,16 @@ def dataset(path: str, doc: dict) -> dict:
     b = DATA_TYPES[dtype]
     inner = [{"name": "transpose", "configuration": {"order": list(range(n - 1, -1, -1))}},
              {"name": "bytes", "configuration": {"endian": "big"}} if b > 1 else {"name": "bytes"}]
-    c = compressor(compression, b)
+    c, extra = compressor(compression, b)
     if c is not None:
         inner.append(c)
+    meta = {}
+    if "n5" in doc:
+        meta["n5"] = doc["n5"]
+    if extra:
+        meta["compression"] = extra
+    if "compression" in doc and "compressionType" in doc:
+        meta["compressionType"] = doc["compressionType"]  # not read: `compression` is
     return {
         "zarr_format": 3,
         "node_type": "array",
@@ -93,7 +128,9 @@ def dataset(path: str, doc: dict) -> dict:
         "chunk_key_encoding": {"name": "v2", "configuration": {"separator": "/"}},
         "fill_value": 0,
         "codecs": [{"name": "n5_default", "configuration": {"codecs": inner}}],
-        "attributes": dict(doc),  # the whole document, as source metadata (conventions/n5/README.md §5)
+        # The source metadata (conventions/n5/README.md §5): the document without its layout
+        # members, and what of those the zarr.json does not reproduce.
+        "attributes": source_metadata({k: v for k, v in doc.items() if k not in LAYOUT_KEYS}, meta),
     }
 
 
@@ -149,6 +186,7 @@ def ome_multiscale(name, axes: list[str], units: list, paths: list[str], scales,
 def numbers(v, n: int, positive: bool = False) -> list | None:
     if not isinstance(v, list) or len(v) != n or not all(is_number(x) for x in v):
         return None
+    v = [num(x) for x in v]
     if positive and not all(x > 0 for x in v):
         return None
     return v
@@ -261,8 +299,10 @@ def n5_viewer(g: str, attrs: dict, ndim: dict[str, int], docs: dict[str, dict]):
     for s in scales:
         if not all(abs(v) != float("inf") for v in s):
             raise Rejected("a scale is not finite")
+    # A downsampled voxel's center is (f - 1) / 2 source voxels from the origin.
+    translations = [[(float(f[j]) - 1) / 2 * float(r[j]) for j in range(n)] for f in factors]
     paths = [lv[len(g) + 1:] if g else lv for lv in levels]
-    return ome_multiscale(None, axes, units, paths, scales, None), levels, axes
+    return ome_multiscale(None, axes, units, paths, scales, translations), levels, axes
 
 
 # ---------------------------------------------------------------- the profile
@@ -280,7 +320,7 @@ def virtualize_n5(store: Store) -> StoreOutput:
     docs: dict[str, dict] = {}
     kinds: dict[str, str] = {}
     datasets: set[str] = set()
-    from vzip.virtualize.store import depth, parent_of
+    trie = PathTrie()  # the datasets, for a lookup linear in the path's length
 
     def wanted(key: str) -> bool | None:
         # Read ahead exactly the documents the loop below reads: a candidate's,
@@ -298,13 +338,7 @@ def virtualize_n5(store: Store) -> StoreOutput:
     order = sorted(candidates, key=lambda p: (depth(p), p))
     store.prefetch([join(p, "attributes.json") for p in order], wanted)
     for path in order:
-        p, inside = path, False
-        while p:
-            p = parent_of(p)
-            if p in datasets:
-                inside = True
-                break
-        if inside:
+        if trie.nearest(path.split("/")) is not None:
             continue
         doc = store.document(join(path, "attributes.json"))
         if not isinstance(doc, dict):
@@ -313,6 +347,7 @@ def virtualize_n5(store: Store) -> StoreOutput:
         kinds[path] = "array" if "dimensions" in doc else "group"
         if kinds[path] == "array":
             datasets.add(path)
+            trie.add(path, True)
     nodes, implicit = classify(kinds)
 
     out = StoreOutput(store.url)
@@ -324,8 +359,9 @@ def virtualize_n5(store: Store) -> StoreOutput:
     groups = {}
     for path in nodes:
         if kinds[path] == "group":
-            groups[path] = {"zarr_format": 3, "node_type": "group",
-                            "attributes": dict(docs[path])}
+            doc = docs[path]
+            groups[path] = {"zarr_format": 3, "node_type": "group", "attributes": source_metadata(
+                {k: v for k, v in doc.items() if k != "n5"}, {"n5": doc["n5"]} if "n5" in doc else {})}
     images = []
     omes: dict[str, dict] = {}
     named: dict[str, list[str]] = {}
@@ -370,10 +406,14 @@ def virtualize_n5(store: Store) -> StoreOutput:
         tests[path] = is_chunk
     chunks = find_chunks(objects, tests)
     out.chunks = [(k, n) for k, n in chunks if n > 0]
+    # An empty chunk object has no entry: its key is listed with the empty objects (§6).
+    used = {join(p, "attributes.json") for p in nodes} | {k for k, n in chunks if n > 0}
+    others = out.keep_objects(objects, used, [*nodes, *implicit], store.ignored)
     out.check_keys()
+    nonempty = sum(1 for _, n in chunks if n > 0)
     out.summary = {
-        "groups": len(groups) + len(implicit), "arrays": len(arrays), "chunks": len(out.chunks),
-        "emptyChunks": len(chunks) - len(out.chunks), "objects": len(objects), "images": images,
+        "groups": len(groups) + len(implicit), "arrays": len(arrays), "chunks": nonempty,
+        "emptyChunks": len(chunks) - nonempty, "objects": len(objects), "otherObjects": others, "images": images,
         "listingRequests": store.requests,
     }
     return out

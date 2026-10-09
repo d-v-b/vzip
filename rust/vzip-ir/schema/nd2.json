@@ -1,0 +1,283 @@
+{
+  "source_model": "nd2",
+  "version": 1,
+  "about": "The source model of a Nikon ND2 file (format 3+): the elements a parser emits, the members of its lite-variant metadata it reads and checks, the quantities it derives, and the constraints a file must meet to have the ND2 convention's layout. A parser checks this schema while it parses; projections read a valid IR and check nothing. Kinds of members are those of conventions/nd2 §2.2: number, integer, color, flag, string, object, list, and members (an object or a list, read as its member values).",
+  "limits": {
+    "max_safe": 9007199254740991,
+    "chunk_magic": 180276954,
+    "inflate": 67108864,
+    "profile_records": 1048576,
+    "lv_depth": 100,
+    "xml_depth": 100,
+    "positions": 65536,
+    "position_channels": 1048576,
+    "components": 1024,
+    "source_budget": 67108864,
+    "source_room": 65536,
+    "deflate_ratio": 1032
+  },
+  "elements": {
+    "about": "The IR of an ND2 file. Names in angle brackets are variables; `run` marks where a parser folds consecutive identically shaped siblings into one run.",
+    "signature": {
+      "kind": "struct",
+      "children": {
+        "header": "{magic:<u4,name_length:<u4,data_length:<u8}",
+        "name": "ascii[32]",
+        "data": "ascii[64]"
+      }
+    },
+    "map": {
+      "kind": "struct",
+      "about": "the filemap chunk",
+      "children": {
+        "header": "{magic:<u4,name_length:<u4,data_length:<u8}",
+        "name": "bytes[n]",
+        "records/<i>": "{name:bytes[k],offset:<u8,size:<u8}",
+        "end": "bytes[32]",
+        "rest": "bytes"
+      }
+    },
+    "tail": {"kind": "value", "type": "{signature:ascii[32],offset:<u8}"},
+    "chunks/<name>": {
+      "kind": "struct",
+      "about": "each chunk of the map (the last record of a name) that is not a frame; named by its name read as text",
+      "children": {
+        "header": "{magic:<u4,name_length:<u4,data_length:<u8}",
+        "name": "bytes[n]",
+        "lv": "struct (LV records in the source) or derived (transform nd2-lv-zlib: a compressed record, its LV records in the derived bytes): when the chunk decodes",
+        "xml": "derived (transform xml-variant): the variant element, its elements as structs and its value attributes as values of type xml:<runtype>",
+        "data": "bytes[d]: when the chunk does not decode"
+      }
+    },
+    "lv records": {
+      "scalar": "value {lv:u1,k:u1,name:bytes[2k],v:<type>} named by the record's exact name",
+      "level": "struct: header {lv:u1,k:u1,name:bytes[2k],count:<u4,length:<u8}, its records, table bytes[8c]"
+    },
+    "frames/<f>": {
+      "kind": "struct",
+      "run": true,
+      "about": "each chunk ImageDataSeq|<f>! (f decimal without leading zeros)",
+      "children": {
+        "header": "{magic:<u4,name_length:<u4,data_length:<u8}",
+        "name": "bytes[n]",
+        "timestamp": "<f8 (placed frames)",
+        "pixels": "data (placed frames): geometry, codec, recipe (src, or rows for padded rows)",
+        "trailing": "bytes (placed uncompressed frames with more data than their pixels)",
+        "data": "bytes[d] (frames the image does not place)"
+      }
+    },
+    "gaps/<offset>": {"kind": "gap"}
+  },
+  "objects": {
+    "attributes": {
+      "chunk": "ImageAttributesLV!",
+      "member": "SLxImageAttributes",
+      "kind": "object",
+      "required": "no ImageAttributesLV! chunk",
+      "members": {
+        "uiWidth": {"kind": "integer", "required": true},
+        "uiHeight": {"kind": "integer", "required": true},
+        "uiWidthBytes": {"kind": "integer", "required": true},
+        "uiComp": {"kind": "integer", "required": true},
+        "uiBpcInMemory": {"kind": "integer", "required": true},
+        "uiBpcSignificant": {"kind": "number", "required": true},
+        "eCompression": {"kind": "integer", "default": 2},
+        "uiTileWidth": {"kind": "integer", "default": 0},
+        "uiTileHeight": {"kind": "integer", "default": 0}
+      }
+    },
+    "experiment": {"chunk": "ImageMetadataLV!", "member": "SLxExperiment", "kind": "object", "type": "node"},
+    "picture": {
+      "chunk": "ImageMetadataSeqLV|0!",
+      "member": "SLxPictureMetadata",
+      "kind": "object",
+      "default": {},
+      "members": {
+        "bCalibrated": {"kind": "flag", "default": false},
+        "dCalibration": {"kind": "number"},
+        "dAspect": {"kind": "number", "default": 1},
+        "dStgLgCT11": {"kind": "number", "default": 1},
+        "dStgLgCT12": {"kind": "number", "default": 0},
+        "dStgLgCT21": {"kind": "number", "default": 0},
+        "dStgLgCT22": {"kind": "number", "default": 1},
+        "dXPos": {"kind": "number"},
+        "dYPos": {"kind": "number"},
+        "sPicturePlanes": {
+          "kind": "object",
+          "default": {},
+          "members": {
+            "uiCount": {"kind": "integer", "default": 0},
+            "sPlaneNew": {
+              "kind": "object",
+              "default": {},
+              "indexed": {
+                "prefix": "a",
+                "below": "uiCount",
+                "kind": "object",
+                "members": {
+                  "sDescription": {"kind": "string", "default": ""},
+                  "uiColor": {"kind": "color", "default": 16777215},
+                  "uiCompCount": {"kind": "integer", "default": 1}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "types": {
+    "node": {
+      "about": "An experiment node. Every node of the tree is checked, whether or not the flattening visits it.",
+      "members": {
+        "eType": {
+          "kind": "integer",
+          "required": true,
+          "in": [1, 2, 4, 6, 8],
+          "message": "unsupported experiment loop type"
+        },
+        "uLoopPars": {"kind": "object"},
+        "pItemValid": {"kind": "list", "items": {"kind": "flag"}},
+        "ppNextLevelEx": {"kind": "members", "items": {"kind": "object", "type": "node"}}
+      },
+      "loops": {
+        "about": "uLoopPars by eType (read only when uLoopPars is present). count: the loop's count; a node of count 0 is skipped. valid: a member list filtered by a validity list (absent: all valid; else the i-th member is valid when the i-th flag exists and is true).",
+        "1": {
+          "kind": "t",
+          "members": {"uiCount": {"kind": "integer", "default": 0}, "dPeriod": {"kind": "number", "default": 0}},
+          "count": "uiCount",
+          "scale": "dPeriod"
+        },
+        "8": {
+          "kind": "t",
+          "members": {
+            "pPeriod": {
+              "kind": "members",
+              "items": {"kind": "object"},
+              "valid": {
+                "by": "pPeriodValid",
+                "members": {
+                  "uiCount": {"kind": "integer", "required": true},
+                  "dPeriod": {"kind": "number", "default": 0}
+                }
+              }
+            },
+            "pPeriodValid": {"kind": "list", "items": {"kind": "flag"}}
+          },
+          "count": "sum(pPeriod.uiCount)",
+          "scale": "same(pPeriod.dPeriod)",
+          "constraints": [
+            {"require": "count <= max_safe", "message": "the time loop's count is more than 2^53 - 1"}
+          ]
+        },
+        "2": {
+          "kind": "p",
+          "members": {
+            "Points": {
+              "kind": "members",
+              "valid": {
+                "by": "../pItemValid",
+                "kind": "object",
+                "members": {"dPosX": {"kind": "number"}, "dPosY": {"kind": "number"}}
+              }
+            }
+          },
+          "count": "len(Points)",
+          "stage": "Points"
+        },
+        "4": {
+          "kind": "z",
+          "members": {
+            "uiCount": {"kind": "integer", "default": 0},
+            "dZStep": {"kind": "number", "default": 0},
+            "dZHigh": {"kind": "number", "default": 0},
+            "dZLow": {"kind": "number", "default": 0}
+          },
+          "count": "uiCount",
+          "scale": "abs(dZStep) == 0 && uiCount > 1 ? abs(dZHigh - dZLow) / (uiCount - 1) : abs(dZStep)",
+          "flip": "dZStep < 0",
+          "constraints": [{"require": "finite(scale)", "message": "the z step is not finite"}]
+        },
+        "6": {
+          "kind": "spectral",
+          "members": {
+            "uiCount": {"kind": "integer"},
+            "pPlanes": {
+              "kind": "object",
+              "when_absent": "uiCount",
+              "members": {"uiCount": {"kind": "integer", "default": 0}}
+            }
+          },
+          "count": "uiCount ?? pPlanes.uiCount ?? 0"
+        }
+      },
+      "flatten": "Nodes are visited depth first, each before its children; the root has depth 0, a node's children are one deeper, except a spectral node's, which have its depth. A node without uLoopPars or of count 0 is skipped with its children; a spectral node is skipped and its children visited; any other node's loop is appended when the list is empty or the last loop is shallower, replaces the last loop when that has its depth and kind and a smaller count, and is otherwise dropped; its children are visited either way."
+    }
+  },
+  "derive": {
+    "R": "uiWidth * uiComp * uiBpcInMemory / 8",
+    "compressed": "eCompression == 0",
+    "P": "p_count ?? 1",
+    "N": "loops_product",
+    "calibrated": "bCalibrated && dCalibration > 0",
+    "aspect": "dAspect > 0 ? dAspect : 1",
+    "scale_x": "calibrated ? dCalibration : 1",
+    "scale_y": "calibrated ? dCalibration * aspect : 1",
+    "scale_z": "z_scale > 0 ? z_scale : 1",
+    "scale_t": "t_scale > 0 ? t_scale / 1000 : 1",
+    "det": "dStgLgCT11 * dStgLgCT22 - dStgLgCT12 * dStgLgCT21"
+  },
+  "constraints": [
+    {
+      "require": "uiWidth >= 1 && uiHeight >= 1 && uiComp >= 1 && uiComp <= components",
+      "message": "image width and height must be at least 1, and components from 1 to 1024"
+    },
+    {
+      "require": "uiBpcInMemory == 8 || uiBpcInMemory == 16 || uiBpcInMemory == 32",
+      "message": "unsupported bits per component"
+    },
+    {"require": "eCompression != 1", "message": "lossy ND2 compression is not supported"},
+    {"require": "eCompression == 0 || eCompression == 2", "message": "unknown ND2 compression"},
+    {
+      "require": "(uiTileWidth == 0 || uiTileWidth == uiWidth) && (uiTileHeight == 0 || uiTileHeight == uiHeight)",
+      "message": "tiled ND2 frames are not supported"
+    },
+    {"require": "uiWidthBytes >= R", "message": "uiWidthBytes is less than a row"},
+    {
+      "require": "!compressed || uiWidthBytes == R",
+      "message": "compressed frames with padded rows are not supported"
+    },
+    {"require": "loops_distinct", "message": "repeated loop kinds"},
+    {
+      "require": "P <= positions && P * uiComp <= position_channels",
+      "message": "more than 2^16 positions, or more than 2^20 positions x components"
+    },
+    {"require": "N <= max_safe", "message": "more than 2^53 - 1 frames"},
+    {
+      "require": "placed.unreadable == 0",
+      "message": "a placed frame's chunk header is not an ND2 chunk header within the file"
+    },
+    {
+      "require": "!compressed || placed.count == 0 || placed.min_data > 8",
+      "message": "a compressed frame has no data"
+    },
+    {
+      "require": "compressed || placed.count == 0 || placed.min_name == placed.max_name",
+      "message": "a frame's chunk header differs in name length from the first frame's"
+    },
+    {
+      "require": "compressed || placed.count == 0 || placed.min_data >= 8 + uiHeight * uiWidthBytes",
+      "message": "a frame's chunk is too short for its pixels"
+    },
+    {
+      "require": "placed.count == 0 || placed.max_pixels_end <= size",
+      "message": "a frame's pixels lie outside the file"
+    },
+    {
+      "require": "finite(scale_y) && finite(scale_x) && finite(scale_z) && finite(scale_t)",
+      "message": "a scale is not finite"
+    },
+    {"require": "finite_translations", "message": "a stage position is not finite"}
+  ],
+  "about_builtins": "Quantities the checker computes by name: loops (the flattening above, from the experiment), loops_product (the product of their counts), loops_distinct (no two loops of one kind), p_count, t_scale, z_scale (the position loop's count, the time loop's period, the z loop's step; absent without the loop), placed.* (over the placed frames, the frames f < N the chunk map names: count, unreadable (headers that are not an ND2 chunk header within the file, or at an offset or with a length past max_safe), min_name, max_name, min_data, max_pixels_end), finite_translations (each image's stage translation, conventions/nd2 §4.3, is finite), size (the file's)."
+}

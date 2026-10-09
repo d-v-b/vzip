@@ -1,0 +1,14 @@
+{
+ "dimensions": [
+  4
+ ],
+ "blockSize": [
+  4
+ ],
+ "dataType": "uint8",
+ "compression": {
+  "type": "raw"
+ },
+ "compressionType": "gzip",
+ "n5": "4.0.0"
+}

@@ -18,7 +18,8 @@ pyramid level is a single JPEG strip, which can be tens of thousands of
 pixels wide. vzip cuts each strip into chunks of about 1024 × 1024 pixels at
 the JPEG restart markers the scanner wrote, and makes every chunk a complete
 JPEG stream out of byte ranges of the file and the strip's shared header. The
-198 MB CMU-1.ndpi becomes a 5.5 MB archive in about 15 s.
+198 MB CMU-1.ndpi became a 5.5 MB archive in about 15 s (at VIRTUALIZE.md
+revision 16, before the archive kept every tag on `vzip_source`).
 
 ## What you get
 
@@ -37,8 +38,12 @@ One OME-Zarr 0.5 image at the archive root, with one array per level.
   Huffman tables; restart interval and scan header) are stored once in the
   archive as `data` sources, and each chunk's height and width are a
   literal. Reading a chunk reads only its own intervals from the file.
-- **Scale:** from the TIFF resolution tags, in micrometres.
-- **Translation:** from the slide-centre offsets the scanner records.
+- **Scale:** from the TIFF resolution tags, in micrometers, when they give a
+  pixel under 25.4 µm.
+- **Translation:** from the slide-center offsets the scanner records.
+- **Metadata:** every tag of every IFD (the macro image's and slide map's
+  included), under `vzip_source/ifds/<i>`, with the strips of the images
+  that are not levels; the root holds none.
 
 ## Try it
 
@@ -54,7 +59,9 @@ uv run python -m vzip.virtualize https://openslide.cs.cmu.edu/download/openslide
 ```
 
 This took 14 s (openslide.cs.cmu.edu answers each request in about half a
-second) and wrote a 5.5 MB archive.
+second) and wrote a 5.5 MB archive, at revision 16
+([overview](../README.md#formats)); the archive now also keeps the file's
+tags, so it is larger.
 
 ```python
 import zarr
@@ -132,7 +139,7 @@ A chunk is about 128 pieces of the file, one per row of JPEG blocks
 - **What helps.** Planning all of a view's chunk reads together (a batch
   window), choosing the gap to merge by a cost model of round-trip time and
   bandwidth, and caching the fetched gaps (which the next pan uses). Over 56
-  modelled views of CMU-1 at 20 ms and 50 Mbit/s, that takes the total from
+  modeled views of CMU-1 at 20 ms and 50 Mbit/s, that takes the total from
   41 s to 14 s. These are prototypes behind flags on that branch, not yet
   the default readers.
 - **The header is free.** Since VIRTUALIZE.md revision 14 the JPEG header
@@ -146,10 +153,11 @@ requests.
 
 ## How it's verified
 
-`web/test/ndpi/verify.py` virtualizes 5 NDPI files cut from CMU-1.ndpi with
-the browser code, reads every level back through `src/vzip` and zarr-python,
-and compares the pixels with tifffile. `compare.py` checks that the Python
-and browser outputs are equivalent on those files and on the 3 NDPI slides of
+`web/test/ndpi/verify.py` virtualizes the 9 synthetic NDPI files (including
+inputs to reject) with the browser code, reads every level back through `src/vzip`
+and zarr-python, and compares the pixels with tifffile. `compare.py` checks
+that the Python and browser outputs are equivalent on those files and on the
+3 NDPI slides of
 [corpus_tiff.txt](../../../conformance/virtualize/corpus_tiff.txt), among
 them the 6.9 GB Hamamatsu-1.ndpi.
 

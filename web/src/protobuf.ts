@@ -5,7 +5,13 @@ export class MalformedError extends Error {}
 
 export type Range =
   | { data: Uint8Array }
-  | { source: number; offset: bigint; length: bigint };
+  | {
+      source: number;
+      offset: bigint;
+      length: bigint;
+      /** CRC-32C of the range's bytes (spec §5.2). */
+      crc32c?: number;
+    };
 
 export interface Source {
   url?: string;
@@ -59,6 +65,8 @@ export function encodeRange(r: Range): Uint8Array {
     if (r.source !== 0) w.uint(1, BigInt(r.source));
     if (r.offset !== 0n) w.uint(3, r.offset);
     if (r.length !== 0n) w.uint(4, r.length);
+    // An optional field: emitted whenever set, even if 0 (spec §5.1).
+    if (r.crc32c !== undefined) w.uint(6, BigInt(r.crc32c));
   }
   return w.finish();
 }
@@ -69,7 +77,8 @@ export function encodeConcat(parts: Range[]): Uint8Array {
   return w.finish();
 }
 
-export function encodeSourceTable(sources: Source[]): Uint8Array {
+/** The SourceTable of `sources`, with the spec revision when given (spec §6). */
+export function encodeSourceTable(sources: Source[], revision?: number): Uint8Array {
   const w = new Writer();
   for (const s of sources) {
     const m = new Writer();
@@ -81,6 +90,7 @@ export function encodeSourceTable(sources: Source[]): Uint8Array {
     if (s.modifiedNotAfter !== undefined) m.uint(6, s.modifiedNotAfter);
     w.bytes(1, m.finish());
   }
+  if (revision !== undefined) w.uint(2, BigInt(revision));
   return w.finish();
 }
 
@@ -166,11 +176,16 @@ export function decodeRange(buf: Uint8Array, numSources: number): Range {
   let offset = 0n;
   let length = 0n;
   let data: Uint8Array | undefined;
+  let crc: bigint | undefined;
   for (const f of fields(buf)) {
     switch (f.field) {
       case 1:
         source = expect(f, "varint");
         if (source > U32_MAX) throw new MalformedError("source exceeds uint32");
+        break;
+      case 6:
+        crc = expect(f, "varint");
+        if (crc > U32_MAX) throw new MalformedError("crc32c exceeds uint32");
         break;
       case 3:
         offset = expect(f, "varint");
@@ -187,6 +202,7 @@ export function decodeRange(buf: Uint8Array, numSources: number): Range {
     if (source !== 0n || offset !== 0n || length !== 0n) {
       throw new MalformedError("literal range with source, offset or length");
     }
+    if (crc !== undefined) throw new MalformedError("literal range with a crc32c");
     return { data };
   }
   if (source >= BigInt(numSources)) {
@@ -195,7 +211,9 @@ export function decodeRange(buf: Uint8Array, numSources: number): Range {
   if (offset + length > U64_MAX) {
     throw new MalformedError("offset + length exceeds 2^64 - 1");
   }
-  return { source: Number(source), offset, length };
+  return crc === undefined
+    ? { source: Number(source), offset, length }
+    : { source: Number(source), offset, length, crc32c: Number(crc) };
 }
 
 export function rangeSize(r: Range): bigint {
@@ -229,8 +247,20 @@ export function decodeReference(
 const STRONG_ETAG = /^"[\x21\x23-\x7e]*"$/;
 
 export function decodeSourceTable(buf: Uint8Array): Source[] {
+  return decodeTable(buf).sources;
+}
+
+/** The sources of a SourceTable, and the spec revision it records (spec §6). */
+export function decodeTable(buf: Uint8Array): { sources: Source[]; revision?: number } {
   const sources: Source[] = [];
+  let revision: number | undefined;
   for (const f of fields(buf)) {
+    if (f.field === 2) {
+      const v = expect(f, "varint");
+      if (v > U32_MAX) throw new MalformedError("revision exceeds uint32");
+      revision = Number(v);
+      continue;
+    }
     if (f.field !== 1) continue;
     const s: Source = {};
     let kind: "url" | "key" | "data" | undefined;
@@ -281,5 +311,5 @@ export function decodeSourceTable(buf: Uint8Array): Source[] {
     }
     sources.push(s);
   }
-  return sources;
+  return revision === undefined ? { sources } : { sources, revision };
 }

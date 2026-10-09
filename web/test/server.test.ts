@@ -20,7 +20,8 @@ function handler(fetched: string[] = []) {
     fetchRange: async (url, start, end) => {
       fetched.push(`${start}-${end}`);
       if (url.endsWith("gone.tif")) throw new HttpResolutionError(`${url}: HTTP 404`);
-      return { data: local(url).subarray(start, end), size: undefined };
+      const body = local(url);
+      return { data: body.subarray(start, end), size: body.length }; // the size pin is checked
     },
     fetchArchive: async () => {
       const r = await makeHandler({
@@ -148,7 +149,10 @@ test("serves virtualized stores, and reports rejected ones", async () => {
       if (new URL(url).search) return fetchStore(url);
       return new Response(fs.readFileSync(file(url)), { status: init ? 206 : 200 });
     },
-    fetchRange: async (url, start, end) => ({ data: new Uint8Array(fs.readFileSync(file(url))).subarray(start, end), size: undefined }),
+    fetchRange: async (url, start, end) => {
+      const body = new Uint8Array(fs.readFileSync(file(url)));
+      return { data: body.subarray(start, end), size: body.length }; // the size pin is checked
+    },
   });
   const base = `image/${encodeId("https://data.test/b/n5_cosem/")}/`;
   const group = await get(h, `${base}em/fibsem-uint8/zarr.json`);

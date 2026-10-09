@@ -1,0 +1,409 @@
+{
+  "source_model": "tiff",
+  "version": 1,
+  "about": "The source model of a TIFF, BigTIFF or OME-TIFF file (TIFF 6.0, conventions/tiff, profiles/tiff.md §3): the elements a parser emits, the tags of the table it reads, and the roles an IFD, a value, an image or a tile plays, each with the constraints a file must meet to have the TIFF convention's layout. A parser checks this schema while it parses, at the point the profile meets each role; projections read a valid IR and check nothing.",
+  "limits": {
+    "max_safe": 9007199254740991,
+    "max_ifds": 100000,
+    "max_depth": 4,
+    "max_planes": 100000,
+    "max_tries": 10000,
+    "max_decode": 65536,
+    "eager_decode": 16777216
+  },
+  "tables": {
+    "kinds": {
+      "about": "the field types a tag of each kind may have (TIFF 6.0 §2, BigTIFF)",
+      "integer": [1, 3, 4, 13, 16, 18],
+      "rational": [5],
+      "bytes": [1, 7],
+      "any": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18]
+    },
+    "type_sizes": {
+      "1": 1,
+      "2": 1,
+      "3": 2,
+      "4": 4,
+      "5": 8,
+      "6": 1,
+      "7": 1,
+      "8": 2,
+      "9": 4,
+      "10": 8,
+      "11": 4,
+      "12": 8,
+      "13": 4,
+      "16": 8,
+      "17": 8,
+      "18": 8
+    },
+    "tags": {
+      "about": "The tags of the table (profiles/tiff.md §3.1): kind (the field types allowed), scalar (the first value is read, and there must be one), used (read for every IFD an image uses; ImageDescription only for IFD 0, SubIFDs where followed).",
+      "256": {"name": "ImageWidth", "kind": "integer", "scalar": true, "used": true},
+      "257": {"name": "ImageLength", "kind": "integer", "scalar": true, "used": true},
+      "258": {"name": "BitsPerSample", "kind": "integer", "scalar": false, "used": true},
+      "259": {"name": "Compression", "kind": "integer", "scalar": true, "used": true},
+      "262": {"name": "PhotometricInterpretation", "kind": "integer", "scalar": true, "used": true},
+      "266": {"name": "FillOrder", "kind": "integer", "scalar": true, "used": true},
+      "270": {"name": "ImageDescription", "kind": "any", "scalar": false, "used": false},
+      "277": {"name": "SamplesPerPixel", "kind": "integer", "scalar": true, "used": true},
+      "282": {"name": "XResolution", "kind": "rational", "scalar": true, "used": true},
+      "283": {"name": "YResolution", "kind": "rational", "scalar": true, "used": true},
+      "284": {"name": "PlanarConfiguration", "kind": "integer", "scalar": true, "used": true},
+      "296": {"name": "ResolutionUnit", "kind": "integer", "scalar": true, "used": true},
+      "317": {"name": "Predictor", "kind": "integer", "scalar": true, "used": true},
+      "322": {"name": "TileWidth", "kind": "integer", "scalar": true, "used": true},
+      "323": {"name": "TileLength", "kind": "integer", "scalar": true, "used": true},
+      "324": {"name": "TileOffsets", "kind": "integer", "scalar": false, "used": true, "tiles": true},
+      "325": {"name": "TileByteCounts", "kind": "integer", "scalar": false, "used": true, "tiles": true},
+      "330": {"name": "SubIFDs", "kind": "integer", "scalar": false, "used": false},
+      "339": {"name": "SampleFormat", "kind": "integer", "scalar": false, "used": true},
+      "347": {"name": "JPEGTables", "kind": "bytes", "scalar": false, "used": true},
+      "530": {"name": "YCbCrSubSampling", "kind": "integer", "scalar": false, "used": true}
+    },
+    "layout_tags": [273, 279, 288, 289, 324, 325, 513, 514, 519, 520, 521],
+    "pointers": {"330": "subifds", "34665": "exif", "34853": "gps", "40965": "interoperability"},
+    "jpeg2000": [33003, 33004, 33005, 34712],
+    "compressions": [1, 7, 8, 32946, 50000, 33003, 33004, 33005, 34712],
+    "zlib": [8, 32946],
+    "sample_kinds": {"1": "uint", "2": "int", "3": "float"},
+    "units": {
+      "µm": "micrometer",
+      "μm": "micrometer",
+      "um": "micrometer",
+      "nm": "nanometer",
+      "mm": "millimeter",
+      "cm": "centimeter",
+      "m": "meter",
+      "Å": "angstrom",
+      "Å": "angstrom",
+      "pm": "picometer",
+      "in": "inch",
+      "ft": "foot",
+      "s": "second",
+      "ms": "millisecond",
+      "min": "minute",
+      "h": "hour"
+    },
+    "lengths": {
+      "micrometer": 1e-06,
+      "nanometer": 1e-09,
+      "millimeter": 0.001,
+      "centimeter": 0.01,
+      "meter": 1.0,
+      "angstrom": 1e-10,
+      "picometer": 1e-12,
+      "inch": 0.0254,
+      "foot": 0.3048
+    },
+    "resolution_units": {"2": 25400.0, "3": 10000.0}
+  },
+  "elements": {
+    "about": "The IR of a TIFF file. Names in angle brackets are variables; `run` marks where a parser folds consecutive identically shaped siblings into one run.",
+    "header": {
+      "kind": "struct",
+      "children": {
+        "byte_order": "ascii[2]",
+        "magic": "u2",
+        "offset_size": "u2 (BigTIFF)",
+        "reserved": "u2 (BigTIFF)",
+        "first_ifd": "u4 or u8"
+      }
+    },
+    "ifds/<i>": {
+      "kind": "struct",
+      "about": "the main chain; each IFD's SubIFDs are subifds/<j> (to depth 4), and the IFDs other pointer tags lead to are exif, gps, interoperability or ifd_<tag> (/<j> when the tag has several values; an IFD read before is an alias)",
+      "children": {
+        "entry_count": "u2 or u8",
+        "tags/<tag>": "struct of entry {tag,type,count[,offset][,field]} and value (in the value field, or at its offset: decoded when the profile reads it, or when small); a duplicate tag is tags/<tag>~<k>",
+        "next_ifd": "u4 or u8",
+        "tiles/<k>": "data (run): a tile of TileOffsets and TileByteCounts with a byte count above 0 within the file; geometry, codec and recipe (a JPEG tile's recipe puts the IFD's JPEG prefix, a shared data source, after its first 2 bytes); an IFD whose tile tables are an earlier IFD's names its tiles by alias",
+        "strips/<k>": "data (run): the same, for StripOffsets and StripByteCounts"
+      }
+    },
+    "ome/planes/<p>": {
+      "kind": "alias",
+      "about": "an OME-TIFF's plane p (in t, c, z order), the main-chain IFD that holds it (OME-TIFF TiffData)"
+    },
+    "gaps/<offset>": {"kind": "gap"}
+  },
+  "roles": {
+    "header": {
+      "about": "the file's first 16 bytes",
+      "given": {
+        "length": "the bytes read (at most 16)",
+        "order": "'II', 'MM' or another",
+        "magic": "u2 at 2",
+        "offset_size": "u2 at 4",
+        "reserved": "u2 at 6"
+      },
+      "constraints": [
+        {"require": "length >= 8", "message": "file too short for a TIFF header"},
+        {"require": "in(order, ['II', 'MM'])", "message": "not a TIFF file"},
+        {
+          "require": "magic != 43 || (length >= 16 && offset_size == 8 && reserved == 0)",
+          "message": "invalid BigTIFF header"
+        },
+        {"require": "in(magic, [42, 43])", "message": "not a TIFF file"}
+      ]
+    },
+    "ifd_offset": {
+      "about": "an IFD the image's tree reads: in the main chain (chain), or a SubIFD; checked before its entries are read",
+      "given": {
+        "offset": "",
+        "chain": "",
+        "header_size": "",
+        "seen": "read before",
+        "read": "IFDs read so far",
+        "count_within": "its entry count is within the file",
+        "within": "its entries and next offset are within the file (known after the count)"
+      },
+      "constraints": [
+        {"require": "!chain || offset <= max_safe", "message": "IFD offset too large"},
+        {"require": "offset >= header_size", "message": "IFD offset {offset} is inside the header"},
+        {"require": "!seen", "message": "IFD offset {offset} read twice"},
+        {"require": "read < max_ifds", "message": "too many IFDs"},
+        {"require": "count_within", "message": "the IFD at {offset} is not within the file"},
+        {"require": "within", "message": "the IFD at {offset} is not within the file"}
+      ]
+    },
+    "field": {
+      "about": "the first entry of a tag of the table, in every IFD the tree reads",
+      "given": {"tag": "", "type": "", "count": "", "outside": "out of line, and its bytes do not end within the file"},
+      "derive": {"spec": "at(tags, tag)", "allowed": "at(kinds, spec.kind)"},
+      "constraints": [
+        {"require": "in(type, allowed)", "message": "tag {tag} has field type {type}"},
+        {"require": "!spec.scalar || count > 0", "message": "tag {tag} has no value"},
+        {"require": "!outside", "message": "the value of tag {tag} is outside the file"}
+      ]
+    },
+    "values": {
+      "about": "a tag's values as the profile reads them (an integer tag: its first value if scalar, else all; SubIFDs: all)",
+      "given": {"tag": "", "type": "", "largest": "the largest value read"},
+      "constraints": [
+        {
+          "require": "!in(type, [16, 18]) || largest <= max_safe",
+          "message": "a value of tag {tag} is more than 2^53 - 1"
+        }
+      ]
+    },
+    "required": {
+      "about": "a tag the profile needs a value of, in an IFD at offset",
+      "given": {"offset": "", "tag": "", "present": "the IFD has the tag with at least one value"},
+      "constraints": [{"require": "present", "message": "IFD at {offset} has no tag {tag}"}]
+    },
+    "format": {
+      "about": "an IFD's sample format (profiles/tiff.md §3.2): BitsPerSample, SampleFormat, SamplesPerPixel, PlanarConfiguration",
+      "given": {
+        "bits": "BitsPerSample's values",
+        "formats": "SampleFormat's values (default [1])",
+        "spp": "SamplesPerPixel (default 1)",
+        "planar": "PlanarConfiguration (default 1; 1 when spp is 1)"
+      },
+      "constraints": [
+        {
+          "require": "len(bits) >= 1 && distinct(bits) == 1 && first(bits) >= 1",
+          "message": "BitsPerSample values are missing, differ or are 0"
+        },
+        {
+          "require": "len(formats) >= 1 && distinct(formats) == 1",
+          "message": "SampleFormat values are missing or differ"
+        },
+        {"require": "spp >= 1", "message": "SamplesPerPixel is 0"},
+        {"require": "in(planar, [1, 2])", "message": "PlanarConfiguration {planar}"}
+      ]
+    },
+    "predictor": {
+      "about": "IFD 0's Predictor",
+      "given": {"compression": "", "predictor": ""},
+      "constraints": [
+        {
+          "require": "in(compression, jpeg2000) || predictor == 1",
+          "message": "unsupported predictor {predictor}"
+        }
+      ]
+    },
+    "integer_attribute": {
+      "about": "an OME-XML attribute read as an integer (conventions/tiff §3): digits, after stripping white space, at most 2^53 - 1",
+      "given": {
+        "key": "",
+        "text": "its value as written",
+        "digits": "it is digits",
+        "value": "its value",
+        "minimum": ""
+      },
+      "constraints": [
+        {"require": "digits && value <= max_safe", "message": "{key}='{text}' is not an integer"},
+        {"require": "value >= minimum", "message": "{key}='{text}' is less than {minimum}"}
+      ]
+    },
+    "ome_pixels": {
+      "about": "the first image's Pixels (conventions/tiff §3, §4.1)",
+      "given": {
+        "order": "DimensionOrder (default XYZCT)",
+        "spp": "IFD 0's SamplesPerPixel",
+        "size_c": "SizeC (default spp)"
+      },
+      "constraints": [
+        {
+          "require": "in(order, ['XYZCT', 'XYZTC', 'XYCZT', 'XYCTZ', 'XYTZC', 'XYTCZ'])",
+          "message": "DimensionOrder '{order}'"
+        },
+        {
+          "require": "spp <= 1 || size_c == spp || size_c == 1",
+          "message": "SizeC {size_c} with {spp} samples per pixel is not supported"
+        }
+      ]
+    },
+    "ome_planes": {
+      "about": "the planes the OME-XML describes",
+      "given": {"planes": "SizeT × channels per plane × SizeZ", "files": "distinct UUIDs the TiffData name"},
+      "constraints": [
+        {"require": "planes <= max_planes", "message": "{planes} planes is more than {max_planes}"},
+        {"require": "files <= 1", "message": "multi-file OME-TIFF is not supported"}
+      ]
+    },
+    "tiff_data": {
+      "about": "a TiffData element, as the planes are mapped",
+      "given": {
+        "inside": "its first position is within the planes",
+        "total": "planes mapped so far",
+        "bound": "4 × planes + 1000"
+      },
+      "constraints": [
+        {"require": "inside", "message": "TiffData starts outside the planes"},
+        {"require": "total <= bound", "message": "the TiffData elements cover more than {bound} planes"}
+      ]
+    },
+    "plane_map": {
+      "about": "each plane's main-chain IFD",
+      "given": {"mapped": "every plane names an IFD of the main chain"},
+      "constraints": [{"require": "mapped", "message": "OME-XML planes do not match the TIFF's images"}]
+    },
+    "subifd_levels": {
+      "about": "a plane, when IFD 0 has SubIFDs (its levels)",
+      "given": {"offset": "", "subs": "its SubIFDs read", "levels": "IFD 0's"},
+      "constraints": [{"require": "subs >= levels", "message": "the IFD at {offset} has fewer SubIFDs than IFD 0"}]
+    },
+    "size": {
+      "about": "an IFD a level uses, or a candidate level (conventions/tiff §2)",
+      "given": {
+        "offset": "",
+        "width": "",
+        "height": "",
+        "tiled": "TileWidth and TileOffsets present",
+        "has_counts": "TileByteCounts present",
+        "tile_width": "",
+        "tile_height": ""
+      },
+      "constraints": [
+        {"require": "width >= 1 && height >= 1", "message": "the image at {offset} is empty"},
+        {"require": "!tiled || has_counts", "message": "IFD at {offset} has no tag 325"},
+        {
+          "require": "!tiled || (tile_width >= 1 && tile_height >= 1)",
+          "message": "the image at {offset} has an empty tile size"
+        }
+      ]
+    },
+    "samples": {
+      "about": "how an image's bytes hold its samples (conventions/tiff §4.3)",
+      "given": {
+        "offset": "",
+        "compression": "",
+        "fill_order": "",
+        "photometric": "(default 0)",
+        "subsampling": "YCbCrSubSampling (default [2, 2])"
+      },
+      "constraints": [
+        {
+          "require": "!in(compression, [1, 8, 32946, 50000]) || fill_order == 1",
+          "message": "the image at {offset} has FillOrder {fill_order}"
+        },
+        {
+          "require": "compression == 7 || in(compression, jpeg2000) || photometric != 6 || subsampling == [1, 1]",
+          "message": "the image at {offset} is YCbCr with subsampling {subsampling}"
+        }
+      ]
+    },
+    "level_ifd": {
+      "about": "an IFD a level uses, after its size and samples",
+      "given": {"offset": "", "tiled": "", "same": "its size, tiling and format are the level's first IFD's"},
+      "constraints": [
+        {
+          "require": "tiled",
+          "message": "only tiled TIFFs are supported; the image at {offset} is stored in strips"
+        },
+        {"require": "same", "message": "planes of one pyramid level differ in size, tiling or format"}
+      ]
+    },
+    "pyramid": {
+      "about": "every IFD of every level",
+      "given": {"same": "its format is IFD 0's"},
+      "constraints": [{"require": "same", "message": "pyramid levels differ in sample format or compression"}]
+    },
+    "image": {
+      "about": "the image's sample type and codecs (conventions/tiff §4.3)",
+      "given": {
+        "bits": "",
+        "sample_format": "",
+        "spp": "",
+        "planar": "",
+        "compression": "",
+        "photometric": "(JPEG only)"
+      },
+      "derive": {"kind": "at(sample_kinds, sample_format)"},
+      "constraints": [
+        {
+          "require": "present(kind) && in(bits, [8, 16, 32, 64]) && (kind != 'float' || bits >= 32)",
+          "message": "unsupported sample type: {bits}-bit, SampleFormat {sample_format}"
+        },
+        {
+          "require": "in(compression, jpeg2000) || compression != 7 || (bits == 8 && sample_format == 1 && (spp == 1 || (spp == 3 && planar == 1 && in(photometric, [2, 6]))))",
+          "message": "unsupported JPEG: {bits}-bit, {spp} samples, planar {planar}, photometric {photometric}"
+        },
+        {"require": "in(compression, compressions)", "message": "unsupported compression {compression}"}
+      ]
+    },
+    "plane": {
+      "about": "a plane's IFD of a level, as its tiles are referenced",
+      "given": {
+        "offset": "",
+        "jpeg": "",
+        "has_tables": "JPEGTables present",
+        "tables_ok": "JPEGTables start with SOI and end with EOI, at least 4 bytes",
+        "tiles": "TileOffsets' count",
+        "counts": "TileByteCounts' count",
+        "expected": "samples × tiles across × tiles down"
+      },
+      "constraints": [
+        {
+          "require": "!jpeg || !has_tables || tables_ok",
+          "message": "the IFD at {offset} has malformed JPEGTables"
+        },
+        {
+          "require": "tiles == expected && counts == expected",
+          "message": "IFD at {offset} has {tiles} tiles, expected {expected}"
+        }
+      ]
+    },
+    "tile": {
+      "about": "a tile with a byte count above 0",
+      "given": {"k": "", "offset": "the IFD's", "within": "its bytes end within the file", "count": "", "jpeg": ""},
+      "constraints": [
+        {"require": "within", "message": "tile {k} of the IFD at {offset} is outside the file"},
+        {"require": "!jpeg || count > 2", "message": "JPEG tile {k} of the IFD at {offset} is too short"}
+      ]
+    },
+    "images": {
+      "about": "the file",
+      "given": {"ifds": "main-chain IFDs"},
+      "constraints": [{"require": "ifds >= 1", "message": "no images"}]
+    },
+    "translation": {
+      "about": "the image's translation (conventions/tiff §4.4: an OME-XML stage position, centred, or an Aperio corner), when it has one",
+      "given": {"x": "", "y": ""},
+      "constraints": [{"require": "finite(x) && finite(y)", "message": "a translation is not finite"}]
+    }
+  },
+  "about_builtins": "What the parser's code computes and the roles above check: the main chain (each next offset until 0) and the SubIFDs depth first to max_depth; the OME-XML of IFD 0's ImageDescription (ASCII, up to its first NUL, valid UTF-8, with an OME start tag) and its planes by TiffData (conventions/tiff §4.1: the stepping of DimensionOrder); the levels (IFD 0's SubIFDs per plane; else, without OME-XML, each later main-chain IFD that is tiled, has BitsPerSample, the format of IFD 0, and is smaller than the last level in both sizes); the format tuple (bits, samples, sample format, planar, compression, predictor, and photometric for JPEG); the JPEG prefix (an Adobe APP14 marker for 3 samples, then JPEGTables without its SOI and EOI)."
+}

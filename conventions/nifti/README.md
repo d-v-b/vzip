@@ -6,20 +6,20 @@ in [conventions/README.md](../README.md), cited here as "conventions §n".
 How vzip produces this layout as a virtual store, and which files it
 accepts, is the NIfTI profile, [profiles/nifti.md](../../profiles/nifti.md).
 
-Convention version: 1 · UUID: `06e5809d-4d54-4b72-afd0-6bf61a7b4c85` ·
+Convention version: 0 (until release, README §1) · UUID: `06e5809d-4d54-4b72-afd0-6bf61a7b4c85` ·
 Schema: [schema.json](schema.json)
 
 ## 1. Declaration
 
 The root declares the convention by [conventions §2](../README.md#2-attributes),
-with `"profile": "nifti"`, `"version": 1`, the file's URL as `source.url`,
+with `"profile": "nifti"`, `"version": 0`, `"revision": 23` (README §1), the file's URL as `source.url`,
 and the source metadata of §5 as the member `"nifti"`. Its CMO is:
 
 ```json
 {
   "uuid": "06e5809d-4d54-4b72-afd0-6bf61a7b4c85",
-  "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-nifti-v1/conventions/nifti/schema.json",
-  "spec_url": "https://github.com/d-v-b/vzip/blob/virtualize-nifti-v1/conventions/nifti/README.md",
+  "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/conventions/nifti/schema.json",
+  "spec_url": "https://github.com/d-v-b/vzip/blob/main/conventions/nifti/README.md",
   "name": "vzip_virtualized",
   "description": "The Zarr layout of a NIfTI source virtualized by vzip, and the source's metadata"
 }
@@ -150,8 +150,7 @@ dimensions 6 and 7 have size 1. `v` is `vox_offset` as an integer.
 RGB24 and RGBA32 are the **color** data types: each voxel is its samples
 (red, green, blue and, for RGBA32, alpha) in consecutive bytes. The file's
 voxel data is `X × Y × Z × T × C × b` bytes at offset `v`, `x` varying
-fastest. A **slice** is the `Y × X` voxels of one `(z, t, k)`, `k` the
-index along dimension 5, and a **row** is `R = X × b` bytes.
+fastest, then `y`, `z`, `t` and `k`, the index along dimension 5.
 
 ## 4. The image
 
@@ -168,21 +167,39 @@ without a name, with one array at path `"0"`: the root `zarr.json` is
 - **Shape:** `T`, `C` (the samples per voxel for a color type), `Z`, `Y`
   and `X`, each only for the axes present.
 - **Data type:** from §3.
-- **Row blocks.** Each slice is split into blocks of `h` rows, where `h` is
-  the largest divisor of `Y` with `h × R ≤ 131072` (2^17 bytes), or 1 if
-  there is none (`R > 131072`). A slice of at most 128 KiB is a single
-  block, and a larger one is cut into equal blocks of at most 128 KiB as
-  far as the divisors of `Y` allow.
-- **Chunk shape:** 1 for `t` and `z`; 1 for `c`, or the samples per voxel
-  for a color type; `h` for `y`; `X` for `x`.
-- **Codecs** ([conventions §3](../README.md#3-arrays)): `transpose` for a
-  color type (its samples are interleaved), then `bytes`, with `"endian"`
+- **Stored order.** The file holds the voxels as a row-major array `V`
+  whose axes are, outermost first: `c` (dimension 5) if `n ≥ 5`; `t` if
+  `n ≥ 4`; `z` if `n ≥ 3`; `y`; `x`; and, for a color type, `c` (the
+  samples). Its sizes are those of the array's axes, and its elements are
+  `b` bytes, or 1 byte (a sample) for a color type. The axes of `V` are the
+  array's, in another order when `n ≥ 5` (dimension 5 is stored outside
+  dimension 4) or the data type is a color type (the samples are stored
+  innermost).
+- **Chunk shape.** `V` is cut as
+  [conventions §7](../README.md#7-source-values-as-arrays) cuts contiguous
+  values, with the chunk limit `L = 131072` (2^17) bytes, which gives a
+  chunk shape for `V` (1 along its axes before the cut axis, whole along
+  those after) and the bytes of each chunk. The array's chunk shape is that
+  chunk shape, each axis's size in the array's axis order.
+- **Codecs** ([conventions §3](../README.md#3-arrays)): when the axes of
+  `V` are in another order than the array's, `transpose`, with `order` the
+  index in the array's axes of each axis of `V`, in the order of `V` (for
+  example `[1, 0, 2, 3, 4]` for `n ≥ 5`, and `[0, 2, 3, 4, 1]` for a color
+  type with `t`, `c`, `z`, `y` and `x`); then `bytes`, with `"endian"`
   (`"little"` or `"big"`: the file's byte order) when the data type is
   larger than 1 byte. There is no compressor.
-- **Chunks:** every chunk is present. The chunk with coords `t`, `k` (0 for
-  a color type), `z` (each only for the axes present), `j` and 0 is block
-  `j` of slice `(z, t, k)`: rows `j × h` to `(j + 1) × h − 1` of it, as the
-  file stores them.
+- **Chunks:** every chunk is present. The array's chunk with coords `q_a`
+  along each axis `a` is the chunk of `V` with the same coords along the
+  same axes: the bytes that conventions §7 gives it, in the order of `V`,
+  which the transpose codec puts in the array's order. An edge chunk along
+  the cut axis is followed by zero bytes up to the whole chunk (Zarr stores
+  edge chunks whole).
+
+  For example, a `64 × 64 × 33 × 200` int16 series (`n = 4`) has slices of
+  8192 bytes and volumes of 270336, over `L`, so the cut axis is `z`: `k =
+  ceil(33 / floor(131072 / 8192)) = 3` chunks of 11 slices each, the chunk
+  shape `[1, 11, 64, 64]`. A single voxel's series of 100000 float32
+  values is cut along `t` into 4 chunks of 25000.
 
 The array holds the voxels' raw values. NIfTI's value scaling is not
 applied; it is recorded in the source metadata (§5).
@@ -257,8 +274,13 @@ axes present). Otherwise it has none.
   finite and `cal_max > cal_min`. The window in raw values is
   `lo = cal_min` and `hi = cal_max`; when the scaling applies (§4.2), `lo`
   and `hi` are instead the smaller and the larger of `(cal_min − i) / s`
-  and `(cal_max − i) / s`. `M` has `{"channels": [...]}` with one object
-  per index `k < C` of dimension 5 (one object when `n < 5`):
+  and `(cal_max − i) / s`, and when either of these is not finite (the
+  arithmetic overflows binary64, which only NIfTI-2's binary64 fields can
+  make it do), `M` has no `"omero"` member. Otherwise `M` has
+  `{"channels": [...]}` with one object per index `k < C` of dimension 5
+  (one object when `n < 5`), provided `C` is at most 64; with more channels
+  `M` has no `"omero"` member (the window is the header's `cal_min` and
+  `cal_max`, and a window per channel would make the root grow with `C`):
   `{"label": "C<k>", "color": "FFFFFF", "active": true, "window": {"min":
   lo, "max": hi, "start": lo, "end": hi}}`, with `k` in decimal.
 
@@ -266,7 +288,11 @@ axes present). Otherwise it has none.
 
 The root's source metadata `S` ([conventions §2](../README.md#2-attributes))
 is an object with these members, in this order, translated by
-[conventions §6](../README.md#6-source-metadata-as-json):
+[conventions §6](../README.md#6-source-metadata-as-json). With them, the
+whole file is in the hierarchy, byte for byte, but the voxel data (the
+image), the NULs that pad text values (a character field's, or a text
+extension's, whose length is kept), and bytes before the voxel data that
+are all zero (padding):
 
 - `nifti_version`: 1 or 2.
 - `byte_order`: `"little"` or `"big"`.
@@ -274,21 +300,95 @@ is an object with these members, in this order, translated by
   version, in the order of §2 and named as there. A `char[k]` field is
   text; every other field is a number, or an array of `k` numbers for
   `T[k]`. (For example, `magic` is `"n+1"` or `"n+2"`, the bytes before
-  the first NUL.)
-- `extensions`: present when the first byte of the 4-byte extender at
-  offset `L` is not 0. An array of the header extensions, in file order,
-  each `{"ecode": c, "edata": d}`, where `c` is the extension's `ecode`
-  and `d` its `esize − 8` bytes of data as base64. The extensions form a
-  chain: the first starts at `q = L + 4`; while `q + 8 ≤ v`, the extension
-  at `q` has `esize` (`i32`) at `q` and `ecode` (`i32`) at `q + 4`, and the
-  next starts at `q + esize`. The chain stops, without the extension at
-  `q`, when `esize < 8`, when `q + esize > v`, or when its data and that of
-  the extensions before it would exceed 2^24 bytes (16 MiB); in these
-  three cases `extensions_truncated` is present. (The standard's rule that
-  `esize` is a multiple of 16 is not checked.)
-- `extensions_truncated`: `true`, only as above.
+  the first NUL.) A float (`f32` or `f64`) value whose bits a JSON number
+  or `"NaN"` does not keep is instead the object `{"bits": H}`, `H` its
+  IEEE 754 bits as 8 (`f32`) or 16 (`f64`) lowercase hexadecimal digits,
+  most significant first, whatever the file's byte order. These values
+  are a negative zero (bits `80000000` or `8000000000000000`), which some
+  JSON writers write as `0`, and every NaN but the canonical one
+  (`7fc00000` or `7ff8000000000000`), which `"NaN"` stands for: one with
+  a payload, a negative one or a signaling one. So every header byte is
+  recovered: a number is written back as its value in the field's type, `"NaN"` as the
+  canonical NaN, and `{"bits": H}` as its bits.
+- `header_rest`: present when a `char[k]` field other than `magic` has a
+  NUL followed by a byte that is not NUL. An object with one member per
+  such field, in the order of §2 and named as there: the field's bytes
+  after its first NUL, to its end, in base64. (`magic`'s bytes are fixed by
+  the profile's choice of the file.)
+- `extender`: present when the 4 **extender** bytes at offset `L` are
+  neither `00 00 00 00` nor `01 00 00 00`: those bytes, in base64.
+- `extensions`: present when the extender's first byte is not 0. The
+  extensions form a chain: the first starts at `q = L + 4`; while
+  `q + 8 ≤ v`, the extension at `q` has `esize` (`i32`) at `q` and `ecode`
+  (`i32`) at `q + 4`, both in the file's byte order, and the next starts at
+  `q + esize`. The chain stops, without the extension at `q`, when
+  `esize < 8` or `q + esize > v`. (The standard's rule that `esize` is a
+  multiple of 16 is not checked.) The chain **ends** at the `q` where it
+  stops. Each extension is `{"ecode": c, ...}`, `c` its `ecode`, and its
+  `esize − 8` bytes of data `D` are:
+  - for the codes of text extensions, 4 (AFNI, XML), 6 (comment), 8 (XCEDE,
+    XML), 32 (CIFTI, XML) and 44 (MRS, JSON), when `D` is at most 2^16 bytes
+    and every byte after its first NUL is NUL (the padding): `"text"`, the
+    text value (conventions §6) of `D` up to its first NUL, `t` bytes;
+    and `"esize"`, the extension's `esize`, when it is not `ceil((t + 8) /
+    16) × 16` (the fewest NULs that pad the extension to a multiple of 16
+    bytes, none when `t + 8` is one). `D` is then the text's bytes followed
+    by `esize − 8 − t` NULs;
+  - otherwise, when `D` is at most 64 bytes: `"edata"`, `D` in base64;
+  - otherwise: `"data"`, the path (`vzip_source/extensions/<i>`, `i` its
+    index in the array) of a `uint8` array holding `D`
+    ([conventions §7](../README.md#7-source-values-as-arrays)), referenced
+    where the file holds it.
+
+  The array `E` of the extensions, in file order, is the value when its
+  JSON is at most 16384 bytes (the **budget**), counting the UTF-8 encoding
+  of its compact JSON (no whitespace, and no character escaped that JSON
+  does not require escaping, as JavaScript's `JSON.stringify` writes it).
+  (Each extension takes at least 12 of those bytes, with its comma, so `E`
+  is never the value when there are over 1365 extensions.)
+  Otherwise, with `N` the number of extensions, the value is the object
+  `{"ecode": "vzip_source/extensions/ecode", "esize":
+  "vzip_source/extensions/esize", "data": "vzip_source/extensions/data",
+  "text": T}`, where:
+  - `vzip_source/extensions/ecode` and `vzip_source/extensions/esize` are
+    `int32` arrays of shape `[N]`, dimension `index`, in the file's byte
+    order: the `ecode` and the `esize` of each extension. Their values are
+    scattered in the file, so they are copied, each in `k = ceil(N / 2^22)`
+    chunks of `ceil(N / k)` values (the last padded with zero bytes). (A
+    text extension's `esize` gives its padding, as `"esize"` does in `E`.)
+  - `T` holds the text extensions that fit: taking each extension that the
+    rules above make `"text"`, in file order, its text value is the member
+    of `T` named by its index `i` in decimal when, with it, the JSON of the
+    whole object is still at most the budget (counted as for `E`), and is
+    left out otherwise (a later, shorter one may still fit). `"text"` is
+    absent when `T` would be empty.
+  - `vzip_source/extensions/data` is a family of byte values
+    ([conventions §7](../README.md#7-source-values-as-arrays)) of `N`
+    members, always in its second form, the arrays `offsets` and `data`
+    (also when every member has the same length): member `i` is the
+    extension's `D`, whole, unless `i` is in `T`, in which case it is
+    absent (empty).
+- `extensions_truncated`: `true` when the extender's first byte is not 0
+  and `unparsed` is present (the chain did not reach the voxel data, and
+  what it left is not padding).
+- `unparsed`: present when the bytes from `e` to `v` are not all zero,
+  where `e` is where the chain ends, or `L + 4` when the extender's first
+  byte is 0: the path `vzip_source/unparsed` of a `uint8` array of those
+  `v − e` bytes (conventions §7), referenced where the file holds them.
+  These are, for example, bytes after an extender whose first byte is 0, an
+  extension the chain could not read, or the fewer than 8 bytes after its
+  last extension. Bytes from `e` to `v` that are all zero are padding, and
+  are not kept.
+- `trailing`: when the file goes on after the voxel data (`v + B` is less
+  than its size), the path `vzip_source/trailing` of a `uint8` array of
+  those bytes.
 - `scaling`: `{"slope": s, "inter": i}`, present when the scaling is
   nontrivial (§4.2).
+- `affine`: present when the image has an affine (§4.3):
+  `{"form": "sform" | "qform", "applied": A}`, where `A` is whether the
+  affine is representable, and so gives the scales and translation. When
+  it is not, it is still in `header`, and the image is placed by `pixdim`
+  alone: flips and rotations are not applied.
 
 `header` holds every field as stored, including those the layout does not
 use, so that a reader who needs, say, the slice timing (`slice_code`,
@@ -296,41 +396,45 @@ use, so that a reader who needs, say, the slice timing (`slice_code`,
 it here. `scaling` is derived from `header`; it is there so that a reader
 need not repeat the rules of §4.2.
 
+`vzip_source` has no source metadata: it does not declare the convention.
+The node exists when it has an array (conventions §2).
+
 ## 6. Example
 
-A big-endian NIfTI-1 file at `https://example.org/brain.nii` holds an int16
-`4 × 3 × 2 × 5` volume, a radiological sform (so the image has no
-translation), and a slope of 0.5 with an intercept of −20. Its root
-`zarr.json` has these attributes (`M` elided):
+A big-endian NIfTI-1 file at `https://example.org/brain.nii` (the fixture
+`web/test/fixtures/nifti/nifti_n1_be_int16_4d_scaled.nii`) holds an int16
+`4 × 3 × 2 × 5` volume, a radiological sform (not representable, so the
+image has no translation), and a slope of 0.5 with an intercept of −20. Its
+root `zarr.json` has these attributes (`M` elided):
 
 ```json
 {
   "ome": M,
   "zarr_conventions": [{
     "uuid": "06e5809d-4d54-4b72-afd0-6bf61a7b4c85",
-    "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-nifti-v1/conventions/nifti/schema.json",
-    "spec_url": "https://github.com/d-v-b/vzip/blob/virtualize-nifti-v1/conventions/nifti/README.md",
+    "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/conventions/nifti/schema.json",
+    "spec_url": "https://github.com/d-v-b/vzip/blob/main/conventions/nifti/README.md",
     "name": "vzip_virtualized",
     "description": "The Zarr layout of a NIfTI source virtualized by vzip, and the source's metadata"
   }],
   "vzip_virtualized": {
     "profile": "nifti",
-    "version": 1,
+    "version": 0,
+    "revision": 23,
     "source": {"url": "https://example.org/brain.nii"},
     "nifti": {
       "nifti_version": 1,
       "byte_order": "big",
       "header": {
-        "sizeof_hdr": 348, "data_type": "", "db_name": "", "extents": 0,
-        "session_error": 0, "regular": "", "dim_info": 0,
+        "sizeof_hdr": 348, "data_type": "", "db_name": "", "extents": 0, "session_error": 0, "regular": "", "dim_info": 0,
         "dim": [4, 4, 3, 2, 5, 1, 1, 1],
         "intent_p1": 0.0, "intent_p2": 0.0, "intent_p3": 0.0, "intent_code": 0,
         "datatype": 4, "bitpix": 16, "slice_start": 0,
         "pixdim": [-1.0, 1.5, 1.5, 3.0, 2.5, 1.0, 1.0, 1.0],
         "vox_offset": 352.0, "scl_slope": 0.5, "scl_inter": -20.0,
-        "slice_end": 0, "slice_code": 0, "xyzt_units": 10,
-        "cal_max": 10.0, "cal_min": -30.0, "slice_duration": 0.0, "toffset": 0.0,
-        "glmax": 0, "glmin": 0, "descrip": "", "aux_file": "",
+        "slice_end": 0, "slice_code": 0, "xyzt_units": 10, "cal_max": 10.0, "cal_min": -30.0,
+        "slice_duration": 0.0, "toffset": 0.0, "glmax": 0, "glmin": 0,
+        "descrip": "", "aux_file": "",
         "qform_code": 0, "sform_code": 1,
         "quatern_b": 0.0, "quatern_c": 0.0, "quatern_d": 0.0,
         "qoffset_x": 0.0, "qoffset_y": 0.0, "qoffset_z": 0.0,
@@ -339,14 +443,36 @@ translation), and a slope of 0.5 with an intercept of −20. Its root
         "srow_z": [0.0, 0.0, 3.0, -72.0],
         "intent_name": "", "magic": "n+1"
       },
-      "scaling": {"slope": 0.5, "inter": -20.0}
+      "scaling": {"slope": 0.5, "inter": -20.0},
+      "affine": {"form": "sform", "applied": false}
     }
   }
 }
 ```
 
-A NIfTI-2 file with one comment extension (`ecode` 6) has, after `header`:
+Its array has the chunk shape `[5, 2, 3, 4]`: its 240 bytes of voxels are
+a single chunk.
+
+A NIfTI-2 file written by nibabel with one comment extension (`ecode` 6,
+the fixture `nifti_nibabel_n2_vector_ext.nii`) has, after `header`:
 
 ```json
-"extensions": [{"ecode": 6, "edata": "d3JpdHRlbiBieSB3cml0ZV9maXh0dXJlcy5weQAAAAAAAAAAAAAAAA=="}]
+"extensions": [{"ecode": 6, "text": "written by write_fixtures.py"}]
 ```
+
+A NIfTI-1 file whose one extension is followed by 4 bytes before the voxel
+data, too few for another (the fixture `nifti_region_chain_tail.nii`), has:
+
+```json
+"extensions": [{"ecode": 6, "text": "abcdefg"}],
+"extensions_truncated": true,
+"unparsed": "vzip_source/unparsed"
+```
+
+and `vzip_source/unparsed` is a `uint8` array of shape `[4]`.
+
+A `200 × 700` uint8 slice (the fixture `nifti_rowblock_split.nii`) is
+140000 bytes, over `L`, so the cut axis is `y`, of rows of 200 bytes: `k =
+ceil(700 / floor(131072 / 200)) = 2` chunks of 350 rows, the chunk shape
+`[1, 350, 200]`, and its chunk `0/c/0/1/0` holds rows 350 to 699, 70000
+bytes.

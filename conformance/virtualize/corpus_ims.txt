@@ -2,24 +2,24 @@
 # (downloads.openmicroscopy.org/images/Imaris-IMS/, CC BY 4.0) and Zenodo records (each under the
 # record's license, CC BY 4.0 or CC0). Writers include Andor Fusion, Imaris 7-10 and ImarisFileConverter;
 # croppedRetinaLz4 (LZ4) and the scene-only hCD8 file must be rejected.
-https://downloads.openmicroscopy.org/images/Imaris-IMS/davemason/Convallaria_3C_1T_confocal.ims|ome_convallaria_3c_1t
-https://downloads.openmicroscopy.org/images/Imaris-IMS/davemason/Convallaria_3C_10T_confocal.ims|ome_convallaria_3c_10t
-https://downloads.openmicroscopy.org/images/Imaris-IMS/davemason/TransFactors_2C_SRRF.ims|ome_transfactors_2c_srrf
-https://downloads.openmicroscopy.org/images/Imaris-IMS/davemason/Convallaria_3C_3T_35Z_confocal_deconvolved.ims|ome_convallaria_3c_3t_35z_deconvolved
-https://downloads.openmicroscopy.org/images/Imaris-IMS/eliana/retina_large.ims|ome_retina_large
-https://downloads.openmicroscopy.org/images/Imaris-IMS/eliana/2016-07-26_17.11.03_Sample%20Prefix_5P298C2_Protocol.ims|ome_eliana_protocol
-https://downloads.openmicroscopy.org/images/Imaris-IMS/bitplane/performance/performanceTestImage.ims|ome_bitplane_performance
-https://downloads.openmicroscopy.org/images/Imaris-IMS/bitplane/lz4/croppedRetinaLz4.ims|ome_bitplane_retina_lz4
-https://zenodo.org/api/records/14675120/files/Andor_Dragonfly_example_2Dsnap.ims/content|zenodo_dragonfly_2dsnap
-https://zenodo.org/api/records/4449687/files/HeLa_H2BmCherry_GFPtubulin_Mitotracker.ims/content|zenodo_hela_mitotracker
-https://zenodo.org/api/records/4433202/files/EM_C_596.ims/content|zenodo_ovule_em_c_596
-https://zenodo.org/api/records/18473314/files/HEK_DDX6_tracked.ims/content|zenodo_hek_ddx6_tracked
-https://zenodo.org/api/records/3843094/files/Figure%204%2BSupp%20Video%203_h_hCD8-SHG_scene.ims/content|zenodo_hcd8_shg_scene
-https://zenodo.org/api/records/17257407/files/Anna_test.ims/content|zenodo_anna_test
-https://zenodo.org/api/records/15001649/files/bfGetReaderTest.ims/content|zenodo_bfgetreadertest
-https://zenodo.org/api/records/7845413/files/data%20movie%201.ims/content|zenodo_cyanobacteria_movie
-https://zenodo.org/api/records/10937428/files/figure4_mutants_individual_11_segment1.ims/content|zenodo_polarity_mutants
-https://zenodo.org/api/records/18852087/files/02242026%20Sqh%2CmiraRFP%20x%20534%2C%202hx1m%2C%20brain%201%20symdiv%20crop.ims/content|zenodo_sqh_imaris10
-https://zenodo.org/api/records/20307858/files/Imaris_sample.ims/content|zenodo_imaris_subresolution
-https://zenodo.org/api/records/33141/files/deconv_GMRFlp_CD4tdGFP_GMR-myr-RFP_P28_culture_fast1_1-31-13.ims/content|zenodo_filopodia_deconv
-https://zenodo.org/api/records/10870403/files/IBEX_mouse_spleen.ims/content|zenodo_ibex_mouse_spleen
+https://downloads.openmicroscopy.org/images/Imaris-IMS/davemason/Convallaria_3C_1T_confocal.ims|ome_convallaria_3c_1t|ends-sha256=e1aa9e0762f8e532caba50022a41fd6f5b591659eb132e72c45e2f4675c371d9
+https://downloads.openmicroscopy.org/images/Imaris-IMS/davemason/Convallaria_3C_10T_confocal.ims|ome_convallaria_3c_10t|ends-sha256=2b3b97c001b601f5a2c30b659ba25dfcb979cb95ac583b9ad02b6872e1f08d88
+https://downloads.openmicroscopy.org/images/Imaris-IMS/davemason/TransFactors_2C_SRRF.ims|ome_transfactors_2c_srrf|ends-sha256=f0ab139b219af38b558df82b07d31014c221f5022412d584086681f3615e71e0
+https://downloads.openmicroscopy.org/images/Imaris-IMS/davemason/Convallaria_3C_3T_35Z_confocal_deconvolved.ims|ome_convallaria_3c_3t_35z_deconvolved|ends-sha256=7ee04c2e452a5ed25cb2c09c7590c5e6852e420f5be726f61579a37933f03caf
+https://downloads.openmicroscopy.org/images/Imaris-IMS/eliana/retina_large.ims|ome_retina_large|ends-sha256=48ffe1f873b89d03a4c43a80e03b9522198ab5853d9ca5e283010656ae018b59
+https://downloads.openmicroscopy.org/images/Imaris-IMS/eliana/2016-07-26_17.11.03_Sample%20Prefix_5P298C2_Protocol.ims|ome_eliana_protocol|ends-sha256=bf2df92513d5116bbb004eba59c7c3c07248182774de1897b064495771546dad
+https://downloads.openmicroscopy.org/images/Imaris-IMS/bitplane/performance/performanceTestImage.ims|ome_bitplane_performance|ends-sha256=63b81604a5802728944668765cc11db5d4fe271a0e91f58a8344f93c072c15ff
+https://downloads.openmicroscopy.org/images/Imaris-IMS/bitplane/lz4/croppedRetinaLz4.ims|ome_bitplane_retina_lz4|ends-sha256=b7debc9d24c349e5aa46a3eb26f9a9c8356cb651cf68cdd521a6eca72cc1e4db
+https://zenodo.org/api/records/14675120/files/Andor_Dragonfly_example_2Dsnap.ims/content|zenodo_dragonfly_2dsnap|ends-sha256=24f26352f3d764cc628fcd8faec4fb6c68468f5784a3b251a18b324b1b91e9c5
+https://zenodo.org/api/records/4449687/files/HeLa_H2BmCherry_GFPtubulin_Mitotracker.ims/content|zenodo_hela_mitotracker|ends-sha256=9f624b8c22c539fbef8e5077182cd51c983de7f0082e50ec9be0016e0fd4099d
+https://zenodo.org/api/records/4433202/files/EM_C_596.ims/content|zenodo_ovule_em_c_596|ends-sha256=2dbd76cc55b71ce2e933a301bcf0a46cc93179d10919236f433167bcb9e9a736
+https://zenodo.org/api/records/18473314/files/HEK_DDX6_tracked.ims/content|zenodo_hek_ddx6_tracked|ends-sha256=73d558bd6b644093b30a811dfbd479f35234eb57547845a9a04af9a9b472d1a4
+https://zenodo.org/api/records/3843094/files/Figure%204%2BSupp%20Video%203_h_hCD8-SHG_scene.ims/content|zenodo_hcd8_shg_scene|ends-sha256=bbc8fe05c44f4bf2c381fcfaf787b0fe63ab1512e73069671727bd4597a43d77
+https://zenodo.org/api/records/17257407/files/Anna_test.ims/content|zenodo_anna_test|ends-sha256=50b4b73e3ca25b02aad08550d2a94b817cd3619aba1da5569dc41d93239c2bda
+https://zenodo.org/api/records/15001649/files/bfGetReaderTest.ims/content|zenodo_bfgetreadertest|ends-sha256=1136e853482e711a7ea475748c47667399894102d0d25b9a3de97d29f4ea88d2
+https://zenodo.org/api/records/7845413/files/data%20movie%201.ims/content|zenodo_cyanobacteria_movie|ends-sha256=8a5f4049f5bb84bb5b86bf3f495df37ed5f8417aa97a8502082e0be4aa00640f
+https://zenodo.org/api/records/10937428/files/figure4_mutants_individual_11_segment1.ims/content|zenodo_polarity_mutants|ends-sha256=a1c14725e1bdbfcffa9b1cdf93e814dec15575f9db07f854d3f0b95b744762aa
+https://zenodo.org/api/records/18852087/files/02242026%20Sqh%2CmiraRFP%20x%20534%2C%202hx1m%2C%20brain%201%20symdiv%20crop.ims/content|zenodo_sqh_imaris10|ends-sha256=fa568c07d2b8322d9b46bd855f15c2eda72d66749d1500a0a69b43a74583df71
+https://zenodo.org/api/records/20307858/files/Imaris_sample.ims/content|zenodo_imaris_subresolution|ends-sha256=1c27afe53565b0afb85551898ac0ad5192ca58fa5452b6bfefefb9bf2ebbff9a
+https://zenodo.org/api/records/33141/files/deconv_GMRFlp_CD4tdGFP_GMR-myr-RFP_P28_culture_fast1_1-31-13.ims/content|zenodo_filopodia_deconv|ends-sha256=f171911bbb0a121696e37c1b46c76bc2b7a927cfa6474db619099a9b5a2216f2
+https://zenodo.org/api/records/10870403/files/IBEX_mouse_spleen.ims/content|zenodo_ibex_mouse_spleen|ends-sha256=8e18c206c13d4d3c9df0f6c2502811c778aeb4525c15376dd907f1e373177488

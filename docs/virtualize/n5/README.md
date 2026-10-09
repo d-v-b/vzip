@@ -31,8 +31,15 @@ A Zarr v3 hierarchy with a node at the path of every N5 group and dataset.
   truncated edge blocks Java N5 writes read correctly.
 - **Chunk keys:** the `v2` encoding with `/`, so chunk keys are the N5 block
   keys and every chunk entry is the block object at the same key.
-- **Attributes:** each group's and dataset's attributes are kept (without
-  the N5 structural members).
+- **Attributes:** each group's and dataset's attributes are kept on its
+  node, as `vzip_virtualized.n5.attributes` (without the N5 structural
+  members, which the Zarr v3 metadata holds; any the Zarr v3 metadata does
+  not reproduce, such as the container's `n5` version, are under
+  `vzip_virtualized.n5.metadata`). They are not mixed into the node's own
+  attributes, so they cannot be mistaken for OME-NGFF metadata.
+- **Other objects:** any object of the store that is neither an
+  `attributes.json` nor a block (a README, say) is kept whole, referenced in
+  place, under `vzip_source/objects/`.
 - **Multiscales:** a group with COSEM `multiscales` (as on OpenOrganelle) or
   n5-viewer `scales`/`downsamplingFactors` (BigDataViewer, Paintera) also
   gets `"ome"`: an OME-NGFF 0.5 multiscale with axes, units, scales and
@@ -51,10 +58,13 @@ uv run python -m vzip.virtualize https://janelia-cosem-datasets.s3.amazonaws.com
 ```
 
 ```
-{"format": "n5", "groups": 1, "arrays": 5, "chunks": 1612, "emptyChunks": 0, "objects": 1618, "images": [{"path": "", "convention": "cosem"}], "listingRequests": 2}
+{"format": "n5", "groups": 1, "arrays": 5, "chunks": 1612, "emptyChunks": 0, "objects": 1618, "otherObjects": 0, "images": [{"path": "", "convention": "cosem"}], "listingRequests": 2}
 ```
 
-This took 5 s and wrote a 198 KB archive.
+This took 5 s and wrote a 198 KB archive, at VIRTUALIZE.md revision 16
+([overview](../README.md#formats)). (`otherObjects`, the objects kept under
+`vzip_source/objects/`, is new since then; it is 0 here, as the store's 1618
+objects are its 6 documents and 1612 blocks.)
 
 ```python
 import zarr
@@ -68,7 +78,7 @@ for d in ms["datasets"]:
     print(d["path"], a.shape, a.chunks, a.dtype, d["coordinateTransformations"][0]["scale"])
 a = g["s4"]
 print(a.metadata.codecs)
-print(a.metadata.dimension_names, a.attrs["transform"]["axes"])
+print(a.metadata.dimension_names, a.attrs["vzip_virtualized"]["n5"]["attributes"]["transform"]["axes"])
 print(a[200, 50, 180:190])
 ```
 
@@ -84,8 +94,9 @@ s4 (750, 100, 398) (64, 64, 64) uint16 [64.0, 64.0, 83.84]
 [203 203 203 203   0 203 203 203   0   0]
 ```
 
-The COSEM transform lists its axes as `z, y, x` (C order); the OME axes and
-`dimension_names` are `x, y, z`, the N5 dimension order. The values match
+The COSEM transform, one of the dataset's own attributes, lists its axes as
+`z, y, x` (C order); the OME axes and `dimension_names` are `x, y, z`, the N5
+dimension order. The values match
 the block `s4/3/0/2` decoded by hand (gunzip, big-endian `uint16`).
 
 **In the browser.** Not on the live demo yet: it virtualizes only TIFF,
@@ -139,7 +150,9 @@ Notes:
 ## Performance
 
 - **Listing dominates.** S3 returns 1000 keys per listing request, and the
-  requests are sequential. OpenOrganelle's full-resolution
+  requests are sequential. (The `attributes.json` documents are then read
+  concurrently, 16 at a time by default, `--workers N`.) OpenOrganelle's
+  full-resolution
   `jrc_hela-2.n5/em/fibsem-uint16/s0` (382288 blocks) took 328 s, almost all
   of it the 383 listing requests, and gave a 43.7 MB archive (40.1 MB of it
   block URLs, which deflate to 0.98 MB) that opens in 1.2 s

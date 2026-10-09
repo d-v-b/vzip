@@ -5,7 +5,7 @@ vzip's conventions share is in [conventions/README.md](../README.md), cited
 here as "conventions §n". How vzip produces this layout as a virtual store
 from a listed store is the N5 profile, [profiles/n5.md](../../profiles/n5.md).
 
-Convention version: 1 · UUID: `ad5d4c39-c69e-48f7-a3ef-4cc8c607d416` ·
+Convention version: 0 (until release, README §1) · UUID: `ad5d4c39-c69e-48f7-a3ef-4cc8c607d416` ·
 Schema: [schema.json](schema.json)
 
 This convention gives a layout only to the containers that meet its
@@ -27,21 +27,22 @@ Each N5 dataset becomes an array that reads the blocks with the
 (`codecs/n5_default`), and each chunk holds a whole block object, header
 included: the codec parses the header, so a block that is smaller than the
 block size (the truncated edge blocks Java N5 writes) or larger (padded
-ones) reads correctly.
+ones) reads correctly. Every object of the container that is neither a
+node's document nor a block is kept whole (§6).
 
 ## 1. Declaration
 
 The root declares the convention by [conventions §2](../README.md#2-attributes),
-with `"profile": "n5"`, `"version": 1`, the store's URL (ending in `/`) as
+with `"profile": "n5"`, `"version": 0`, `"revision": 23` (README §1), the store's URL (ending in `/`) as
 `source.url`, and the root's source metadata (§5), if it has any, as the
-member `"n5"`. Every other node that has source metadata (every explicit
-group and dataset) declares it with `{"n5": S}`. Its CMO is:
+member `"n5"`. Every other node that has source metadata (§5) declares it
+with `{"n5": S}`. Its CMO is:
 
 ```json
 {
   "uuid": "ad5d4c39-c69e-48f7-a3ef-4cc8c607d416",
-  "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-n5-v1/conventions/n5/schema.json",
-  "spec_url": "https://github.com/d-v-b/vzip/blob/virtualize-n5-v1/conventions/n5/README.md",
+  "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/conventions/n5/schema.json",
+  "spec_url": "https://github.com/d-v-b/vzip/blob/main/conventions/n5/README.md",
   "name": "vzip_virtualized",
   "description": "The Zarr layout of a N5 source virtualized by vzip, and the source's metadata"
 }
@@ -59,7 +60,8 @@ segments):
 
 - a candidate inside a dataset (a proper descendant of a directory that is
   a dataset) is **not a node**, and its document is neither read nor
-  checked;
+  checked: it, and the blocks of such a nested dataset, are other objects
+  (§6);
 - otherwise, a candidate whose document has a member `dimensions` is a
   **dataset**;
 - otherwise, it is an **explicit group**.
@@ -69,7 +71,8 @@ group, and is not one itself, is an **implicit group** (N5 has no document
 for a group without attributes; any directory on a file system is a group,
 and an object store has directories only as key prefixes). No other
 directory is a node: a directory that leads to no `attributes.json` (for
-example a directory of other files) is not part of the output.
+example a directory of other files) is not a node, and its objects are
+other objects (§6).
 
 The hierarchy has one `zarr.json` per node, at `<path>/zarr.json`
 (`zarr.json` for the root):
@@ -117,13 +120,13 @@ is the chunk whose index along dimension `k` is `ik`.
 **Compression.** The compression object's `type` selects the bytes-to-bytes
 codec `C`, or none:
 
-| `type` | `C` |
-|---|---|
-| `raw` | none |
-| `gzip` | `{"name": "gzip", "configuration": {"level": 1}}` if the member `useZlib` is absent or `false`; `{"name": "zlib", "configuration": {"level": 1}}` if it is `true` |
-| `zstd` | `{"name": "zstd", "configuration": {"level": 0, "checksum": false}}` |
-| `blosc` | `{"name": "blosc", "configuration": {"cname": c, "clevel": l, "shuffle": s, "typesize": b, "blocksize": k}}`, see below |
-| anything else, among them `lz4`, `xz`, `bzip2` and `jpeg` | rejected |
+| `type` | `C` | members `C` carries |
+|---|---|---|
+| `raw` | none | `type` |
+| `gzip` | `{"name": "gzip", "configuration": {"level": L}}` if the member `useZlib` is absent or `false`; `{"name": "zlib", "configuration": {"level": L}}` if it is `true` | `type`, `useZlib`, `level` |
+| `zstd` | `{"name": "zstd", "configuration": {"level": L, "checksum": false}}` | `type`, `level` |
+| `blosc` | `{"name": "blosc", "configuration": {"cname": c, "clevel": l, "shuffle": s, "typesize": b, "blocksize": k}}`, see below | `type`, `cname`, `clevel`, `shuffle`, `blocksize` |
+| anything else, among them `lz4`, `xz`, `bzip2` and `jpeg` | rejected | |
 
 - `gzip`: a `useZlib` member that is not a boolean rejects the input. Java
   N5 writes a gzip stream (RFC 1952) unless `useZlib` is true, when it
@@ -138,11 +141,19 @@ codec `C`, or none:
   stream describes itself, so every n5-blosc block decodes with the Zarr
   `blosc` codec; these checks make its configuration exactly the
   compressor's.)
-- The compression levels of `gzip`, `zlib` and `zstd`, which only matter
-  when encoding, are not read from the document: the codecs carry the fixed
-  levels above.
+- `L` is the member `level`. For `gzip` it MUST be an integer from −1 to
+  9, and `L` is that integer, except that −1 (the default of Java's
+  `Deflater`, which Java N5 writes) is 6, the level it stands for (the
+  Zarr v3 `gzip` and `zlib` codecs take 0 to 9); when the member is absent,
+  `L` is 6 too. For `zstd` it MUST be an integer from −131072 to 22 (zstd's
+  levels, which the Zarr v3 `zstd` codec takes), and `L` is that integer;
+  when it is absent, `L` is 3, the default of n5-zstandard. Any other value
+  rejects the input. (A level only matters when encoding; the codec
+  carries it so that the compression can be recovered.)
 
-No other member of the compression object is read.
+The compression object's members that `C` does not carry (such as
+n5-blosc's `nthreads`) are not read here; they are kept in the source
+metadata (§5).
 
 **The array.** The dataset's `zarr.json` is the object
 
@@ -168,8 +179,8 @@ names, and no other members, where:
   `{"name": "bytes"}` when `b = 1`;
 - `C` is the compression codec, and is left out (the list is `[T, B]`)
   when there is none;
-- `A` holds the declaration of §1, with the dataset's whole document as
-  its source metadata (§5).
+- `A` holds the declaration of §1, with the dataset's source metadata
+  (§5), when it has any.
 
 N5 has no fill value; blocks that do not exist read as 0.
 
@@ -180,13 +191,16 @@ The **chunk keys** of a dataset at path `D` are `D/i0/i1/…/i(n−1)` (or
 form of an integer with `0 ≤ ik < ceil(dimensions[k] / blockSize[k])`,
 without leading zeros (`0` itself is the only form of zero). A dataset with
 a zero in `dimensions` has no chunk keys. Its chunk objects ([VIRTUALIZE.md §1.4](../../VIRTUALIZE.md#14-store-inputs)) are the
-store's objects with these keys; every other object under `D` (an object
-whose name is not a chunk key, or whose index is outside the grid) is not
-part of the output.
+store's objects with these keys, whatever their size; every other object
+under `D` (an object whose name is not a chunk key, or whose index is
+outside the grid) is an other object (§6).
 
 Each chunk is present when its object is (and is not empty): its bytes
 are the whole block object, header included, which the `n5_default` codec
-decodes. Every other chunk is absent and reads as 0.
+decodes. Every other chunk is absent and reads as 0. An empty chunk object
+is one of §6's empty objects, whose key is kept there. (N5 readers fail on
+an empty block, which an interrupted write can leave behind, rather than
+read it as absent; the key records that the object was there.)
 
 An N5 block declares its **mode** in its header: default (0), varlength (1)
 or object (2). Only default-mode blocks hold an array of the dataset's
@@ -290,9 +304,11 @@ present, zeros when `translate` is absent).
 
 Any member above that is present but not of the stated form means `G` is
 not recognized. Then `M` is as for COSEM, without `name`, with the datasets
-`s0`, …, `s(k−1)`, each with only a scale transformation: along dimension
-`j`, level `i`'s scale is `r[j] × factors_i[j]`. The unit, if it maps, is
-the unit of every space axis.
+`s0`, …, `s(k−1)`, each with a scale and a translation: along dimension
+`j`, level `i`'s scale is `r[j] × factors_i[j]` and its translation is
+`((factors_i[j] − 1) / 2) × r[j]`, since N5's downsampling (as BigDataViewer
+and the N5 tools do it) centers a downsampled voxel on the voxels it
+averages. The unit, if it maps, is the unit of every space axis.
 
 **Dimension names.** OME-NGFF 0.5 requires every level array to have
 `dimension_names` equal to its image's axis names. Groups are considered in
@@ -306,20 +322,111 @@ array order.
 ## 5. Source metadata
 
 A node's source metadata `S` ([conventions §2](../README.md#2-attributes)) is
-its `attributes.json` document, whole and unchanged: for a dataset
-including `dimensions`, `blockSize`, `dataType` and the compression (with
-members, such as a level, that the layout does not use), and for any node
-the container's version `n5`, the user's attributes and those of the
-multiscale conventions (`pixelResolution`, `transform`, `scales`, ...). An
-implicit group, which has no document, has no source metadata. Every
-member is under the key, so none can collide with `ome` or with the
-conventions of the Zarr v3 hierarchy; a document that has its own
-`vzip_virtualized` or `zarr_conventions` nests them there.
+the object
 
-## 6. Example
+```json
+{"attributes": A, "metadata": M}
+```
+
+where each member is present only when its value is not empty, and
+the node has source metadata only when `S` has a member. An implicit group,
+which has no document, has none.
+
+- `A` is the node's `attributes.json` document without its **layout
+  members**: the container's version `n5`, and, for a dataset,
+  `dimensions`, `blockSize`, `dataType`, `compression` and
+  `compressionType`. It is the user's attributes and those of the
+  multiscale conventions (`pixelResolution`, `transform`, `scales`, ...),
+  unchanged. (A group's `dataType` or `compression` is not a layout member:
+  it describes no dataset.) Every member is under the key, so none can
+  collide with `ome` or with the conventions of the Zarr v3 hierarchy; a
+  document that has its own `vzip_virtualized` or `zarr_conventions` nests
+  them there.
+- `M` holds the layout members that the Zarr v3 metadata does not
+  reproduce, in this order:
+  - `n5`, the member as written, when the document has it;
+  - for a dataset, `compression`: the object of the compression object's
+    members that its codec does not carry (§3), when there is any;
+  - for a dataset whose document has both `compression` and
+    `compressionType`, the member `compressionType` as written (§3 reads
+    only `compression`).
+
+What `S` leaves out, the Zarr v3 metadata holds: `dimensions`, `blockSize`,
+`dataType`, and the compression's `type` and the members its codec
+carries. What neither keeps is layout: whether a default level was written
+(or was −1 rather than 6), whether `useZlib` was `false` or absent, and
+whether an old container wrote `compressionType` rather than `compression`.
+So a node's document is recovered from its `zarr.json`: the members that §3
+reads back from the Zarr v3 metadata (`dimensions` the shape, `blockSize`
+the chunk shape, `dataType` the data type, `compression` from the codec),
+then those of `A`, and those of `M` set over them (the members of
+`M.compression` over the compression object).
+
+Members are copied as [VIRTUALIZE.md §1.6](../../VIRTUALIZE.md#16-json-documents)
+reads them, except that a number written as an integer (a JSON number
+with no fraction and no exponent) is kept exactly, every digit, beyond
+2^53 − 1 too, and is written back so. Any other number is its binary64
+value, and a number whose binary64 value is infinite still rejects the
+input. Where §3 and §4 use a number (a size, a level, a scale), they use
+its binary64 value.
+
+## 6. Other objects
+
+An **other object** is an object of the store
+([VIRTUALIZE.md §1.4](../../VIRTUALIZE.md#14-store-inputs)) whose size is not
+0 and which is neither the `attributes.json` of a node (an explicit group
+or a dataset, §2) nor a chunk object of a dataset (§3.1), whatever its
+size. Among them are READMEs and other files a writer put next to the
+data, the objects of directories that are not nodes, the objects under a
+dataset that are not chunk keys, and a dataset nested in a dataset (its
+`attributes.json` and its blocks), which is not a node (§2). Each is kept
+whole: the hierarchy has the key `vzip_source/objects/<k>`, where `k` is the
+object's key, escaped, and its bytes are the object's. (An empty object
+holds nothing, and has no key; §6 lists its key under "Empty objects".)
+
+**Escaping.** A last segment that a Zarr reader would take for a node's
+document must not end a key under `vzip_source/objects/`: when the last
+segment of `k` is `zarr.json`, `.zarray` or `.zgroup` followed by any
+number (zero included) of `~`, one `~` is appended to it. So `zarr.json`
+is kept at `vzip_source/objects/zarr.json~`, `a/.zgroup` at
+`vzip_source/objects/a/.zgroup~`, and `zarr.json~` at
+`vzip_source/objects/zarr.json~~`. The escape is one to one: a key whose
+last segment is one of these names followed by at least one `~` is the
+object's key with one `~` removed, and every other key is the object's.
+No Zarr v3 or Zarr v2 reader then opens a node under `vzip_source/objects/`.
+
+**Empty objects.** The **empty objects** are the store's objects of size
+0, the empty chunk objects (§3.1) among them. The **ignored keys** are the
+relative keys of the listed objects that
+[VIRTUALIZE.md §1.4](../../VIRTUALIZE.md#14-store-inputs) ignores and
+records. Let `K` be the empty objects' keys and `I` the ignored keys, each
+in ascending order of their UTF-8 bytes, and let `E` be the object
+`{"empty": K, "ignored": I}`, each member present only when it is not
+empty. `E` is kept when it is not empty: as the source metadata of the
+group `vzip_source` below, or, when the root is an array, as the archive's
+key `vzip_source/empty.json`, whose bytes are the compact JSON (no
+whitespace) of `E`, in UTF-8.
+
+When there is at least one other object, empty object or ignored key and
+the root is a group, the hierarchy has the group `vzip_source`, a child of
+the root (the source metadata node of
+[conventions §2](../README.md#2-attributes)), whose `zarr.json` is
+`{"zarr_format": 3, "node_type": "group", "attributes": A}`: `A` is `{}`
+when `E` is empty, and otherwise declares the convention, as any other node
+does (§1), with the source metadata `E`. (So the keys of many empty objects
+stay off the root, whose metadata every reader opens.) The directories between it and the
+objects are not nodes and have no `zarr.json`. A hierarchy that then has a
+node (§2) at the path `vzip_source`, or below it, is rejected, since its
+keys would mix with these. When the root is an array, which can have no
+children, there is no `vzip_source` group: the objects' keys, and
+`vzip_source/empty.json`, are plain keys of the archive, which Zarr
+readers do not read as nodes.
+
+## 7. Example
 
 The level `s0` of a COSEM multiscale image `em/fibsem-uint8` of the store
-`https://example.org/c.n5/`:
+`https://example.org/c.n5/`, whose compression is
+`{"type": "gzip", "level": -1, "useZlib": false}`:
 
 ```json
 {
@@ -369,7 +476,7 @@ The level `s0` of a COSEM multiscale image `em/fibsem-uint8` of the store
           {
             "name": "gzip",
             "configuration": {
-              "level": 1
+              "level": 6
             }
           }
         ]
@@ -385,59 +492,45 @@ The level `s0` of a COSEM multiscale image `em/fibsem-uint8` of the store
     "zarr_conventions": [
       {
         "uuid": "ad5d4c39-c69e-48f7-a3ef-4cc8c607d416",
-        "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-n5-v1/conventions/n5/schema.json",
-        "spec_url": "https://github.com/d-v-b/vzip/blob/virtualize-n5-v1/conventions/n5/README.md",
+        "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/conventions/n5/schema.json",
+        "spec_url": "https://github.com/d-v-b/vzip/blob/main/conventions/n5/README.md",
         "name": "vzip_virtualized",
         "description": "The Zarr layout of a N5 source virtualized by vzip, and the source's metadata"
       }
     ],
     "vzip_virtualized": {
       "n5": {
-        "dimensions": [
-          12,
-          10,
-          8
-        ],
-        "blockSize": [
-          12,
-          10,
-          8
-        ],
-        "dataType": "uint8",
-        "compression": {
-          "type": "gzip",
-          "level": -1,
-          "useZlib": false
-        },
-        "transform": {
-          "axes": [
-            "z",
-            "y",
-            "x"
-          ],
-          "scale": [
-            5.24,
-            4.0,
-            4.0
-          ],
-          "translate": [
-            0.0,
-            0.0,
-            0.0
-          ],
-          "units": [
-            "nm",
-            "nm",
-            "nm"
-          ]
-        },
-        "pixelResolution": {
-          "dimensions": [
-            4.0,
-            4.0,
-            5.24
-          ],
-          "unit": "nm"
+        "attributes": {
+          "transform": {
+            "axes": [
+              "z",
+              "y",
+              "x"
+            ],
+            "scale": [
+              5.24,
+              4.0,
+              4.0
+            ],
+            "translate": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "units": [
+              "nm",
+              "nm",
+              "nm"
+            ]
+          },
+          "pixelResolution": {
+            "dimensions": [
+              4.0,
+              4.0,
+              5.24
+            ],
+            "unit": "nm"
+          }
         }
       }
     }

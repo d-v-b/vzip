@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-nifti-v1/conventions/nifti/schema.json",
-  "title": "vzip NIfTI convention, version 1",
-  "description": "The zarr.json of a node that declares the vzip NIfTI convention (https://github.com/d-v-b/vzip/blob/virtualize-nifti-v1/conventions/nifti/README.md)",
+  "$id": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/conventions/nifti/schema.json",
+  "title": "vzip NIfTI convention, version 0",
+  "description": "The zarr.json of a node that declares the vzip NIfTI convention (https://github.com/d-v-b/vzip/blob/main/conventions/nifti/README.md)",
   "type": "object",
   "properties": {
     "zarr_format": {
@@ -12,7 +12,8 @@
     "node_type": {
       "type": "string",
       "enum": [
-        "group"
+        "group",
+        "array"
       ]
     },
     "attributes": {
@@ -31,7 +32,14 @@
           "maxContains": 1
         },
         "vzip_virtualized": {
-          "$ref": "#/$defs/rootProperty"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/rootProperty"
+            },
+            {
+              "$ref": "#/$defs/nodeProperty"
+            }
+          ]
         }
       },
       "required": [
@@ -57,11 +65,11 @@
         },
         "schema_url": {
           "type": "string",
-          "const": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-nifti-v1/conventions/nifti/schema.json"
+          "const": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/conventions/nifti/schema.json"
         },
         "spec_url": {
           "type": "string",
-          "const": "https://github.com/d-v-b/vzip/blob/virtualize-nifti-v1/conventions/nifti/README.md"
+          "const": "https://github.com/d-v-b/vzip/blob/main/conventions/nifti/README.md"
         },
         "name": {
           "type": "string",
@@ -87,7 +95,12 @@
         },
         "version": {
           "type": "integer",
-          "const": 1
+          "const": 0
+        },
+        "revision": {
+          "type": "integer",
+          "const": 23,
+          "description": "The VIRTUALIZE.md revision that produced the hierarchy (version 0 only)"
         },
         "source": {
           "type": "object",
@@ -109,12 +122,14 @@
       "required": [
         "profile",
         "version",
+        "revision",
         "source"
       ],
       "additionalProperties": false
     },
     "sourceMetadata": {
       "type": "object",
+      "description": "The root's source metadata",
       "properties": {
         "nifti_version": {
           "enum": [
@@ -132,31 +147,162 @@
           "type": "object",
           "description": "Every header field, by its NIfTI-1 or NIfTI-2 name, in the standard's order",
           "additionalProperties": {
-            "$ref": "#/$defs/headerValue"
+            "anyOf": [
+              {
+                "$ref": "#/$defs/headerValue"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "bits": {
+                    "type": "string",
+                    "pattern": "^([0-9a-f]{8}|[0-9a-f]{16})$"
+                  }
+                },
+                "required": [
+                  "bits"
+                ],
+                "additionalProperties": false,
+                "description": "A float's IEEE 754 bits, most significant first: a negative zero, or a NaN other than the canonical one"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "bits": {
+                          "type": "string",
+                          "pattern": "^([0-9a-f]{8}|[0-9a-f]{16})$"
+                        }
+                      },
+                      "required": [
+                        "bits"
+                      ],
+                      "additionalProperties": false,
+                      "description": "A float's IEEE 754 bits, most significant first: a negative zero, or a NaN other than the canonical one"
+                    }
+                  ]
+                }
+              }
+            ]
           }
         },
+        "header_rest": {
+          "type": "object",
+          "description": "The bytes after the first NUL of a character field, where not all NUL",
+          "additionalProperties": {
+            "type": "string",
+            "contentEncoding": "base64"
+          }
+        },
+        "extender": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "description": "The 4 extender bytes, unless 00 00 00 00 or 01 00 00 00"
+        },
         "extensions": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "ecode": {
-                "type": "integer"
-              },
-              "edata": {
-                "type": "string",
-                "contentEncoding": "base64"
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "ecode": {
+                    "type": "integer"
+                  },
+                  "text": {
+                    "$ref": "#/$defs/text"
+                  },
+                  "esize": {
+                    "type": "integer",
+                    "minimum": 8,
+                    "description": "A text extension's esize, when not the fewest NULs'"
+                  },
+                  "edata": {
+                    "type": "string",
+                    "contentEncoding": "base64"
+                  },
+                  "data": {
+                    "type": "string",
+                    "description": "The array of vzip_source that holds the data"
+                  }
+                },
+                "required": [
+                  "ecode"
+                ],
+                "maxProperties": 3,
+                "additionalProperties": false
               }
             },
-            "required": [
-              "ecode",
-              "edata"
-            ],
-            "additionalProperties": false
-          }
+            {
+              "type": "object",
+              "description": "Over the root's budget: the ecodes and esizes, the text extensions that fit, and the others' data as a family of byte values",
+              "properties": {
+                "ecode": {
+                  "const": "vzip_source/extensions/ecode"
+                },
+                "esize": {
+                  "const": "vzip_source/extensions/esize"
+                },
+                "data": {
+                  "const": "vzip_source/extensions/data"
+                },
+                "text": {
+                  "type": "object",
+                  "description": "The text values, by the extension's index",
+                  "propertyNames": {
+                    "pattern": "^(0|[1-9][0-9]*)$"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#/$defs/text"
+                  },
+                  "minProperties": 1
+                }
+              },
+              "required": [
+                "ecode",
+                "esize",
+                "data"
+              ],
+              "additionalProperties": false
+            }
+          ]
         },
         "extensions_truncated": {
           "const": true
+        },
+        "unparsed": {
+          "type": "string"
+        },
+        "trailing": {
+          "type": "string"
+        },
+        "affine": {
+          "type": "object",
+          "properties": {
+            "form": {
+              "enum": [
+                "sform",
+                "qform"
+              ]
+            },
+            "applied": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "form",
+            "applied"
+          ],
+          "additionalProperties": false
         },
         "scaling": {
           "type": "object",
@@ -189,7 +335,7 @@
           "type": "number"
         },
         {
-          "type": "string"
+          "$ref": "#/$defs/text"
         },
         {
           "type": "array",
@@ -205,6 +351,39 @@
           }
         }
       ]
+    },
+    "text": {
+      "description": "A text value: a string (UTF-8), or its ISO 8859-1 reading when it is not UTF-8",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "latin1": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "latin1"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "nodeProperty": {
+      "type": "object",
+      "description": "Any other node's property: its source metadata only",
+      "properties": {
+        "nifti": {
+          "$ref": "#/$defs/sourceMetadata"
+        }
+      },
+      "required": [
+        "nifti"
+      ],
+      "additionalProperties": false
     }
   }
 }

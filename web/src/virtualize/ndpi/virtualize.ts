@@ -7,16 +7,17 @@
 // data sources, since every chunk shares it), a literal frame header for the
 // chunk's size, and a × b restart intervals.
 
-import { type ByteReader, DataSources, declare, MAX_PAYLOAD, type Part, payloadSize, toRange } from "../common.ts";
+import { base64, type ByteReader, DataSources, declare, MAX_PAYLOAD, type Part, payloadSize, toRange, stringifyJson } from "../common.ts";
 import { TiffError } from "../tiff/ifd.ts";
-import { type Entry, STRUCTURE, Translator } from "../tiff/tags.ts";
+import { type Entry, type Found, LAYOUT, Translator } from "../tiff/tags.ts";
 import type { ArchiveDesc, EntryDesc } from "../../writer.ts";
 
 const MAX_IFDS = 100000;
 // Besides TIFF's, McuStarts and McuStartsHighBytes locate the strips' restart
 // markers (conventions/ndpi/README.md §5).
-const NDPI_STRUCTURE = new Set([...STRUCTURE, 65426, 65432]);
+const NDPI_LAYOUT = new Set([...LAYOUT, 65426, 65432]);
 const CHUNK = 1024; // target chunk size in pixels
+const MAX_SIDE = 65535; // the largest height or width a JPEG frame header holds
 const SIZES: Record<number, number> = {
   1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4, 16: 8, 17: 8, 18: 8,
 };
@@ -56,13 +57,25 @@ export async function detectNdpi(read: ByteReader, size: number): Promise<number
 
 type Values = number[] | [number, number][];
 
-/** The main chain's IFDs, as tag → values (§4). */
+/** A checked entry of a tag of §4's table: its value is in `inline` (the value field's
+ * 4 bytes, with the high word `high`), or at `offset`, within the file. */
+interface Field {
+  type: number;
+  count: number;
+  inline?: Uint8Array;
+  high: number;
+  offset?: number;
+}
+
+/** The main chain's IFDs, as their checked tags of §4 (tag → Field), every entry of
+ * each, and their offsets. No value is read (values). */
 async function readIfds(
   read: ByteReader,
+  size: number,
   first: number,
-): Promise<{ ifds: Map<number, Values>[]; entries: Entry[][] }> {
+): Promise<{ ifds: Map<number, Field>[]; entries: Entry[][]; offsets: number[] }> {
   const seen = new Set<number>();
-  const ifds: Map<number, Values>[] = [];
+  const ifds: Map<number, Field>[] = [];
   const entries: Entry[][] = [];
   for (let offset = first; offset !== 0;) {
     if (offset < 16) reject(`IFD offset ${offset} is not in the file`);
@@ -72,24 +85,12 @@ async function readIfds(
     const n = view(await read(offset, 2)).getUint16(0, true);
     const body = await read(offset + 2, 12 * n + 8 + 4 * n);
     const b = view(body);
-    const tags = new Map<number, Values>();
+    const fields = new Map<number, Field>();
     const mine: Entry[] = [];
     for (let i = 0; i < n; i++) {
       const tag = b.getUint16(12 * i, true);
-      {
-        const type = b.getUint16(12 * i + 2, true);
-        const count = b.getUint32(12 * i + 4, true);
-        const where = b.getUint32(12 * i + 8, true) + b.getUint32(12 * n + 8 + 4 * i, true) * 2 ** 32;
-        if (SIZES[type] !== undefined && count * SIZES[type] <= 4) {
-          mine.push({
-            tag, type, count: BigInt(count), inline: body.slice(12 * i + 8, 12 * i + 12),
-            value: count === 1 && (type === 4 || type === 13) ? [where] : undefined,
-          });
-        } else {
-          mine.push({ tag, type, count: BigInt(count), offset: where });
-        }
-      }
-      if (!(tag in TAGS) || tags.has(tag)) continue; // unused, or a duplicate (the first is used)
+      mine.push(entry(body, n, i));
+      if (!(tag in TAGS) || fields.has(tag)) continue; // unused, or a duplicate (the first is used)
       const type = b.getUint16(12 * i + 2, true);
       const count = b.getUint32(12 * i + 4, true);
       const [allowed, scalar] = TAGS[tag];
@@ -97,26 +98,90 @@ async function readIfds(
       if (scalar && count === 0) reject(`tag ${tag} has no value`);
       const low = b.getUint32(12 * i + 8, true);
       const high = b.getUint32(12 * n + 8 + 4 * i, true);
-      const nbytes = count * SIZES[type];
-      let values: Values;
-      if (nbytes <= 4) {
-        values = count === 1 && (type === 4 || type === 13)
-          ? [low + high * 2 ** 32]
-          : decode(body.subarray(12 * i + 8, 12 * i + 8 + nbytes), type, count);
+      if (count * SIZES[type] <= 4) {
+        fields.set(tag, { type, count, inline: body.slice(12 * i + 8, 12 * i + 12), high });
+      } else if (low + high * 2 ** 32 + count * SIZES[type] > size) {
+        reject(`the value of tag ${tag} is outside the file`);
       } else {
-        values = decode(await read(low + high * 2 ** 32, nbytes), type, count);
+        fields.set(tag, { type, count, high, offset: low + high * 2 ** 32 });
       }
-      if (INTEGER.has(type) && (values as number[]).some((v) => v > Number.MAX_SAFE_INTEGER)) {
-        reject(`tag ${tag} has a value above 2^53 - 1`);
-      }
-      tags.set(tag, values);
     }
-    ifds.push(tags);
+    ifds.push(fields);
     entries.push(mine);
     offset = u64(b, 12 * n);
   }
   if (ifds.length === 0) reject("no images");
-  return { ifds, entries };
+  return { ifds, entries, offsets: [...seen] };
+}
+
+/** A function that reads the values of an IFD's tags (all of §4's table, or `only`): the
+ * first of a scalar, every value of an array (§4, and profiles/tiff.md §3.1). */
+function values(read: ByteReader) {
+  const memo = new Map<string, Values>(); // (type, count, offset) -> values, for shared tables
+  const one = async (tag: number, f: Field): Promise<Values> => {
+    const n = TAGS[tag][1] ? 1 : f.count;
+    let out: Values;
+    if (f.inline !== undefined) {
+      out = f.count === 1 && (f.type === 4 || f.type === 13)
+        ? [view(f.inline).getUint32(0, true) + f.high * 2 ** 32]
+        : decode(f.inline.subarray(0, n * SIZES[f.type]), f.type, n);
+    } else {
+      const key = `${f.type},${n},${f.offset}`;
+      out = memo.get(key) ?? decode(await read(f.offset!, n * SIZES[f.type]), f.type, n);
+      memo.set(key, out);
+    }
+    if (INTEGER.has(f.type) && (out as number[]).some((v) => v > Number.MAX_SAFE_INTEGER)) {
+      reject(`tag ${tag} has a value above 2^53 - 1`);
+    }
+    return out;
+  };
+  return async (fields: Map<number, Field>, only?: Set<number>): Promise<Map<number, Values>> => {
+    const out = new Map<number, Values>();
+    for (const [tag, f] of fields) if (only === undefined || only.has(tag)) out.set(tag, await one(tag, f));
+    return out;
+  };
+}
+
+/** Entry `i` of an IFD of `n` entries whose bytes after the count are `body` (§4):
+ * its value field is its 4 bytes plus the high word after the next-IFD offset. */
+function entry(body: Uint8Array, n: number, i: number): Entry {
+  const b = view(body);
+  const tag = b.getUint16(12 * i, true);
+  const type = b.getUint16(12 * i + 2, true);
+  const count = b.getUint32(12 * i + 4, true);
+  const low = body.subarray(12 * i + 8, 12 * i + 12);
+  const high = body.subarray(12 * n + 8 + 4 * i, 12 * n + 12 + 4 * i);
+  const field = new Uint8Array(8);
+  field.set(low, 0);
+  field.set(high, 4);
+  const where = BigInt(b.getUint32(12 * i + 8, true)) + (BigInt(b.getUint32(12 * n + 8 + 4 * i, true)) << 32n);
+  if (SIZES[type] !== undefined && count * SIZES[type] <= 4) {
+    return {
+      tag, type, count: BigInt(count), inline: low.slice(), field,
+      value: count === 1 && (type === 4 || type === 13) ? [where] : undefined,
+    };
+  }
+  return { tag, type, count: BigInt(count), offset: Number(where), field };
+}
+
+/** The bytes an NDPI IFD of `n` entries occupies: its entry count, entries,
+ * next-IFD offset and high words (§4). */
+const extent = (n: number) => 2 + 16 * n + 8;
+
+/** A function that finds the NDPI IFD at an offset for a pointer tag (it never rejects):
+ * its entry count, the end of its extent, and a function that reads its entries, or
+ * undefined if its extent does not lie within the file. The entries are read only when
+ * that function is called. */
+function entriesReader(read: ByteReader, size: number) {
+  return async (offset: number): Promise<Found | undefined> => {
+    if (offset < 16 || offset + 2 > size) return undefined;
+    const n = view(await read(offset, 2)).getUint16(0, true);
+    if (offset + extent(n) > size) return undefined;
+    return [n, offset + extent(n), async () => {
+      const body = await read(offset + 2, 16 * n + 8);
+      return Array.from({ length: n }, (_, i) => entry(body, n, i));
+    }];
+  };
 }
 
 function decode(bytes: Uint8Array, type: number, count: number): Values {
@@ -190,15 +255,13 @@ export async function virtualizeNdpi(
   size: number,
   first: number,
 ): Promise<ArchiveDesc & { summary: object }> {
-  const { ifds, entries: ifdEntries } = await readIfds(read, first);
-  // The source metadata (conventions/ndpi/README.md §5): every IFD's tags.
-  const translate = new Translator(read, size, true, NDPI_STRUCTURE);
-  const sourceIfds = [];
-  for (const e of ifdEntries) sourceIfds.push({ tags: await translate.tags(e) });
-  const levels: { mag: number; w: number; h: number; tags: Map<number, Values> }[] = [];
-  for (const tags of ifds) {
-    const mag = one(tags, 65421, "Magnification");
+  const { ifds, entries: ifdEntries, offsets } = await readIfds(read, size, first);
+  const load = values(read);
+  const levels: { mag: number; w: number; h: number; tags: Map<number, Values>; ifd: number; sof0?: Uint8Array }[] = [];
+  for (const [k, fields] of ifds.entries()) {
+    const mag = one(await load(fields, new Set([65421])), 65421, "Magnification");
     if (!(mag > 0)) continue;
+    const tags = await load(fields); // a level: every tag's values (§4)
     const w = one(tags, 256, "ImageWidth");
     const h = one(tags, 257, "ImageLength");
     const bits = tags.get(258) as number[] | undefined;
@@ -206,35 +269,38 @@ export async function virtualizeNdpi(
         one(tags, 277, "SamplesPerPixel", 1) !== 3 || !bits?.length || bits.some((b) => b !== 8)) {
       reject("an NDPI level is not 8-bit YCbCr JPEG with 3 samples");
     }
-    if (tags.get(273)?.length !== 1 || tags.get(279)?.length !== 1) reject("an NDPI level does not have exactly one strip");
+    if (fields.get(273)?.count !== 1 || fields.get(279)?.count !== 1) reject("an NDPI level does not have exactly one strip");
     const last = levels[levels.length - 1];
     if (last && !(w < last.w && h < last.h)) reject("NDPI levels do not decrease in size");
     if (levels.some((l) => l.mag === mag)) reject("NDPI focal planes (two levels with one magnification) are not supported");
     if (Math.min(w, h) < 1) reject("an NDPI level is empty");
-    levels.push({ mag, w, h, tags });
+    levels.push({ mag, w, h, tags, ifd: k });
   }
   if (levels.length === 0) reject("no NDPI levels");
 
   // Scale (conventions/ndpi/README.md §4).
   const base = levels[0];
-  const perUnit = ({ 3: 10000, 2: 25400 } as Record<number, number>)[one(base.tags, 296, "ResolutionUnit", 2)];
+  const perUnit = ({ 3: 10000, 2: 25400 } as Record<number, number>)[one(base.tags, 296, "ResolutionUnit", 0)]; // explicit only
   const physical = (tag: number) => {
     const r = (base.tags.get(tag) as [number, number][] | undefined)?.[0];
-    return perUnit === undefined || r === undefined || r[0] === 0 || r[1] === 0 ? undefined : perUnit / (r[0] / r[1]);
+    if (perUnit === undefined || r === undefined || r[0] === 0 || r[1] === 0) return undefined;
+    const pixel = perUnit / (r[0] / r[1]);
+    return pixel < 25.4 ? pixel : undefined; // a pixel under 25.4 µm
   };
   const px = physical(282);
   const py = physical(283);
   const axes = ["c", "y", "x"];
   const codecs = [{ name: "transpose", configuration: { order: [1, 2, 0] } }, { name: "imagecodecs_jpeg" }];
   const utf8 = new TextEncoder();
-  const json = (v: unknown) => utf8.encode(JSON.stringify(v, null, 2));
+  const json = (v: unknown) => utf8.encode(stringifyJson(v));
   const entries: EntryDesc[] = [];
   const data = new DataSources();
   const datasets = [];
   for (const [li, level] of levels.entries()) {
     const s0 = one(level.tags, 273, "StripOffsets");
     const n = one(level.tags, 279, "StripByteCounts");
-    if (s0 + n > size || n < 4) reject("an NDPI strip is outside the file");
+    if (s0 + n > size) reject("an NDPI strip is outside the file");
+    if (n < 4) reject(`an NDPI strip of ${n} bytes is shorter than 4`); // a JPEG stream's SOI and EOI at least
     let chunk: number[];
     const refs: [string, Part[]][] = [];
     const starts = level.tags.get(65426) as number[] | undefined;
@@ -242,7 +308,7 @@ export async function virtualizeNdpi(
       chunk = [3, level.h, level.w];
       refs.push([`${li}/c/0/0/0`, [[s0, n]]]);
     } else {
-      chunk = await intervals(refs, data, li, read, level.tags, starts, s0, n, level.w, level.h);
+      [chunk, level.sof0] = await intervals(refs, data, li, read, level.tags, starts, s0, n, level.w, level.h);
     }
     for (const [key, parts] of refs) {
       entries.push({ key, ranges: parts.map(toRange) });
@@ -281,21 +347,34 @@ export async function virtualizeNdpi(
             datasets,
           }],
         },
-      }, "ndpi", url, { ifds: sourceIfds }),
+      }, "ndpi", url),
     }),
   });
+  const summary = { axes, levels: levels.map((l) => [3, l.h, l.w]), references: entries.length - levels.length - 1, codec: "imagecodecs_jpeg" };
+  // The source metadata (conventions/ndpi/README.md §5): every IFD's tags, and the
+  // strips of the IFDs that are not levels (the macro image, the map).
+  const translate = new Translator(read, size, true, NDPI_LAYOUT, new Set(Object.keys(TAGS).map(Number)),
+    entriesReader(read, size), offsets.map((o, k) => [o, o + extent(ifdEntries[k].length), `ifds/${k}`]));
+  const mapped = new Map(levels.map((l) => [l.ifd, l]));
+  for (const [k, e] of ifdEntries.entries()) {
+    const group = await translate.ifd(e, `ifds/${k}`, 0, !mapped.has(k));
+    const sof0 = mapped.get(k)?.sof0; // the strip's frame header, which the chunks replace
+    if (sof0 !== undefined) group.sof0 = base64(sof0);
+  }
+  for (const e of translate.emit("ndpi", { ifd_count: ifds.length })) entries.push(e); // perhaps millions
   return {
     sources: data.table(url),
     entries,
-    summary: { axes, levels: levels.map((l) => [3, l.h, l.w]), references: entries.length - levels.length - 1, codec: "imagecodecs_jpeg" },
+    summary,
   };
 }
 
-/** Adds a McuStarts level's chunk references (§4); returns its chunk shape. */
+/** Adds a McuStarts level's chunk references (§4); returns its chunk shape and the strip's
+ * SOF0 segment. */
 async function intervals(
   refs: [string, Part[]][], data: DataSources, li: number, read: ByteReader, tags: Map<number, Values>,
   startsLow: number[], s0: number, n: number, w: number, h: number,
-): Promise<number[]> {
+): Promise<[number[], Uint8Array]> {
   const high = tags.get(65432) as number[] | undefined;
   if (high !== undefined && high.length !== startsLow.length) reject("McuStartsHighBytes and McuStarts differ in length");
   const starts = high === undefined ? startsLow : startsLow.map((s, i) => s + high[i] * 2 ** 32);
@@ -310,6 +389,7 @@ async function intervals(
   const ends = starts.map((_, i) => (i + 1 < starts.length ? starts[i + 1] : n) - 2);
   if (starts.some((s, i) => ends[i] <= s)) reject("an NDPI restart interval is empty");
   const a = Math.min(q, Math.max(1, Math.floor(CHUNK / (interval * mw))));
+  if (a * interval * mw > MAX_SIDE) reject(`an NDPI chunk would be ${a * interval * mw} pixels wide, more than ${MAX_SIDE}`);
   const sof = header.slice(sofStart, sofEnd);
   // The header around SOF0 is the same in every chunk: data sources (§4).
   const before = data.range(header.subarray(0, sofStart));
@@ -342,9 +422,10 @@ async function intervals(
   let b = Math.max(1, Math.min(r, Math.floor(CHUNK / mh)));
   let all = chunks(b);
   while (b > 1 && all.some(([, , parts]) => payloadSize(parts) > MAX_PAYLOAD)) all = chunks(--b);
+  if (b * mh > MAX_SIDE) reject(`an NDPI chunk would be ${b * mh} pixels high, more than ${MAX_SIDE}`);
   for (const [u, v, parts] of all) {
     if (payloadSize(parts) > MAX_PAYLOAD) reject(`an NDPI chunk's reference payload exceeds ${MAX_PAYLOAD} bytes`);
     refs.push([`${li}/c/0/${u}/${v}`, parts]);
   }
-  return [3, b * mh, a * interval * mw];
+  return [[3, b * mh, a * interval * mw], sof];
 }

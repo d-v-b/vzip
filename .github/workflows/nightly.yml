@@ -1,0 +1,109 @@
+# Nightly, and on demand: the virtualizers and the frozen reference on the public corpus (network) and on
+# corrupted copies of the fixtures, and the corpus inputs' fingerprints. The caching
+# proxy's blocks are kept between runs, so upstream servers see each block once.
+name: nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      mutants:
+        description: "Corrupted copies per fixture"
+        default: "10"
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24"
+
+jobs:
+  corpus-fingerprints:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --all-groups --locked
+      - uses: actions/cache@v4
+        with:
+          path: /tmp/vzip-proxy-cache
+          key: proxy-fingerprints-${{ github.run_id }}
+          restore-keys: proxy-fingerprints-
+      - run: uv run python conformance/virtualize/corpus_hash.py check
+
+  corpus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: extractions/setup-just@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/vzip-ir
+      # binaryen's wasm-opt shrinks the wasm32 module (rust/vzip-ir/wasm/build.sh; optional)
+      - run: sudo apt-get install -y --no-install-recommends binaryen
+      - run: uv sync --all-groups --locked
+      - run: just ir-build
+      - run: just web::wasm
+      - uses: actions/cache@v4
+        with:
+          path: /tmp/vzip-proxy-cache
+          key: proxy-corpus-${{ matrix.shard }}-${{ github.run_id }}
+          restore-keys: proxy-corpus-${{ matrix.shard }}-
+      - run: just compare --shard ${{ matrix.shard }}/4
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-${{ matrix.shard }}
+          path: conformance/results/virtualize/results.json
+
+  mutants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: extractions/setup-just@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/vzip-ir
+      # binaryen's wasm-opt shrinks the wasm32 module (rust/vzip-ir/wasm/build.sh; optional)
+      - run: sudo apt-get install -y --no-install-recommends binaryen
+      - run: uv sync --all-groups --locked
+      - run: just ir-build
+      - run: just web::wasm
+      # A new seed each night (the run number), printed so that a failure can be rerun.
+      - run: |
+          echo "mutants seed ${{ github.run_number }}"
+          just compare-mutants "${{ inputs.mutants || '10' }}" "${{ github.run_number }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants
+          path: |
+            conformance/results/mutants-out/results.json

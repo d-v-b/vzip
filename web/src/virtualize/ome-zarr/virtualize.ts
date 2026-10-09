@@ -10,6 +10,7 @@ import {
   isObject,
   join,
   type Json,
+  num,
   parentOf,
   readDocument,
   show,
@@ -121,7 +122,7 @@ function transforms(where: string, ts: Json | undefined, n: number): number[] {
     const tr = get(t, "translation");
     if (!(Array.isArray(tr) && tr.length === n && tr.every(isNumber))) reject(`${where}: the translation is not ${n} numbers`);
   }
-  return scale as number[];
+  return (scale as Json[]).map(num);
 }
 
 function checkVersion(where: string, o: Obj): void {
@@ -396,6 +397,7 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
   // conventions/ome-zarr/README.md §5, conventions/ome-zarr/README.md §6 Output.
   const groups = new Map<string, Obj>();
   const omes = new Map<string, Json>();
+  const unversioned = new Map<string, string[]>();
   const omeSet = new Set(omeGroups);
   for (const [path, a] of attrs) {
     if (!omeSet.has(path)) {
@@ -404,22 +406,44 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
     }
     const keys = seriesGroups.has(path) ? [...OME_KEYS, "series"] : OME_KEYS;
     const ome: Obj = { version: "0.5" };
+    const restored = new Set<string>(); // the OME members that the inverse of §5 gives back from `ome`
+    const bare: string[] = []; // those of them without a version (conventions/ome-zarr/README.md §5, §8)
     for (const k of keys) {
       if (!has(a, k)) continue;
       let v = a[k];
       if (k === "multiscales") {
-        v = (v as Obj[]).map((m, i) => {
+        const ms = v as Obj[];
+        if (!ms.some((_, i) => kept.has(keptKey(path, i)))) {
+          if (ms.every((m) => get(m, "version") === "0.4")) {
+            restored.add(k);
+          } else if (ms.every((m) => !has(m, "version"))) {
+            restored.add(k);
+            bare.push(k);
+          }
+        }
+        v = ms.map((m, i) => {
           const out = without(m, ["version"]);
           const n = kept.get(keptKey(path, i));
           if (n !== undefined) out.datasets = (m.datasets as Json[]).slice(0, n);
           return out;
         });
+      } else if (VERSIONED.has(k)) {
+        if (get(v as Obj, "version") === "0.4") {
+          restored.add(k);
+        } else if (!has(v as Obj, "version")) {
+          restored.add(k);
+          bare.push(k);
+        }
+        v = without(v as Obj, ["version"]);
+      } else {
+        restored.add(k);
       }
-      else if (VERSIONED.has(k)) v = without(v as Obj, ["version"]);
       ome[k] = v;
     }
-    groups.set(path, without(a, keys));
+    // The attributes A keep what the inverse does not give back (conventions/ome-zarr/README.md §8).
+    groups.set(path, without(a, [...restored]));
     omes.set(path, ome);
+    if (bare.length) unversioned.set(path, bare);
   }
   const docs = new Map<string, Json>();
   for (const [path, doc] of arrays) {
@@ -430,7 +454,7 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
     .map((c) => join(join(c, "OME"), "METADATA.ome.xml"))
     .filter((k) => store.objects.has(k))
     .map((k) => [k, store.objects.get(k)!]);
-  const [result, all] = hierarchyOutput(store, h, groups, docs, "ome-zarr", xml, omes);
+  const [result, all, others] = hierarchyOutput(store, h, groups, docs, "ome-zarr", xml, omes, unversioned);
   const nonempty = all.filter(([, n]) => n > 0).length;
   let fields = 0;
   for (const v of wellImages.values()) fields += v.length;
@@ -439,7 +463,8 @@ export async function virtualizeOmeZarr(store: Store): Promise<StoreResult & { s
     summary: {
       groups: attrs.size + h.implicit.size, arrays: arrays.size, chunks: nonempty, emptyChunks: all.length - nonempty,
       objects: store.objects.size, images: images.size, labels: labelImages.size, droppedLabelLevels: dropped, plates: plates.length,
-      wells: wells.size, fields, omeXml: xml.filter(([, n]) => n > 0).length, listingRequests: store.requests,
+      wells: wells.size, fields, omeXml: xml.filter(([, n]) => n > 0).length,
+      otherObjects: others, listingRequests: store.requests,
     },
   };
 }

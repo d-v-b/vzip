@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Earth_Explorer_File xmlns="http://gs2.esa.int/DATA_STRUCTURE/olqcReport">
+  <Data_Block type="xml">
+    <report date="2024-01-03T11:00:00Z" gippVersion="1.0" globalStatus="PASSED">
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_0" processingStatus="done"/><message contentType="text/plain">Check passed, value 944904</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_1" processingStatus="done"/><message contentType="text/plain">Check passed, value 625095</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_2" processingStatus="done"/><message contentType="text/plain">Check passed, value 684179</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_3" processingStatus="done"/><message contentType="text/plain">Check passed, value 897213</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_4" processingStatus="done"/><message contentType="text/plain">Check passed, value 578292</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_5" processingStatus="done"/><message contentType="text/plain">Check passed, value 775685</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_6" processingStatus="done"/><message contentType="text/plain">Check passed, value 833651</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_7" processingStatus="done"/><message contentType="text/plain">Check passed, value 225207</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_8" processingStatus="done"/><message contentType="text/plain">Check passed, value 55531</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_9" processingStatus="done"/><message contentType="text/plain">Check passed, value 300166</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_10" processingStatus="done"/><message contentType="text/plain">Check passed, value 285067</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_11" processingStatus="done"/><message contentType="text/plain">Check passed, value 873553</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_12" processingStatus="done"/><message contentType="text/plain">Check passed, value 912623</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_13" processingStatus="done"/><message contentType="text/plain">Check passed, value 5265</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_14" processingStatus="done"/><message contentType="text/plain">Check passed, value 499786</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_15" processingStatus="done"/><message contentType="text/plain">Check passed, value 821228</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_16" processingStatus="done"/><message contentType="text/plain">Check passed, value 131440</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_17" processingStatus="done"/><message contentType="text/plain">Check passed, value 797069</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_18" processingStatus="done"/><message contentType="text/plain">Check passed, value 119082</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_19" processingStatus="done"/><message contentType="text/plain">Check passed, value 467934</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_20" processingStatus="done"/><message contentType="text/plain">Check passed, value 816465</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_21" processingStatus="done"/><message contentType="text/plain">Check passed, value 303032</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_22" processingStatus="done"/><message contentType="text/plain">Check passed, value 341603</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_23" processingStatus="done"/><message contentType="text/plain">Check passed, value 278425</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="L2A_QUALITY" name="L2A_QUALITY_24" processingStatus="done"/><message contentType="text/plain">Check passed, value 719470</message></check>
+    </report>
+  </Data_Block>
+</Earth_Explorer_File>

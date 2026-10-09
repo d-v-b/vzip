@@ -28,11 +28,12 @@ from __future__ import annotations
 import struct
 import zlib
 from dataclasses import dataclass
-from typing import BinaryIO
+from typing import BinaryIO, Callable
 
 from vzip.pb import (
     _put_bytes,
     _put_uint,
+    _put_varint,
     Page,
     Pinned,
     Concat,
@@ -40,6 +41,7 @@ from vzip.pb import (
     Reference,
     Source,
     decode_source_table,
+    decode_table,
     encode_cd_index,
     encode_source_table,
 )
@@ -49,6 +51,8 @@ RANGE_EXTRA_ID = 0x7A76  # "vz": payload is a Range
 CONCAT_EXTRA_ID = 0x7A77  # payload is a Concat
 ZIP64_EXTRA_ID = 0x0001
 FORMAT_VERSION = 0
+# The revision of SPEC.md the writer follows, recorded in every archive's source table (§1.3, §6)
+SPEC_REVISION = 10
 MAGIC_COMMENT = b"vzip/%d" % FORMAT_VERSION
 SOURCES_KEY = "__vz__/sources"
 INDEX_KEY = "__vz__/index"
@@ -110,10 +114,15 @@ class VZipWriter:
     """Stream a vzip archive to a binary file object."""
 
     def __init__(
-        self, f: BinaryIO, *, mirror_refs: bool = True, page_size: int | None = None
+        self, f: BinaryIO, *, mirror_refs: bool = True, page_size: int | None = None,
+        checksum: Callable[[str, int, int], int] | None = None,
     ) -> None:
-        """`page_size`: if set, also write a CdIndex with pages of ~page_size bytes."""
+        """`page_size`: if set, also write a CdIndex with pages of ~page_size bytes.
+
+        `checksum(url, offset, length)`: if set, the CRC-32C of those bytes of a url
+        source, recorded on every range of a url source that has none (spec §5.2)."""
         self._f = f
+        self._checksum = checksum
         self._page_size = page_size
         self._pos = 0
         self._mirror = mirror_refs
@@ -123,9 +132,10 @@ class VZipWriter:
         self._ref_names: set[str] = set()
         self._range_checks: list = []  # (key, Range) for spec §9.1 bounds checks
         self._sources: dict[Source, int] = {}
-        # every source in table order: a Source, or a url string from add_url_refs
-        self._source_list: list[Source | str] = []
+        # every source in table order: a Source, or a (url, size pin or None) pair from add_url_refs
+        self._source_list: list[Source | tuple[str, int | None]] = []
         self._late: list[tuple[str, bytes, bool]] = []
+        self._late_keys: set[str] = set()  # the keys of _late, for duplicate checks in constant time
 
     def source(self, src: Source) -> int:
         """Intern `src` into the source table and return its index for `Range.source`.
@@ -200,8 +210,9 @@ class VZipWriter:
         if key.startswith(RESERVED_PREFIX):
             raise ValueError(f"{RESERVED_PREFIX!r} is reserved")
         if late:
-            if key in self._names or any(k == key for k, *_ in self._late):
+            if key in self._names or key in self._late_keys:
                 raise ValueError(f"duplicate key {key!r}")
+            self._late_keys.add(key)
             self._late.append((key, bytes(data), compress))
         else:
             self._entry(key, bytes(data), compress=compress)
@@ -214,8 +225,9 @@ class VZipWriter:
         if key in (SOURCES_KEY, INDEX_KEY):
             raise ValueError(f"{key!r} is written by the writer itself")
         if late:
-            if key in self._names or any(k == key for k, *_ in self._late):
+            if key in self._names or key in self._late_keys:
                 raise ValueError(f"duplicate key {key!r}")
+            self._late_keys.add(key)
             self._late.append((key, bytes(data), compress))
         else:
             self._entry(key, bytes(data), compress=compress)
@@ -235,6 +247,10 @@ class VZipWriter:
         for r in ranges:
             if r.data is None and r.source >= len(self._source_list):
                 raise ValueError(f"range of {key!r} uses unregistered source {r.source}")
+            if r.data is not None and r.crc32c is not None:
+                raise ValueError(f"literal range of {key!r} with a crc32c (spec §9.1)")
+        if self._checksum is not None:
+            ranges = [self._with_checksum(r) for r in ranges]
         self._range_checks.extend((key, r) for r in ranges if r.data is None)
         if len(ranges) == 1:
             hid, payload = RANGE_EXTRA_ID, ranges[0].encode()
@@ -247,9 +263,20 @@ class VZipWriter:
         self._entry(key, payload if self._mirror else b"", extra)
         self._ref_names.add(key)
 
-    def add_url_refs(self, items) -> None:
+    def _url_of(self, source: int) -> str | None:
+        x = self._source_list[source]
+        return x.url if isinstance(x, Source) else x[0]
+
+    def _with_checksum(self, r: Range) -> Range:
+        """`r`, with the CRC-32C of its bytes if it is a range of a url source."""
+        if r.data is not None or r.crc32c is not None or (url := self._url_of(r.source)) is None:
+            return r
+        return Range(r.source, r.offset, r.length, None, self._checksum(url, r.offset, r.length))
+
+    def add_url_refs(self, items, *, pin_size: bool = False) -> None:
         """Bulk path for many objects referenced whole: for each (key, url, size),
         a new url source (not interned) and a reference entry `(source, 0, size)`.
+        With `pin_size`, each source also pins the object's size (spec §6.1).
 
         Avoids a Source object, an interning lookup and a deferred bounds check per
         entry (url sources are not bounds-checked), so millions of entries fit.
@@ -258,10 +285,13 @@ class VZipWriter:
             if key.startswith(RESERVED_PREFIX):
                 raise ValueError(f"{RESERVED_PREFIX!r} is reserved")
             i = len(self._source_list)
-            self._source_list.append(url)
+            self._source_list.append((url, size if pin_size else None))
             payload = bytearray()
             _put_uint(payload, 1, i)
             _put_uint(payload, 4, size)
+            if self._checksum is not None:  # field 6, crc32c (spec §5.2)
+                _put_varint(payload, 6 << 3)
+                _put_varint(payload, self._checksum(url, 0, size))
             payload = bytes(payload)
             extra = struct.pack("<HH", RANGE_EXTRA_ID, len(payload)) + payload
             self._entry(key, payload if self._mirror else b"", extra)
@@ -271,7 +301,7 @@ class VZipWriter:
         """Writer requirements on the source table (spec §9.1)."""
         from vzip.uri import is_uri_reference
 
-        bulk = [x for x in all_sources if isinstance(x, str)]
+        bulk = [x[0] for x in all_sources if isinstance(x, tuple)]
         bad = [u for u in bulk if not u or not is_uri_reference(u)]
         if bad:
             raise ValueError(f"empty or invalid url sources: {bad[:5]}")
@@ -322,7 +352,7 @@ class VZipWriter:
     def close(self) -> None:
         sources = self._source_list
         # test hooks (conformance/cases.py builds deliberately broken archives)
-        table = getattr(self, "_source_table_override", None) or _encode_sources(sources)
+        table = getattr(self, "_source_table_override", None) or _encode_sources(sources, SPEC_REVISION)
         if getattr(self, "_sources_trailing_junk", False):
             c = zlib.compressobj(9, zlib.DEFLATED, -15)
             self._entry_raw(SOURCES_KEY, table, c.compress(table) + c.flush() + b"junk")
@@ -385,19 +415,26 @@ class VZipWriter:
             self.close()
 
 
-def _encode_sources(sources: list) -> bytes:
-    """The SourceTable of `sources` (Source objects, or bare url strings)."""
+def _encode_sources(sources: list, revision: int | None = None) -> bytes:
+    """The SourceTable of `sources` (Source objects, or (url, size pin) pairs), with
+    the spec revision (spec §6)."""
     if all(isinstance(x, Source) for x in sources):
-        return encode_source_table(sources)
+        return encode_source_table(sources, revision)
     out = bytearray()
     for x in sources:
         if isinstance(x, Source):
             _put_bytes(out, 1, x.encode())
         else:
-            u = x.encode()
+            url, size = x
             sub = bytearray()
-            _put_bytes(sub, 1, u)
+            _put_bytes(sub, 1, url.encode())
+            if size is not None:  # an optional field: emitted even if 0
+                _put_varint(sub, 4 << 3)
+                _put_varint(sub, size)
             _put_bytes(out, 1, bytes(sub))
+    if revision is not None:
+        _put_varint(out, 2 << 3)
+        _put_varint(out, revision)
     return bytes(out)
 
 
@@ -537,10 +574,22 @@ def parse_central_directory(cd: bytes, *, trust_offsets: bool) -> dict[str, Entr
     return entries
 
 
-def inflate_clean(raw: bytes) -> bytes:
-    """Inflate one complete raw DEFLATE stream that fills `raw` exactly (spec §8.1)."""
+class InflateLimitError(ValueError):
+    """A DEFLATE stream inflates to more than the reader allows (spec §8.7 rule 6)."""
+
+
+def inflate_clean(raw: bytes, limit: int | None = None) -> bytes:
+    """Inflate one complete raw DEFLATE stream that fills `raw` exactly (spec §8.1).
+
+    With `limit`, inflating stops as soon as the output passes `limit` bytes,
+    which raises InflateLimitError (spec §8.7 rule 6)."""
     d = zlib.decompressobj(-15)
-    out = d.decompress(raw)
+    if limit is None:
+        out = d.decompress(raw)
+    else:
+        out = d.decompress(raw, limit + 1)
+        if len(out) > limit:
+            raise InflateLimitError(f"inflates to more than {limit} bytes")
     if not d.eof:
         raise ValueError("DEFLATE stream is incomplete")
     if d.unused_data:
@@ -561,3 +610,8 @@ LFH_SIZE = _LFH.size
 
 def read_source_table(body: bytes) -> list[Source]:
     return decode_source_table(body)
+
+
+def read_table(body: bytes) -> tuple[list[Source], int | None]:
+    """The sources and the recorded spec revision of a SourceTable (spec §6)."""
+    return decode_table(body)

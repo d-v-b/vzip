@@ -5,22 +5,22 @@
 #
 # Images (3-D to 5-D), an image with two label images, an HCS plate (72 wells, 1440 fields) and a
 # bioformats2raw plate with OME-XML.
-https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0054A/5025551.zarr/|idr0054_5025551_image
-https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0073A/9798462.zarr/|idr0073_9798462_image
-https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0101A/13457227.zarr/|idr0101_13457227_image_tczyx
-https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0138A/TimEmbryos-120919/HybCycle_29/MMStack_Pos9.ome.zarr/|idr0138_mmstack_pos9_labels
-https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0072B/9512.zarr/|idr0072_9512_plate
-https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0128E/9701.zarr/|idr0128_9701_bioformats2raw_plate
+https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0054A/5025551.zarr/|idr0054_5025551_image|listing-sha256=537aae2907b5e95faf9370ddf0b5640289873aa9bb9810db8921061e6d49a0b6
+https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0073A/9798462.zarr/|idr0073_9798462_image|listing-sha256=5fbc213a1490deb3171524b93942bb0cfa0af659c1a0432b7493f99840e8de3e
+https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0101A/13457227.zarr/|idr0101_13457227_image_tczyx|listing-sha256=15c78a8ebcef4a30de305a31201f692c5358943f4972b32234e78571382c3c64
+https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0138A/TimEmbryos-120919/HybCycle_29/MMStack_Pos9.ome.zarr/|idr0138_mmstack_pos9_labels|listing-sha256=e6f2d0f5a62db248036a83eb71caefe0dc4e4f2636f00d82ae258d059b263fd5
+https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0072B/9512.zarr/|idr0072_9512_plate|listing-sha256=9db881cb9167143e6392444d1604f5e25afcde31170f19e996553b5f1645bbd1
+https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0128E/9701.zarr/|idr0128_9701_bioformats2raw_plate|listing-sha256=501b7eae450e72ad7324d51e12193b60a05921142465ceb1478a20761cf41a0a
 # Images whose label images have one level more than the image (as omero-zarr writes them): the
 # extra level is dropped from the label's 0.5 multiscales (§11.3, L7). Some have translations.
-https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr/|idr0062_6001240_labels
-https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001247.zarr/|idr0062_6001247_labels
-https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0076A/10501752.zarr/|idr0076_10501752_labels
-https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0101A/13457537.zarr/|idr0101_13457537_labels_translation
-https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0101A/13457539.zarr/|idr0101_13457539_labels_multiscale_translation
-https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0047A/4496763.zarr/|idr0047_4496763_labels
-https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0052A/5514375.zarr/|idr0052_5514375_two_labels
-https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0079A/idr0079_images.zarr/|idr0079_bioformats2raw_labels
+https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr/|idr0062_6001240_labels|listing-sha256=d5fd8a6b8c866901470c5f9bf6dc1208df977bb86f1567d853bb716a940a18d1
+https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001247.zarr/|idr0062_6001247_labels|listing-sha256=5683859a2a2544898ab74f31e60f6aa35c67c2b46d90ca4db8d7f543c6e202f5
+https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0076A/10501752.zarr/|idr0076_10501752_labels|listing-sha256=91acea1787ed6aaf90eb33de78b4dd7316cc4d5bf03289d8018962801ef9502d
+https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0101A/13457537.zarr/|idr0101_13457537_labels_translation|listing-sha256=d9f56089f91dd7f8f1d1fd106aba584e006b43a2fbad868e3259654139ecf5f5
+https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0101A/13457539.zarr/|idr0101_13457539_labels_multiscale_translation|listing-sha256=c2d02ed178ed00b2605690b9a319c953a38c57dd4c9081d8ed0175e2d217be88
+https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0047A/4496763.zarr/|idr0047_4496763_labels|listing-sha256=b5ea027e49da2283e7b3047d005eb4e4f5a6b5bb7a916d805ee8018490429a46
+https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0052A/5514375.zarr/|idr0052_5514375_two_labels|listing-sha256=8a809a5eb2a70d1b700ef0cc4a35a54466ba2321928669079e6b426abe25e4d2
+https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0079A/idr0079_images.zarr/|idr0079_bioformats2raw_labels|listing-sha256=6368fb34779858234eaec96d29fab2be3d0a370776728037e5311a682ec3f444
 # A plate of 96 wells with labels, 102114 objects: past the browser limit (VIRTUALIZE.md §12), so
 # only the Python reference runs it, with --large.
 https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0001A/2551.zarr/|idr0001_2551_plate_labels|py-only

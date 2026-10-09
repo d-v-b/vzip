@@ -1,14 +1,14 @@
 # url|name of the public NIfTI files in the corpus: nibabel's test data (MIT), SPM (GPL-2.0), dcm2niix's
 # regression data from neurolabusc's dcm_qa repositories (BSD-2-Clause) and NiiVue's demo images (BSD-2-Clause)
-https://raw.githubusercontent.com/nipy/nibabel/master/nibabel/tests/data/anatomical.nii|nibabel_anatomical
-https://raw.githubusercontent.com/nipy/nibabel/master/nibabel/tests/data/functional.nii|nibabel_functional
-https://raw.githubusercontent.com/nipy/nibabel/master/nibabel/tests/data/reoriented_anat_moved.nii|nibabel_reoriented_anat_moved
-https://raw.githubusercontent.com/nipy/nibabel/master/nibabel/tests/data/row_major.dconn.nii|nibabel_row_major_dconn
-https://raw.githubusercontent.com/niivue/niivue/main/packages/vox-loader/tests/testData/monu1.nii|niivue_monu1_rgba
-https://raw.githubusercontent.com/spm/spm/main/toolbox/OldNorm/SPECT.nii|spm_spect
-https://raw.githubusercontent.com/spm/spm/main/canonical/avg152T1.nii|spm_avg152T1
-https://raw.githubusercontent.com/spm/spm/main/toolbox/DEM/face.nii|spm_face
-https://raw.githubusercontent.com/spm/spm/main/tpm/TPM.nii|spm_tpm
-https://raw.githubusercontent.com/neurolabusc/dcm_qa_enh/master/Ref/Philips_WIP_resting_state_1001_e1.nii|dcmqa_philips_resting_state
-https://raw.githubusercontent.com/neurolabusc/dcm_qa_philips/master/Ref/DT_HIGH_32DIR_SENSE_1201.nii|dcmqa_philips_dwi
-https://raw.githubusercontent.com/neurolabusc/dcm_qa_uih/master/Ref/t1_gre_fsp_3d_sag_2_132222.nii|dcmqa_uih_t1_sag
+https://raw.githubusercontent.com/nipy/nibabel/2f7c14298ab8f5cea66d0f2f89cd38eff6b3438c/nibabel/tests/data/anatomical.nii|nibabel_anatomical|ends-sha256=dadc5ad6ec1c269b1754d918305988e5cf1b961ccf74f006f341916f07f42d7c
+https://raw.githubusercontent.com/nipy/nibabel/2f7c14298ab8f5cea66d0f2f89cd38eff6b3438c/nibabel/tests/data/functional.nii|nibabel_functional|ends-sha256=7b295a4a07e4502f5a1d67f48f15712c0ca9d153e4dc703ad0fe06cbb43f1446
+https://raw.githubusercontent.com/nipy/nibabel/2f7c14298ab8f5cea66d0f2f89cd38eff6b3438c/nibabel/tests/data/reoriented_anat_moved.nii|nibabel_reoriented_anat_moved|ends-sha256=be351798c23daff041150a664528e9defc155e6a91c4a45480eafaa1ae3bf6a8
+https://raw.githubusercontent.com/nipy/nibabel/2f7c14298ab8f5cea66d0f2f89cd38eff6b3438c/nibabel/tests/data/row_major.dconn.nii|nibabel_row_major_dconn|ends-sha256=a6abc4dd19ff409c8268d9f77911ba84bde52d6aa085f791dda0fb7594a5c349
+https://raw.githubusercontent.com/niivue/niivue/2a060d5f64a15094a5147f3eae42d3382333f206/packages/vox-loader/tests/testData/monu1.nii|niivue_monu1_rgba|ends-sha256=e80c079310ceb85abfb792bfa66293352a5525fc987f095c506fdfc0aa183477
+https://raw.githubusercontent.com/spm/spm/4043ce6a2d79313b8fe362ed295d5d98e6858a41/toolbox/OldNorm/SPECT.nii|spm_spect|ends-sha256=6f5da35876d5601bb96403db0a4de90869cc50e771bb23c0e375ca5f75c921c7
+https://raw.githubusercontent.com/spm/spm/4043ce6a2d79313b8fe362ed295d5d98e6858a41/canonical/avg152T1.nii|spm_avg152T1|ends-sha256=a276b91459356625f6e34c67144a2cf1ed59b16ad4af6f6db5f00cf0c9ebcd17
+https://raw.githubusercontent.com/spm/spm/4043ce6a2d79313b8fe362ed295d5d98e6858a41/toolbox/DEM/face.nii|spm_face|ends-sha256=d74fda08ceb27e21fad849348780717a722e231a79b1c00c305ae6cca096e08f
+https://raw.githubusercontent.com/spm/spm/4043ce6a2d79313b8fe362ed295d5d98e6858a41/tpm/TPM.nii|spm_tpm|ends-sha256=ace90f7b7e21cc14a20f845113d543ea58d50a2471691df45bd97d243a968cec
+https://raw.githubusercontent.com/neurolabusc/dcm_qa_enh/58953e7b0150c6b866b2cc2fc2b40366625672dc/Ref/Philips_WIP_resting_state_1001_e1.nii|dcmqa_philips_resting_state|ends-sha256=d94ae325932a2c95a46fbb29b66aa883ae87f6e09154f2563c8646f61a005ef7
+https://raw.githubusercontent.com/neurolabusc/dcm_qa_philips/74efdbc01eb62540fbb702787c3a7a2c0e22f9eb/Ref/DT_HIGH_32DIR_SENSE_1201.nii|dcmqa_philips_dwi|ends-sha256=a4e4baa0c8b3ee7f6fd862a3aca06591e355f27f2f91fa62eac192bbf88bbad6
+https://raw.githubusercontent.com/neurolabusc/dcm_qa_uih/f3bd991a98eaf49a6f928f276a41f666d658a64b/Ref/t1_gre_fsp_3d_sag_2_132222.nii|dcmqa_uih_t1_sag|ends-sha256=9d8d07ac0d3ecced709b22e448c447dd197d76b27a8024d50f3368e64b418a96

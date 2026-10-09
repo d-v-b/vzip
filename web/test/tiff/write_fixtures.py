@@ -5,6 +5,7 @@ Usage: uv run python web/test/tiff/write_fixtures.py
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -25,7 +26,9 @@ def image(shape, dtype):
 
 def pyramid(path, data, levels, *, axes, downsample_axes=2, **kw):
     """An OME-TIFF with `levels` SubIFD levels, each half the size."""
-    ome_meta = {"axes": axes, "PhysicalSizeX": 0.5, "PhysicalSizeY": 0.5}
+    # A UUID from the file's name, not tifffile's (time-based) one: reproducible files.
+    ome_meta = {"axes": axes, "PhysicalSizeX": 0.5, "PhysicalSizeY": 0.5,
+                "UUID": str(uuid.uuid5(uuid.NAMESPACE_URL, f"vzip-fixture:{Path(path).name}"))}
     if "Z" in axes:
         ome_meta["PhysicalSizeZ"] = 2.0
     bigtiff = kw.pop("bigtiff", False)

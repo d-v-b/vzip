@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Earth_Explorer_File xmlns="http://gs2.esa.int/DATA_STRUCTURE/olqcReport">
+  <Data_Block type="xml">
+    <report date="2024-01-03T11:00:00Z" gippVersion="1.0" globalStatus="PASSED">
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_0" processingStatus="done"/><message contentType="text/plain">Check passed, value 133801</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_1" processingStatus="done"/><message contentType="text/plain">Check passed, value 128570</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_2" processingStatus="done"/><message contentType="text/plain">Check passed, value 797080</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_3" processingStatus="done"/><message contentType="text/plain">Check passed, value 499277</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_4" processingStatus="done"/><message contentType="text/plain">Check passed, value 590032</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_5" processingStatus="done"/><message contentType="text/plain">Check passed, value 601498</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_6" processingStatus="done"/><message contentType="text/plain">Check passed, value 712172</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_7" processingStatus="done"/><message contentType="text/plain">Check passed, value 28689</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_8" processingStatus="done"/><message contentType="text/plain">Check passed, value 485503</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_9" processingStatus="done"/><message contentType="text/plain">Check passed, value 147926</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_10" processingStatus="done"/><message contentType="text/plain">Check passed, value 401492</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_11" processingStatus="done"/><message contentType="text/plain">Check passed, value 928211</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_12" processingStatus="done"/><message contentType="text/plain">Check passed, value 547752</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_13" processingStatus="done"/><message contentType="text/plain">Check passed, value 70420</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_14" processingStatus="done"/><message contentType="text/plain">Check passed, value 542743</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_15" processingStatus="done"/><message contentType="text/plain">Check passed, value 129773</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_16" processingStatus="done"/><message contentType="text/plain">Check passed, value 754437</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_17" processingStatus="done"/><message contentType="text/plain">Check passed, value 948328</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_18" processingStatus="done"/><message contentType="text/plain">Check passed, value 979445</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_19" processingStatus="done"/><message contentType="text/plain">Check passed, value 621883</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_20" processingStatus="done"/><message contentType="text/plain">Check passed, value 868334</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_21" processingStatus="done"/><message contentType="text/plain">Check passed, value 368993</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_22" processingStatus="done"/><message contentType="text/plain">Check passed, value 145740</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_23" processingStatus="done"/><message contentType="text/plain">Check passed, value 511390</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_24" processingStatus="done"/><message contentType="text/plain">Check passed, value 443733</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_25" processingStatus="done"/><message contentType="text/plain">Check passed, value 662842</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_26" processingStatus="done"/><message contentType="text/plain">Check passed, value 994540</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_27" processingStatus="done"/><message contentType="text/plain">Check passed, value 275308</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_28" processingStatus="done"/><message contentType="text/plain">Check passed, value 855718</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_29" processingStatus="done"/><message contentType="text/plain">Check passed, value 137968</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_30" processingStatus="done"/><message contentType="text/plain">Check passed, value 347746</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_31" processingStatus="done"/><message contentType="text/plain">Check passed, value 788039</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_32" processingStatus="done"/><message contentType="text/plain">Check passed, value 247625</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_33" processingStatus="done"/><message contentType="text/plain">Check passed, value 670360</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_34" processingStatus="done"/><message contentType="text/plain">Check passed, value 458994</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_35" processingStatus="done"/><message contentType="text/plain">Check passed, value 512382</message></check>
+      <check><inspection creation="2024-01-03T11:00:00Z" item="GENERAL_QUALITY" name="GENERAL_QUALITY_36" processingStatus="done"/><message contentType="text/plain">Check passed, value 941279</message></check>
+    </report>
+  </Data_Block>
+</Earth_Explorer_File>

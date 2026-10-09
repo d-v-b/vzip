@@ -30,7 +30,10 @@ arrays, chunks and codecs, with the `v2` chunk key encoding), with:
   bioformats2raw collections get `"ome": {"version": "0.5", ...}` holding
   their `multiscales`, `omero`, `labels`, `image-label`, `plate`, `well`,
   `bioformats2raw.layout` and `series`, without the old per-object
-  `version` members. Other attributes stay where they were.
+  `version` members. Other attributes are kept under
+  `vzip_virtualized["ome-zarr"].attributes` on the same node, with the
+  Zarr v2 profile's other source metadata
+  ([zarr2](../zarr2/README.md#what-you-get)).
 - **`dimension_names`** on every image level, from the multiscale's axes, as
   0.5 requires.
 - **Label images with one level too many** (omero-zarr gives each label one
@@ -50,10 +53,13 @@ uv run python -m vzip.virtualize https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/i
 ```
 
 ```
-{"format": "ome-zarr", "groups": 3, "arrays": 7, "chunks": 1462, "emptyChunks": 0, "objects": 1475, "images": 2, "labels": 1, "droppedLabelLevels": 1, "plates": 0, "wells": 0, "fields": 0, "omeXml": 0, "listingRequests": 2}
+{"format": "ome-zarr", "groups": 3, "arrays": 7, "chunks": 1462, "emptyChunks": 0, "objects": 1475, "images": 2, "labels": 1, "droppedLabelLevels": 1, "plates": 0, "wells": 0, "fields": 0, "omeXml": 0, "otherObjects": 0, "listingRequests": 2}
 ```
 
-This took 4 s and wrote a 201 KB archive. The label image had 4 levels to
+This took 4 s and wrote a 201 KB archive, at VIRTUALIZE.md revision 16
+([overview](../README.md#formats)). (`otherObjects`, the objects kept under
+`vzip_source/objects/`, is new since then; it is 0 here, as every object is
+a document or a chunk.) The label image had 4 levels to
 its image's 3; one was dropped from its multiscale.
 
 ```python
@@ -120,7 +126,8 @@ Rejected, because the output would not be valid OME-Zarr 0.5:
 
 Not checked: what 0.4 only recommends (units, names, axis types beyond the
 order rule), and the OME-XML. A 0.4 group below a root that is not 0.4 is
-left as 0.4 attributes by the Zarr v2 profile.
+not migrated: the Zarr v2 profile keeps its attributes, unchanged, under
+`vzip_virtualized.zarr2.attributes`.
 
 ## Performance
 
@@ -128,10 +135,13 @@ left as 0.4 attributes by the Zarr v2 profile.
   Embassy S3 is path-style (bucket `idr`).
 - **The archive grows with the number of chunks:** one `url` source and one
   entry per chunk, about 140 bytes each here.
-- **Plates are slow.** Every row, well and field is a group with its own
-  documents, and the Python command reads them one at a time. For the IDR's
-  `idr0072B/9512.zarr` (72 wells, 1440 fields) it had not finished after
-  30 minutes, and the local browser build had not finished after 2.
+- **Plates have many documents.** Every row, well and field is a group with
+  its own documents. At revision 16 they were read one at a time, and for
+  the IDR's `idr0072B/9512.zarr` (72 wells, 1440 fields) the Python command
+  had not finished after 30 minutes, nor the local browser build after 2.
+  The documents are now read concurrently, 16 requests at a time by default
+  (`--workers N` in Python, `concurrency` in the browser), holding at most
+  64 MiB ahead; this plate has not been timed since.
 - Reading a chunk is one GET of the same object a 0.4 reader would fetch.
 
 ## How it's verified

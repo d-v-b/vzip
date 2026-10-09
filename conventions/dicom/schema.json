@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-dicom-v1/conventions/dicom/schema.json",
-  "title": "vzip DICOM convention, version 1",
-  "description": "The zarr.json of a node that declares the vzip DICOM convention (https://github.com/d-v-b/vzip/blob/virtualize-dicom-v1/conventions/dicom/README.md)",
+  "$id": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/conventions/dicom/schema.json",
+  "title": "vzip DICOM convention, version 0",
+  "description": "The zarr.json of a node that declares the vzip DICOM convention (https://github.com/d-v-b/vzip/blob/main/conventions/dicom/README.md)",
   "type": "object",
   "properties": {
     "zarr_format": {
@@ -12,7 +12,8 @@
     "node_type": {
       "type": "string",
       "enum": [
-        "group"
+        "group",
+        "array"
       ]
     },
     "attributes": {
@@ -31,7 +32,14 @@
           "maxContains": 1
         },
         "vzip_virtualized": {
-          "$ref": "#/$defs/rootProperty"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/rootProperty"
+            },
+            {
+              "$ref": "#/$defs/nodeProperty"
+            }
+          ]
         }
       },
       "required": [
@@ -57,11 +65,11 @@
         },
         "schema_url": {
           "type": "string",
-          "const": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-dicom-v1/conventions/dicom/schema.json"
+          "const": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/conventions/dicom/schema.json"
         },
         "spec_url": {
           "type": "string",
-          "const": "https://github.com/d-v-b/vzip/blob/virtualize-dicom-v1/conventions/dicom/README.md"
+          "const": "https://github.com/d-v-b/vzip/blob/main/conventions/dicom/README.md"
         },
         "name": {
           "type": "string",
@@ -87,7 +95,12 @@
         },
         "version": {
           "type": "integer",
-          "const": 1
+          "const": 0
+        },
+        "revision": {
+          "type": "integer",
+          "const": 23,
+          "description": "The VIRTUALIZE.md revision that produced the hierarchy (version 0 only)"
         },
         "source": {
           "type": "object",
@@ -109,6 +122,7 @@
       "required": [
         "profile",
         "version",
+        "revision",
         "source"
       ],
       "additionalProperties": false
@@ -116,19 +130,44 @@
     "sourceMetadata": {
       "type": "object",
       "properties": {
+        "preamble": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "description": "The 128-byte preamble, unless all zero"
+        },
         "meta": {
           "$ref": "#/$defs/dataset",
-          "description": "The File Meta Information"
+          "description": "The File Meta Information (on vzip_source: its large attributes)"
         },
         "dataset": {
           "$ref": "#/$defs/dataset",
-          "description": "The dataset, up to and including Pixel Data"
+          "description": "The dataset (on vzip_source: the per-frame groups and the large attributes)"
+        },
+        "pixel_extra": {
+          "type": "string",
+          "description": "The array holding the native pixel data after the frames"
+        },
+        "pixel_unreferenced": {
+          "type": "string",
+          "description": "The family holding the pixel data the Extended Offset Table skips"
+        },
+        "pixel_unreferenced_headers": {
+          "const": true,
+          "description": "Whether pixel_unreferenced also holds the frames' item headers"
+        },
+        "pixel_fragments": {
+          "type": "string",
+          "description": "The array holding each fragment's frame and data length, when a frame has more than one"
+        },
+        "pixel_offset_table": {
+          "const": true,
+          "description": "Whether the Basic Offset Table is not empty"
+        },
+        "trailing": {
+          "type": "string",
+          "description": "The array holding the bytes after the last element"
         }
       },
-      "required": [
-        "meta",
-        "dataset"
-      ],
       "additionalProperties": false
     },
     "headerValue": {
@@ -138,7 +177,7 @@
           "type": "number"
         },
         {
-          "type": "string"
+          "$ref": "#/$defs/text"
         },
         {
           "type": "array",
@@ -155,14 +194,51 @@
         }
       ]
     },
+    "text": {
+      "description": "A text value: a string (UTF-8), or its ISO 8859-1 reading when it is not UTF-8",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "latin1": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "latin1"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
     "dataset": {
       "type": "object",
-      "propertyNames": {
-        "pattern": "^[0-9A-F]{8}$"
+      "properties": {
+        "duplicates": {
+          "type": "array",
+          "description": "The later elements with a tag already in the dataset, in file order",
+          "items": {
+            "type": "object",
+            "patternProperties": {
+              "^[0-9A-F]{8}$": {
+                "$ref": "#/$defs/attribute"
+              }
+            },
+            "additionalProperties": false,
+            "minProperties": 1,
+            "maxProperties": 1
+          }
+        }
       },
-      "additionalProperties": {
-        "$ref": "#/$defs/attribute"
-      }
+      "patternProperties": {
+        "^[0-9A-F]{8}$": {
+          "$ref": "#/$defs/attribute"
+        }
+      },
+      "additionalProperties": false
     },
     "attribute": {
       "type": "object",
@@ -177,17 +253,44 @@
         "InlineBinary": {
           "type": "string",
           "contentEncoding": "base64"
+        },
+        "BulkDataURI": {
+          "type": "string",
+          "description": "The array (or family) of vzip_source that holds the value"
+        },
+        "Structures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dataset"
+          },
+          "description": "A gathered sequence's distinct item structures; vzip_source/<its path>/items/structure gives each item's"
+        },
+        "Gathered": {
+          "const": true,
+          "description": "A value in an item of a gathered sequence, at vzip_source/<the sequence's path>/items/<path within the item>/value, row or member <item index>"
+        },
+        "LittleEndian": {
+          "const": true,
+          "description": "An explicit UN value in explicit VR big endian, whose bytes are in little endian"
         }
       },
       "required": [
         "vr"
       ],
-      "not": {
-        "required": [
-          "Value",
-          "InlineBinary"
-        ]
+      "maxProperties": 3,
+      "additionalProperties": false
+    },
+    "nodeProperty": {
+      "type": "object",
+      "description": "Any other node's property: its source metadata only",
+      "properties": {
+        "dicom": {
+          "$ref": "#/$defs/sourceMetadata"
+        }
       },
+      "required": [
+        "dicom"
+      ],
       "additionalProperties": false
     }
   }

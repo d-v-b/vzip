@@ -12,9 +12,26 @@ idr_tiff := "https://ftp.ebi.ac.uk/pub/databases/IDR/idr0096-tratwal-marrowquant
 default:
     @just --list --list-submodules
 
-# Test the Python reference (src/vzip)
-test *args:
+# Test the Python package (src/vzip; it virtualizes TIFF, ND2 and CZI with the Rust core, built first)
+test *args: ir-build
     uv run pytest -q tests {{args}}
+
+# Build the IR core (rust/vzip-ir: the parsers, the read planner, the projections and the
+# mirror) into the project's environment as the Python module vzip_ir, which vzip.virtualize uses
+ir-build:
+    uv run --with maturin env VIRTUAL_ENV="$PWD/.venv" maturin develop --release -m rust/vzip-ir/Cargo.toml
+
+# Build the IR core for the browser (wasm32, without the Python bindings) and run its ND2,
+# TIFF and CZI parsers from Node on fixtures
+ir-wasm:
+    rust/vzip-ir/wasm/build.sh
+    node rust/vzip-ir/wasm/nd2.mjs web/test/fixtures/nd2/nd2_tz_uint16.nd2
+    node rust/vzip-ir/wasm/run.mjs web/test/fixtures/tiff/jpeg_gray.tif web/test/fixtures/czi/czi_zstd.czi
+
+# Test the IR core (Rust) and the IR prototype (Python, after ir-build)
+ir-test *args: ir-build
+    cargo test --release --manifest-path rust/vzip-ir/Cargo.toml
+    uv run pytest -q tests/ir {{args}}
 
 # Run every offline test: the Python reference, the browser code and the independent implementations
 test-all: test web::test impls::test
@@ -28,7 +45,28 @@ conformance out="conformance/results/latest": impls::build
         --impl rust=impls/rust/vzip --impl typescript=impls/typescript/vzip --impl python=impls/python/vzip
 
 # Regenerate the synthetic files in web/test/fixtures/<format> (all but NDPI, which needs the network)
-fixtures: fixtures-tiff fixtures-nd2 fixtures-dicom fixtures-nifti fixtures-ims fixtures-n5 fixtures-zarr2 fixtures-ome-zarr
+fixtures: fixtures-tiff fixtures-nd2 fixtures-dicom fixtures-nifti fixtures-ims fixtures-n5 fixtures-zarr2 fixtures-ome-zarr fixtures-safe fixtures-czi
+
+# Regenerate the fixtures twice and check that both runs give the same bytes, and the committed ones
+fixtures-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sums() { (cd web/test/fixtures && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256); }
+    just fixtures > /dev/null
+    first="$(sums)"
+    sleep 2  # past a one-second timestamp
+    just fixtures > /dev/null
+    if [ "$first" != "$(sums)" ]; then
+        diff <(echo "$first") <(sums) >&2 || true
+        echo "fixtures-check: two runs of the generators differ" >&2
+        exit 1
+    fi
+    git diff --exit-code --stat -- web/test/fixtures
+    if [ -n "$(git status --porcelain -- web/test/fixtures)" ]; then
+        git status --short -- web/test/fixtures >&2
+        echo "fixtures-check: the generators' output differs from the committed fixtures" >&2
+        exit 1
+    fi
 
 # Regenerate the synthetic TIFFs (including JPEG-tiled, SVS-like ones)
 fixtures-tiff:
@@ -67,6 +105,14 @@ fixtures-zarr2:
 # Regenerate the synthetic OME-Zarr 0.4 stores (one directory each)
 fixtures-ome-zarr:
     uv run python web/test/ome-zarr/write_fixtures.py
+
+# Regenerate the synthetic Sentinel-2 SAFE products (directories and .SAFE.zip files)
+fixtures-safe:
+    uv run python web/test/safe/write_fixtures.py
+
+# Regenerate the synthetic CZI files
+fixtures-czi:
+    uv run python web/test/czi/write_fixtures.py
 
 # Check the browser virtualizer's pixels for every format
 verify: verify-tiff verify-ndpi verify-nd2 verify-dicom verify-nifti verify-ims verify-n5 verify-zarr2 verify-ome-zarr
@@ -122,7 +168,8 @@ compare-mutants count="10" seed="0" *args:
     uv run python conformance/virtualize/compare.py conformance/results/mutants-out \
         --fixtures conformance/results/mutants {{args}}
 
-# On main after a merge: tag each convention's version as virtualize-<profile>-v<N> at HEAD (VIRTUALIZE.md §2.4)
+# On main after a merge: tag each convention's version as virtualize-<profile>-v<N> at HEAD
+# (conventions/README.md §1); version 0, before the release, has no tags
 tag-conventions:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -134,6 +181,10 @@ tag-conventions:
     tags="$(uv run python -c 'from vzip.virtualize.common import PROFILES
     for p, (_, v, _) in PROFILES.items(): print(f"virtualize-{p}-v{v}")')"
     for tag in $tags; do
+        if [ "${tag##*-v}" = "0" ]; then
+            echo "$tag: version 0 is not tagged (its URLs name main), kept untagged"
+            continue
+        fi
         if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
             echo "$tag exists (at $(git rev-list -n 1 "$tag")), kept"
         else
@@ -153,7 +204,7 @@ archives: archives-nd2 archives-idr
 
 # Virtualize the public ND2 files of the corpus into experiments/out/nd2
 archives-nd2:
-    grep -v '^#' conformance/virtualize/corpus_nd2.txt | grep . | while IFS='|' read -r url name; do \
+    grep -v '^#' conformance/virtualize/corpus_nd2.txt | grep . | while IFS='|' read -r url name _; do \
         uv run python -m vzip.virtualize "$url" "experiments/out/nd2/$name.vzip"; \
     done
 

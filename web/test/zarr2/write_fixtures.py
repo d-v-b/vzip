@@ -24,6 +24,7 @@ Usage: uv run python web/test/zarr2/write_fixtures.py
 
 from __future__ import annotations
 
+import gzip
 import json
 import shutil
 from pathlib import Path
@@ -44,10 +45,23 @@ def write_json(path: Path, doc) -> None:
     put(path, json.dumps(doc, indent=2, allow_nan=True).encode())
 
 
+class _Gzip:
+    """numcodecs' gzip, with the header's modification time 0 (numcodecs writes the
+    current time): reproducible files. The members are what numcodecs writes otherwise."""
+
+    def __init__(self, level: int):
+        self.level = level
+
+    def encode(self, data: bytes) -> bytes:
+        return gzip.compress(data, compresslevel=self.level, mtime=0)
+
+
 def codec(compressor: dict | None):
     if compressor is None:
         return None
     c = dict(compressor)
+    if c.get("id") == "gzip" and isinstance(c.get("level"), int):
+        return _Gzip(c["level"])
     return numcodecs.get_codec(c)
 
 
@@ -289,9 +303,107 @@ def main() -> None:
                    "vzip_virtualized": {"profile": "tiff", "version": 1}})
     group(d, "bad", {"zarr_conventions": proj})
 
+    # Source metadata (conventions/zarr2/README.md §4): the members of .zarray and .zgroup that
+    # the Zarr v3 metadata does not reproduce (an unread member, a null fill value, a compressor's
+    # members its codec does not carry), the compressors' levels, which the codecs carry,
+    # integers beyond 2^53 kept exact, and -0.0 fill values, written as Zarr v3 hex fills. These
+    # are written after the stores above, so that the random data of those does not change.
+    d = store("zarr2_source_metadata")
+    write_json(d / ".zgroup", {"zarr_format": 2, "creator": {"name": "a writer"}})
+    put(d / ".zattrs", b'{"id": 18446744073709551615, "neg": -9007199254740993, "safe": 9007199254740991}')
+    array(d, "null_fill", arr((4,), "<f4"), [4], fill=None)
+    array(d, "neg_zero_f2", arr((4,), ">f2"), [4], fill=-0.0)
+    array(d, "neg_zero_f4", arr((4,), "<f4"), [4], fill=-0.0)
+    array(d, "neg_zero_f8", arr((4,), "<f8"), [4], fill=-0.0)
+    array(d, "big_fill_f8", arr((4,), "<f8"), [4], fill=2**64)
+    array(d, "zlib_9", arr((4,), "<u2"), [4], compressor={"id": "zlib", "level": 9})
+    array(d, "zlib_no_level", arr((4,), "<u2"), [4], compressor={"id": "zlib"})
+    array(d, "gzip_default", arr((4,), "<u2"), [4], compressor={"id": "gzip", "level": -1})
+    array(d, "zstd_checksum", arr((4,), "<u2"), [4], compressor={"id": "zstd", "level": -3, "checksum": True})
+    array(d, "extra_members", arr((4,), "<u2"), [4], compressor=blosc(),
+          zarray_extra={"compressor": {**blosc(), "nthreads": 2}, "custom": {"x": 1}},
+          attrs={"_ARRAY_DIMENSIONS": ["x"]})
+
+    # Objects that are neither documents of a node nor chunks (conventions/zarr2/README.md §5):
+    # each is kept whole under vzip_source/objects/, except .zmetadata and empty objects.
+    d = store("zarr2_objects")
+    group(d, "")
+    array(d, "a", arr((4,), "<u2"), [2])
+    put(d / "a/notes.txt", b"inside an array\n")
+    group(d, "a/inner")  # inside an array: not a node, its document kept as an object
+    put(d / "README.md", b"# provenance\n")
+    write_json(d / "sub/.zattrs", {"no": "group"})  # .zattrs without .zgroup
+    array(d, "sub/b", arr((2,), "|u1"), [2])
+    put(d / "OME/METADATA.ome.xml", b"<OME/>")  # not a bioformats2raw collection
+    put(d / "empty.txt", b"")  # empty: no entry
+    write_json(d / ".zmetadata", {"zarr_consolidated_format": 1, "metadata": {}})  # never kept
+
+    for name, comp in (("zlib_level", {"id": "zlib", "level": 10}), ("gzip_level", {"id": "gzip", "level": "1"}),
+                       ("zstd_level", {"id": "zstd", "level": 23}), ("zstd_checksum", {"id": "zstd", "checksum": 1})):
+        reject(name, compressor=comp)
+    d = store("zarr2_reject_objects_collision")  # a node where the other objects go
+    group(d, "")
+    group(d, "vzip_source")
+    put(d / "README.md", b"x")
+
     total = sum(f.stat().st_size for f in OUT.rglob("*") if f.is_file())
     print(f"{sum(1 for _ in OUT.iterdir())} stores, {total} bytes")
 
 
+def exact_objects() -> None:
+    """Objects whose last segment a Zarr reader takes for a node's document, escaped with
+    `~` under vzip_source/objects/; empty objects, whose keys are vzip_source's source
+    metadata, or vzip_source/empty.json under a root array (conventions/zarr2/README.md §5);
+    and float fill values written as integers beyond 2^53 - 1 (§4). Fixed data, no RNG."""
+    d = store("zarr2_node_names")
+    group(d, "")
+    array(d, "a", np.arange(2, dtype="|u1"), [2])
+    put(d / "zarr.json", b'{"zarr_format": 3, "node_type": "group", "attributes": {}}')
+    put(d / "zarr.json~", b"one tilde")
+    put(d / "g/zarr.json", b'{"zarr_format": 3, "node_type": "group"}')
+    put(d / "a/zarr.json", b'{"zarr_format": 3, "node_type": "group"}')  # under an array, not a chunk
+    group(d, "a/inner")  # inside an array: not a node, its .zgroup kept as an object
+    put(d / "x/.zarray~~", b"two tildes")
+    put(d / "x/zarr.jsonx", b"not escaped")
+    put(d / "e", b"")
+    put(d / "g/e2", b"")
+    d = store("zarr2_root_array_empty")
+    array(d, "", np.arange(2, dtype="|u1"), [2])
+    put(d / "README.md", b"# a root array\n")
+    put(d / "empty", b"")
+    put(d / "\u00e9mpty", b"")
+    d = store("zarr2_fill_float_int")
+    group(d, "")
+    array(d, "h", np.zeros(2, dtype="<f8"), [2], fill=9007199254740993)  # binary64: 9007199254740992
+    array(d, "k", np.zeros(2, dtype="<f4"), [2], fill=-18446744073709551616)
+    array(d, "s", np.zeros(2, dtype="<f8"), [2], fill=9007199254740991)  # within 2^53 - 1: not kept
+
+
+
+
+def empty_chunks() -> None:
+    """A root array with an empty chunk object, whose key is listed in
+    vzip_source/empty.json (conventions/zarr2/README.md §3.2, §5). Fixed data, no RNG."""
+    d = store("zarr2_root_array_empty_chunk")
+    array(d, "", np.array([1, 2, 3, 4], dtype="|u1"), [2], fill=7)
+    put(d / "1", b"")
+
+
+def root_objects() -> None:
+    """A root array with other objects beside its chunk (a README, and `7`, outside the
+    chunk grid), which the root keeps without a vzip_source group (conventions/zarr2/README.md
+    §5). Written byte for byte as the first, hand-made copy was: compact JSON with a newline,
+    no RNG."""
+    d = store("zarr2_root_array_objects")
+    put(d / ".zarray", b'{"zarr_format":2,"shape":[4],"chunks":[4],"dtype":"<u2","order":"C",'
+                       b'"compressor":null,"filters":null,"fill_value":0}\n')
+    put(d / "0", np.array([1, 2, 3, 4], dtype="<u2").tobytes())
+    put(d / "7", b"x\n")
+    put(d / "README.md", b"notes\n")
+
+
 if __name__ == "__main__":
     main()
+    exact_objects()
+    empty_chunks()
+    root_objects()

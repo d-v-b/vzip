@@ -10,15 +10,15 @@ _PCT = r"%[0-9A-Fa-f]{2}"
 _UNRESERVED = r"A-Za-z0-9\-._~"
 _SUB = r"!$&'()*+,;="
 _PCHAR = rf"(?:[{_UNRESERVED}{_SUB}:@]|{_PCT})"
-_SPLIT = re.compile(r"^(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$")
-_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*$")
+_SPLIT = re.compile(r"^(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?\Z")
+_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*\Z")
 _USERINFO_HOST_PORT = re.compile(
     rf"^(?:(?:[{_UNRESERVED}{_SUB}:]|{_PCT})*@)?"
     rf"(?:\[[0-9A-Fa-f:.vV{_UNRESERVED}{_SUB}]+\]|(?:[{_UNRESERVED}{_SUB}]|{_PCT})*)"
     r"(?::[0-9]*)?$"
 )
-_PATH = re.compile(rf"^(?:{_PCHAR}|/)*$")
-_QUERY = re.compile(rf"^(?:{_PCHAR}|[/?])*$")
+_PATH = re.compile(rf"^(?:{_PCHAR}|/)*\Z")
+_QUERY = re.compile(rf"^(?:{_PCHAR}|[/?])*\Z")
 
 
 def is_uri_reference(ref: str) -> bool:

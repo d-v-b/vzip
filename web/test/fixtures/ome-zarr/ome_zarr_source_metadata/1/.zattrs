@@ -1,0 +1,60 @@
+{
+  "multiscales": [
+    {
+      "version": "0.4",
+      "name": "image",
+      "axes": [
+        {
+          "name": "y",
+          "type": "space",
+          "unit": "micrometer"
+        },
+        {
+          "name": "x",
+          "type": "space",
+          "unit": "micrometer"
+        }
+      ],
+      "datasets": [
+        {
+          "path": "0",
+          "coordinateTransformations": [
+            {
+              "type": "scale",
+              "scale": [
+                1.0,
+                1.0
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "omero": {
+    "id": 1,
+    "name": "synthetic",
+    "version": "0.4",
+    "channels": [
+      {
+        "active": true,
+        "coefficient": 1.0,
+        "color": "FF0000",
+        "family": "linear",
+        "inverted": false,
+        "label": "ch0",
+        "window": {
+          "start": 0,
+          "end": 200,
+          "min": 0,
+          "max": 255
+        }
+      }
+    ],
+    "rdefs": {
+      "defaultT": 0,
+      "defaultZ": 0,
+      "model": "color"
+    }
+  }
+}

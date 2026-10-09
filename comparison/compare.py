@@ -338,9 +338,12 @@ def write_vzip(vds, out, ctx, cfg) -> None:
 
 
 def open_vzip(url, ctx, cfg):
+    from vzip.policy import Policy
     from vzip.store import VZipStore
 
-    return VZipStore(url), 3
+    # the benchmark serves the archive and its sources on 127.0.0.1, which the default
+    # policy refuses (SPEC.md §8.7 rule 3)
+    return VZipStore(url, policy=Policy(allow_private_hosts=True)), 3
 
 
 @dataclass

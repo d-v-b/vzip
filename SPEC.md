@@ -1,6 +1,6 @@
 # vzip: a ZIP container for byte-range references
 
-Format version: 0 (**provisional**) · Specification revision: 8.2
+Format version: 0 (**provisional**) · Specification revision: 10
 
 ## 1. Introduction
 
@@ -74,6 +74,28 @@ the magic `vzip/<version>` (§3.4). This document specifies format version
   archive, so that the most readers can read it.
 - **Conformance:** a conformance suite states the format version and the
   spec revision it tests.
+- **The recorded revision:** every archive records, in its source table
+  (§6), the revision of this document its writer followed (the whole number:
+  9 for revision 9, 9.1 or 9.2). Readers MUST NOT reject an archive because
+  of its recorded revision, or because it has none; they MAY report it. It
+  tells apart archives written under different revisions of a format
+  version, which matters while that version is provisional and revisions may
+  still change results.
+
+**Releases.** Until vzip's first release, every archive is format version 0
+and records its revision as above. The release rule is:
+
+1. At the first release, the text of this document becomes format version
+   1, and the commit is tagged `vzip-format-v1` in the specification's
+   repository.
+2. After that, every **breaking change** (any change that §1.3 says needs a
+   new version, and any change to the result of an operation on a valid
+   archive) increments the format version written in the magic (§3.4), and
+   the commit that makes it is tagged `vzip-format-v<N>`. Changes that are
+   not breaking are revisions of the current version, and need no tag.
+3. Readers MUST reject an archive whose format version they don't implement
+   (§3.4), which is what keeps every breaking change from being read with
+   the wrong meaning.
 
 **Status.** A format version is in one of three states:
 
@@ -419,6 +441,7 @@ message Range {
   uint64 offset = 3;
   uint64 length = 4;
   optional bytes data = 5;
+  optional uint32 crc32c = 6;
 }
 ```
 
@@ -436,6 +459,18 @@ A Range describes a byte sequence of a known **size**:
   otherwise the payload is malformed.
 
 The size is known without I/O.
+
+**Checksum.** A source range MAY carry field 6, `crc32c`: the CRC-32C of its
+bytes, that is of bytes `[offset, offset + length)` of the source value. A
+literal range with field 6 present is malformed. CRC-32C is the CRC of
+RFC 3720 §B.4 (iSCSI): the Castagnoli polynomial 0x1EDC6F41, reflected
+input and output, initial value and final XOR 0xFFFFFFFF. Its check value,
+for the nine ASCII bytes `123456789`, is 0xE3069283; for the empty sequence
+it is 0. Readers check it after they read the range (§8.3), so it detects a
+changed source wherever the range can be read, including where pins
+cannot be checked because the reader cannot see the response's headers (a
+browser reading a cross-origin object, §6.2). It covers only the bytes of
+the range: a change elsewhere in the object goes unnoticed.
 
 ### 5.3 Concat
 
@@ -468,8 +503,12 @@ message Source {
 
 message SourceTable {
   repeated Source sources = 1;
+  optional uint32 revision = 2;
 }
 ```
+
+`revision` is the revision of this document the writer followed (§1.3).
+Writers MUST write it; readers only report it.
 
 Sources are numbered from 0 in wire order. When the table is read (§8.1),
 any of the following is an archive error:
@@ -525,8 +564,8 @@ The **source value** of each kind:
   Readers MUST support `file:`, SHOULD support `http:` and `https:` (byte
   ranges via HTTP Range requests), and MAY support other schemes. It is a
   resolution error if the reference is not a valid URI reference, uses an
-  unsupported scheme, or violates the `file:` rules, or if the object cannot
-  be read (§6.2 for HTTP). Readers check URL syntax only when they resolve a
+  unsupported scheme, or violates the `file:` rules, if the reader's policy
+  refuses the URL (§8.7), or if the object cannot be read (§6.2 for HTTP). Readers check URL syntax only when they resolve a
   range of the source, not at open; writers check it when writing (§9.1). A reference with only a fragment (such as `#x`) resolves to the
   archive itself; that is valid but rarely useful.
 - **`key`**: the value of the bytes entry of this archive with that key. The
@@ -572,7 +611,9 @@ weak tag (`W/"..."`), is an archive error (§6).
 Before returning any byte read from a pinned source, a reader MUST check
 every pin on that source. A pin that fails, or that the reader cannot check
 for that scheme, is a resolution error. A reader MUST NOT skip a pin it
-does not understand: pins fail closed. Checks, by scheme:
+does not understand: pins fail closed. The one exception is a pin that the
+response's headers would check but that the reader cannot see, which an
+application may allow the reader to skip (§8.7). Checks, by scheme:
 
 | pin | `http:`/`https:` | `file:` |
 |---|---|---|
@@ -586,14 +627,19 @@ SHOULD do so per opening of the archive, not cache the result across opens.
 
 Writers SHOULD:
 
+- pin `size` on every `url` source whose size they know. It costs nothing
+  to check over HTTP (the size is in every range response) and catches
+  appends and most rewrites. Modification times have one-second
+  resolution, so a rewrite within the same second as `modified_not_after` is
+  not detected, while `size` may catch it;
+- pin `etag` when they saw a strong entity tag for the object, from a
+  response that also gave them the bytes they describe;
 - take `modified_not_after` from the object itself (its `Last-Modified`
   value, or its file modification time), not from the writer's clock. A
   value from the writer's clock fails whenever the server's clock or the
   object's timestamp is ahead of it;
-- pin `size` whenever they pin anything. Modification times have one-second
-  resolution, so a rewrite within the same second as `modified_not_after` is
-  not detected; `size` catches appends and most rewrites;
-- prefer `etag` where the object store provides strong entity tags;
+- add a `crc32c` (§5.2) to ranges whose bytes they read anyway, or when
+  asked to: it is the only check that does not depend on headers;
 - pin only `size` in archives meant to be copied together with their data
   (§6, relative URLs). Copying an object changes its modification time and
   may change its entity tag.
@@ -662,6 +708,10 @@ This section applies to readers that support `http:` and `https:`.
     that is not a valid URI reference, is a resolution error;
   - only to `http:` or `https:`; a redirect to any other scheme is a
     resolution error;
+  - only to a URL the reader's policy allows (§8.7); a redirect to any other
+    URL is a resolution error, and the reader SHOULD detect it before it
+    sends the request. A reader that cannot see a redirect before it is
+    followed (a browser's `fetch`) checks the final URL instead;
   - each hop re-sends `Range`, `Accept-Encoding` and the pin headers. Pins
     and the size apply to the final response.
 - **URLs:** an `http:` or `https:` URL is a resolution error if it has
@@ -777,8 +827,9 @@ archive error:
   `[offset, offset + size)` is inside `[0, file size]`. Readers do not check
   whether regions overlap each other or the end records.
 
-  A resource limit (§10) reached while opening, for example while inflating
-  a format entry, is an archive error.
+  A resource limit (§8.7, §10) reached while opening, for example while
+  inflating a format entry, or a source table with more sources than the
+  reader allows, is an archive error.
 
   The same corruption of a central directory record is an archive error in
   an archive without a page index (the whole directory is parsed at open),
@@ -875,9 +926,14 @@ A conforming reader provides the following operations on an opened archive:
    - A literal range needs no I/O.
    - A source range reads bytes `[offset + i, offset + j)` of its source value,
      where `[i, j)` is the overlap relative to the range's start. The read is
-     a resolution error if the source cannot be resolved (§6), if a pin on
-     the source fails or cannot be checked (§6.1), or if the source value is
-     shorter than `offset + j`.
+     a resolution error if the source cannot be resolved (§6), if the
+     reader's policy refuses it (§8.7), if a pin on the source fails or
+     cannot be checked (§6.1), or if the source value is shorter than
+     `offset + j`.
+   - A source range with a `crc32c` (§5.2) is read whole, `[offset, offset +
+     length)`, whatever part of it the window needs. If the CRC-32C of the
+     bytes read differs from `crc32c`, it is a resolution error. The reader
+     returns the window's part only after the check.
 4. Ranges that do not overlap the window are not resolved and cause no
    error, even if their source is missing or too short. This includes every
    zero-length range.
@@ -907,8 +963,8 @@ There are six classes of error. Each says which operations it makes fail.
 | **entry error** | the key's record violates §4.1 (unparseable extra field, several reference blocks), uses a method other than 0 and 8, has bit 0 set, is a reference entry with method 8 (§4.3), or breaks the ZIP64 block rules (§3.2); or the page that lookup (§7.2) selects for the key cannot be parsed. In that last case the key is reported as an entry error even if it isn't in the page, because the reader cannot tell. | classify, get and raw fail for that key; other keys are unaffected |
 | **body error** | an entry's body (`[body offset, body offset + compressed size)`, judged as a whole even for a small window) lies outside the file; a DEFLATE body does not inflate cleanly (§8.1); a STORED entry's compressed and uncompressed sizes differ. This applies to bytes entries for get and raw, and to reference entries for raw. | get and raw of that key fail; a range of a `key` source naming it fails with a resolution error |
 | **payload error** | the reference payload is malformed (§5) | get fails for that key |
-| **resolution error** | §6, §6.1, §8.3 step 3 | get fails for the requests that need the range |
-| **request error** | `start > end`; a request exceeding a resource limit the reader documents (§10) | that operation fails |
+| **resolution error** | §6, §6.1, §8.3 step 3, a URL the reader's policy refuses (§8.7) | get fails for the requests that need the range |
+| **request error** | `start > end`; a request exceeding a resource limit the reader documents (§8.7, §10), such as the requests one get may make | that operation fails |
 
 Resource limits are implementation-defined. Conformance suites do not test
 them, and the classes of errors they cause may differ between readers.
@@ -950,6 +1006,148 @@ unspecified:
   Readers MUST still ignore the body, except in the raw view.
 - §7.1: whether the central directory matches the page index (beyond the
   checks in §7.2), and whether pinned values match their records.
+- §6: whether the source table records the revision (§1.3).
+
+### 8.7 Reader policy
+
+An archive names the objects its references read, and a reader resolves
+them with whatever access it has: local files, private networks, ambient
+credentials. An archive from an untrusted place could therefore make a
+reader read, and return, data its user never meant to expose. Readers MUST
+apply a **policy** to every `url` source they resolve, and to every URL they
+request on its behalf (redirect targets included). The application chooses
+the policy; this section says what it contains and what readers do with
+it. A URL the policy refuses is a resolution error for the ranges that need
+it; the other limits are resource limits (§8.4).
+
+1. **Schemes.** An archive is **local** if its base URI (§6) has the
+   scheme `file`, that is, if it was opened from a local path, and
+   **remote** otherwise. Schemes are compared without regard to case. By
+   default a reader allows:
+   - `http` and `https` URLs, for every archive;
+   - `file` URLs, for a local archive only.
+
+   Every other scheme, such as `s3`, `gs` or `data`, is refused unless the
+   application allows that scheme. An application MAY also allow `file`
+   URLs for a remote archive, but a reader MUST NOT let the setting that
+   allows other schemes do it: it is a separate setting, whose name says
+   that it is unsafe. So by default a remote archive cannot name
+   `file:///etc/passwd`, and no archive can name an `s3:` bucket the reader
+   has credentials for.
+2. **Prefixes.** An application MAY give a list of URL **prefixes**. When it
+   does, the list replaces rule 1: a URL is allowed if and only if it
+   matches one of the prefixes. A URL `u` matches a prefix `p` if `u` starts
+   with `p` (compared as strings, exactly) and either `p` ends with `/`, or
+   `u` equals `p`, or the character of `u` after `p` is `/`, `?` or `#`. So
+   `https://data.example/a` matches `https://data.example/a/x.bin` but not
+   `https://data.example/ab`, and `https://data.example` does not match
+   `https://data.example.evil.test/`. A URL whose path holds `%2E`, `%2F`
+   or `%5C` (in either case) matches no prefix, since a server may decode
+   them into a dot segment or a separator that the comparison did not see.
+   Prefixes should be written as resolution produces URLs (§6), with a
+   lowercase scheme and host; a URL that is spelled differently does not
+   match, which fails closed. A prefix list does not lift rule 3.
+3. **Hosts.** An IP address belongs to the first of these classes that
+   contains it:
+
+   | class | addresses |
+   |---|---|
+   | loopback | `127.0.0.0/8`, `::1/128` |
+   | private | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7` |
+   | link-local | `169.254.0.0/16`, `fe80::/10` (this includes cloud metadata services) |
+   | special | `0.0.0.0/8`, `100.64.0.0/10`, `192.0.0.0/24`, `192.0.2.0/24`, `198.18.0.0/15`, `198.51.100.0/24`, `203.0.113.0/24`, `224.0.0.0/3`; `::/8`, `64:ff9b:1::/48`, `100::/63`, `2001::/23`, `2001:db8::/32`, `3fff::/20`, `5f00::/16`, `fec0::/10`, `ff00::/8` |
+   | public | every other address |
+
+   An IPv6 address that embeds an IPv4 address belongs to that address's
+   class: an IPv4-mapped address (`::ffff:0:0/96`) and a NAT64 address
+   (`64:ff9b::/96`) embed their last 32 bits, and a 6to4 address
+   (`2002::/16`) the 32 bits after its first 16. So `::ffff:127.0.0.1` is
+   loopback. The special class holds the unspecified, shared, reserved,
+   documentation, benchmarking, multicast and broadcast ranges. With the
+   embedding rule, the non-public classes include every range that the
+   IANA special-purpose address registries mark as not globally
+   reachable.
+
+   A reader MUST NOT send a request, redirects included, to an address of
+   a non-public class, whatever the archive's own location (a local
+   archive, or one on such a host, is no exception), unless the
+   application allows **private hosts**. That permission is a setting
+   whose name says that it is unsafe, and it allows every class. A refused
+   address is a resolution error. The rule applies to the address the
+   request is actually sent to, not to the host name in the URL:
+   - a reader that resolves names itself MUST resolve the name, check each
+     address, and connect only to an address it has checked, keeping the
+     URL's host for the `Host` header and the TLS server name (or check
+     the connected socket's peer address before it sends the request). A
+     connection kept alive from an earlier request is checked again before
+     it is reused. A host that is an IP literal is checked as the address it
+     denotes, however it is written: a URL parser that accepts decimal,
+     octal or hexadecimal IPv4 forms such as `2130706433` or `0x7f.1`
+     yields the address `127.0.0.1`;
+   - **proxies:** a request sent through a proxy cannot be checked, since
+     the proxy connects. While this rule applies, a reader MUST refuse to
+     send a request through a proxy (resolution error) unless the
+     application allows **unchecked proxies**, a second setting whose name
+     says that it is unsafe; the error names that setting. With it, the
+     reader checks the addresses the name resolves to where the reader
+     runs, which catches literal addresses but not DNS rebinding. A request
+     that the reader's proxy settings exempt (for example through
+     `no_proxy`) is sent directly, and checked. When the application allows
+     private hosts, the rule does not apply, and proxies are used as
+     configured;
+   - a reader that cannot see addresses at all (a browser's `fetch`)
+     checks the host as written in the URL, before the request and on the
+     final URL after redirects (§6.2): an IP literal by its class, and
+     `localhost` and names under `.localhost` as loopback. For names that
+     resolve to other classes, and for redirect hops it cannot see, it
+     relies on the platform: browsers that implement Private Network
+     Access refuse such requests from public pages unless the private
+     server consents. It cannot see the browser's proxy either.
+
+   The archive's own location is not checked: the application chose it.
+4. **Sources.** A reader MUST have a maximum number of sources. Opening an
+   archive whose source table has more is an archive error.
+5. **Requests per value.** A reader MUST have a maximum number of reads of
+   `url` sources that one `get` may make, counted after coalescing (§8.3),
+   with each read counting once however many redirects it follows. A `get`
+   that would need more is a request error, reported before any of its
+   reads is made.
+6. **Inflation.** A reader MUST have a maximum size for an inflated format
+   entry (§2), and MUST stop inflating a format entry as soon as its output
+   passes that size, so that a small DEFLATE body cannot make it allocate
+   more. Passing it is an archive error. A `bytes` entry's body is bounded
+   by the uncompressed size of its record (it must inflate to exactly that,
+   §8.1), and readers SHOULD stop inflating it once its output passes that
+   size.
+7. **Unverifiable pins.** An application MAY allow the reader to skip a pin
+   that the response's headers would check (§6.2) when the reader cannot see
+   those headers: a browser reading a cross-origin object whose server does
+   not expose `Content-Range`, `ETag` or `Last-Modified`. A pin that the
+   reader can check, and that fails, still fails, and every `crc32c` is
+   still checked. Without that permission, such a pin fails (§6.1).
+
+The limits of rules 4–6 are implementation-defined, and readers MUST
+document them. The readers in the specification's repository use these
+defaults:
+
+| | default |
+|---|---|
+| schemes (rule 1) | `http` and `https` for every archive, `file` for a local one; no other scheme |
+| `file` for a remote archive | refused |
+| prefixes | none (rule 1 applies) |
+| hosts (rule 3) | public addresses only, for every archive |
+| proxies while rule 3 applies | refused |
+| sources per archive | 4,194,304 (2^22) |
+| reads per `get` | 1024 |
+| inflated format entry | 256 MiB |
+| unverifiable pins | fail |
+
+They name the unsafe settings `allow_files_from_remote_archives`,
+`allow_private_hosts` and `allow_unchecked_proxy` (Python), and
+`allowFilesFromRemoteArchives`, `allowPrivateHosts` and
+`allowUncheckedProxy` (TypeScript). The reference command-line tool takes
+`--allow-private-hosts`, which the conformance harness passes, since its
+archives' sources are served over HTTP on the loopback interface.
 
 ## 9. Writing
 
@@ -971,6 +1169,7 @@ MUST reject its input, producing no archive, if:
   writer knows these values; `url` sources are not checked;
 - a pin is on a `key` or `data` source, or an `etag` pin is not a strong
   entity tag in double quotes (§6.1);
+- a literal range has a `crc32c` (§5.2);
 - a reference payload exceeds 65519 bytes (§4.3);
 - a source range's `offset + length`, or a reference's total size, exceeds
   2^64 − 1 (§5.2, §5.3);
@@ -1009,17 +1208,46 @@ any of these values.
 
 ## 10. Security considerations
 
-- A reader that supports `file:` URLs will read any local file an archive
-  names. Readers SHOULD let applications restrict which base directories or
-  URL prefixes may be resolved, and SHOULD document their default.
+- A reader resolves the URLs an archive names with the reader's own access.
+  The policy of §8.7 limits what that access reaches by default:
+  - a remote archive cannot read local files, and no archive can use other
+    schemes, such as an `s3:` bucket the reader holds credentials for
+    (rule 1);
+  - no archive, local or remote, can reach loopback, private, link-local
+    (which includes cloud metadata services) or other special addresses
+    (rule 3). A reader that resolves names checks the address it connects
+    to, so DNS rebinding does not get past the check, and it does not send
+    requests through a proxy, whose connections it cannot check.
+
+  It does not cover:
+  - public hosts: any archive can make the reader send requests to any
+    public host. The requests carry no credentials of the reader's, but
+    they reveal that the archive was read;
+  - readers that cannot see addresses: a browser checks hosts written as
+    IP literals or `localhost`, and relies on Private Network Access for
+    names that resolve to private addresses and for redirect hops;
+  - applications that set an unsafe setting. With unchecked proxies, a
+    name that resolves to a public address where the reader runs, and to
+    a private one where the proxy runs, is not detected. With private
+    hosts, an archive from an untrusted place, local files included, can
+    send requests to services on the reader's machine and network; an
+    application that needs private hosts for some archives SHOULD give
+    those a prefix list (rule 2) as well.
+
+  Applications that read archives from untrusted places SHOULD give a
+  prefix list (§8.7 rule 2).
+- One reference can name thousands of ranges, and a source table millions
+  of sources; the limits of §8.7 bound the requests one `get` makes and the
+  memory an archive takes to open.
 - Keys are not file names. Tools that extract an archive to disk MUST NOT
   trust keys such as `../x` or `/etc/passwd`.
 - A reference can describe a value of up to 2^64 − 1 bytes, and a DEFLATE
   body can expand greatly. Readers SHOULD bound the memory a single request
   can use, and document the bound; a request beyond it is a request error.
-- Pins (§6.1) detect accidental replacement of a referenced object, not
-  tampering: the archive itself is not signed, and a `modified_not_after`
-  pin cannot see a rewrite within the same second.
+- Pins (§6.1) and range checksums (§5.2) detect accidental replacement of
+  a referenced object, not tampering: the archive itself is not signed, a
+  `modified_not_after` pin cannot see a rewrite within the same second, and
+  CRC-32C is not a cryptographic hash.
 
 ## Appendix A: Complete schema
 
@@ -1033,6 +1261,7 @@ message Range {
   uint64 offset = 3;
   uint64 length = 4;
   optional bytes data = 5;
+  optional uint32 crc32c = 6;
 }
 
 message Concat {
@@ -1052,6 +1281,7 @@ message Source {
 
 message SourceTable {
   repeated Source sources = 1;
+  optional uint32 revision = 2;
 }
 
 message CdIndex {

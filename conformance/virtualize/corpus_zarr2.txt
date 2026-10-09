@@ -3,9 +3,9 @@
 # ListObjectsV2. Small levels and groups only (below the browser limit, VIRTUALIZE.md §12): OME-NGFF
 # 0.4 multiscale groups (blosc, nested "/" keys) and single low-resolution levels. A group whose root
 # declares OME-NGFF 0.4 (crop1/ves) is read by the OME-Zarr profile (§11), the others by §10.
-https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8/s5/|hela2_fibsem_uint8_s5
-https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8/s4/|hela2_fibsem_uint8_s4
-https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.zarr/recon-1/labels/groundtruth/crop1/ves/|hela2_groundtruth_crop1_ves
-https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.zarr/recon-1/labels/groundtruth/crop155/|hela2_groundtruth_crop155
-https://janelia-cosem-datasets.s3.amazonaws.com/jrc_cos7-11/jrc_cos7-11.zarr/recon-1/em/fibsem-uint16/s5/|cos7_11_fibsem_uint16_s5
-https://s3.amazonaws.com/janelia-cosem-datasets/jrc_cos7-11/jrc_cos7-11.zarr/recon-1/em/fibsem-uint16/s4/|cos7_11_fibsem_uint16_s4_path_style
+https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8/s5/|hela2_fibsem_uint8_s5|listing-sha256=f6770356680c2b65f44b1209910b32c77a21775b978c60268db4c62e0e5694f5
+https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8/s4/|hela2_fibsem_uint8_s4|listing-sha256=cf19a26f45f1511eaeec226189fbcc27b3f710cc07631ff8435c51c871979455
+https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.zarr/recon-1/labels/groundtruth/crop1/ves/|hela2_groundtruth_crop1_ves|listing-sha256=7986dbbfe45616dbedb0b29b83c2d80cfd230666b90719d9bffbffa3a16f95a5
+https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.zarr/recon-1/labels/groundtruth/crop155/|hela2_groundtruth_crop155|listing-sha256=bf9fb5b5f56de47a3e82dd2a5dc8c370ed6d566740125e69fee7e3d53b0178d5
+https://janelia-cosem-datasets.s3.amazonaws.com/jrc_cos7-11/jrc_cos7-11.zarr/recon-1/em/fibsem-uint16/s5/|cos7_11_fibsem_uint16_s5|listing-sha256=0b2900ebb999ceeb9ab060b97246e48f5b946417262afab5297b02066fbd7a9b
+https://s3.amazonaws.com/janelia-cosem-datasets/jrc_cos7-11/jrc_cos7-11.zarr/recon-1/em/fibsem-uint16/s4/|cos7_11_fibsem_uint16_s4_path_style|listing-sha256=5655403ecfb74627363a21a9c5456b0ee116680e1f8cce0a2e379108e84294db

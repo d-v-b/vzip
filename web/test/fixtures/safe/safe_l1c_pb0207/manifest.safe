@@ -1,0 +1,204 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<xfdu:XFDU xmlns:gml="http://www.opengis.net/gml" xmlns:safe="http://www.esa.int/safe/sentinel/1.1" xmlns:xfdu="urn:ccsds:schema:xfdu:1" version="esa/safe/sentinel/1.1/sentinel-2/msi/archive_l1c_user_product">	<!-- ===================================================================      INFORMATION PACKAGE MAP SECTION      =================================================================== -->	<informationPackageMap>		<xfdu:contentUnit textInfo="SENTINEL-2 MSI L1C User Product" unitType="Product_L1C"/>
+	</informationPackageMap>
+	<dataObjectSection>
+		<dataObject ID="obj_0">
+			<byteStream mimeType="application/octet-stream" size="90444">
+				<fileLocation href="./DATASTRIP/DS_2BPS_20240103T110304_S20240103T101328/MTD_DS.xml" locatorType="URL"/>
+				<checksum checksumName="MD5">2fc6c5b84b2898396b2b2bf45b8988a5</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_1">
+			<byteStream mimeType="application/octet-stream" size="23377">
+				<fileLocation href="./DATASTRIP/DS_2BPS_20240103T110304_S20240103T101328/QI_DATA/FORMAT_CORRECTNESS.xml" locatorType="URL"/>
+				<checksum checksumName="MD5">bb9dc2fab9dbd142285d546c303c4d84</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_2">
+			<byteStream mimeType="application/octet-stream" size="8032">
+				<fileLocation href="./DATASTRIP/DS_2BPS_20240103T110304_S20240103T101328/QI_DATA/GENERAL_QUALITY.xml" locatorType="URL"/>
+				<checksum checksumName="MD5">c2af902f022394a8970600ce36aadf25</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_3">
+			<byteStream mimeType="application/octet-stream" size="9249">
+				<fileLocation href="./DATASTRIP/DS_2BPS_20240103T110304_S20240103T101328/QI_DATA/GEOMETRIC_QUALITY.xml" locatorType="URL"/>
+				<checksum checksumName="MD5">8586c576dd5201a959e939c520f0d8f3</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_4">
+			<byteStream mimeType="application/octet-stream" size="7453">
+				<fileLocation href="./DATASTRIP/DS_2BPS_20240103T110304_S20240103T101328/QI_DATA/RADIOMETRIC_QUALITY.xml" locatorType="URL"/>
+				<checksum checksumName="MD5">54ca518ca2530886f06f5ca255d42f3f</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_5">
+			<byteStream mimeType="application/octet-stream" size="5045">
+				<fileLocation href="./DATASTRIP/DS_2BPS_20240103T110304_S20240103T101328/QI_DATA/SENSOR_QUALITY.xml" locatorType="URL"/>
+				<checksum checksumName="MD5">f23d9702ec2dbf95df9b7eb659bb072e</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_6">
+			<byteStream mimeType="application/octet-stream" size="2970">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/AUX_DATA/AUX_CAMSFO" locatorType="URL"/>
+				<checksum checksumName="MD5">bdf216fed4bb6bb36ecfa415d1e53754</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_7">
+			<byteStream mimeType="application/octet-stream" size="1620">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/AUX_DATA/AUX_ECMWFT" locatorType="URL"/>
+				<checksum checksumName="MD5">ad2fe6b6737d7c0aace4b0bc621e6de5</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_8">
+			<byteStream mimeType="application/octet-stream" size="0">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/AUX_DATA/AUX_EMPTY" locatorType="URL"/>
+				<checksum checksumName="MD5">d41d8cd98f00b204e9800998ecf8427e</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_9">
+			<byteStream mimeType="application/octet-stream" size="3116">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/IMG_DATA/T32TNS_20240103T101329_B01.jp2" locatorType="URL"/>
+				<checksum checksumName="MD5">d809715ad3ca12e3d2e068d9921c3321</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_10">
+			<byteStream mimeType="application/octet-stream" size="8438">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/IMG_DATA/T32TNS_20240103T101329_B02.jp2" locatorType="URL"/>
+				<checksum checksumName="MD5">3d91b9e028004c9b0d1377fc081e3861</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_11">
+			<byteStream mimeType="application/octet-stream" size="4213">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/IMG_DATA/T32TNS_20240103T101329_B05.jp2" locatorType="URL"/>
+				<checksum checksumName="MD5">a7ada07538445d3c371ca1d85130dcd2</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_12">
+			<byteStream mimeType="application/octet-stream" size="35228">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/IMG_DATA/T32TNS_20240103T101329_TCI.jp2" locatorType="URL"/>
+				<checksum checksumName="MD5">a042b5ece24aa010dbd9c3e2589886d4</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_13">
+			<byteStream mimeType="application/octet-stream" size="72035">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/MTD_TL.xml" locatorType="URL"/>
+				<checksum checksumName="MD5">fb98a7e265d0cd8ae31abf4af70b0452</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_14">
+			<byteStream mimeType="application/octet-stream" size="28361">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/QI_DATA/FORMAT_CORRECTNESS.xml" locatorType="URL"/>
+				<checksum checksumName="MD5">d118253a7ce2dd0c5107f20a88543cf2</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_15">
+			<byteStream mimeType="application/octet-stream" size="4461">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/QI_DATA/GENERAL_QUALITY.xml" locatorType="URL"/>
+				<checksum checksumName="MD5">0132f8cf684dff65090d4ac98a49bd99</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_16">
+			<byteStream mimeType="application/octet-stream" size="5398">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/QI_DATA/GEOMETRIC_QUALITY.xml" locatorType="URL"/>
+				<checksum checksumName="MD5">47123e0713fffa6b285ea9e0cdfdebda</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_17">
+			<byteStream mimeType="application/octet-stream" size="185">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/QI_DATA/MSK_CLOUDS_B01.gml" locatorType="URL"/>
+				<checksum checksumName="MD5">063353b1ab329c152c41a4012cb55ae9</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_18">
+			<byteStream mimeType="application/octet-stream" size="185">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/QI_DATA/MSK_CLOUDS_B02.gml" locatorType="URL"/>
+				<checksum checksumName="MD5">fc0713f0d9ede39398dfcbb5c58b395b</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_19">
+			<byteStream mimeType="application/octet-stream" size="185">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/QI_DATA/MSK_DEFECT_B01.gml" locatorType="URL"/>
+				<checksum checksumName="MD5">25796fd60b0952194365981de6a112f1</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_20">
+			<byteStream mimeType="application/octet-stream" size="185">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/QI_DATA/MSK_DEFECT_B02.gml" locatorType="URL"/>
+				<checksum checksumName="MD5">ad151a45fc347876ea6964ead9b7ed93</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_21">
+			<byteStream mimeType="application/octet-stream" size="185">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/QI_DATA/MSK_DETFOO_B01.gml" locatorType="URL"/>
+				<checksum checksumName="MD5">4b7617cde951ecbca87b7c244910bd6c</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_22">
+			<byteStream mimeType="application/octet-stream" size="185">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/QI_DATA/MSK_DETFOO_B02.gml" locatorType="URL"/>
+				<checksum checksumName="MD5">75f4c248d51749aa70f86544c8019756</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_23">
+			<byteStream mimeType="application/octet-stream" size="4631">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/QI_DATA/SENSOR_QUALITY.xml" locatorType="URL"/>
+				<checksum checksumName="MD5">3e328d0bfa6809c7211f1f31f5ad9bbe</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_24">
+			<byteStream mimeType="application/octet-stream" size="5033">
+				<fileLocation href="./GRANULE/L1C_T32TNS_A035655_20240103T101328/QI_DATA/T32TNS_20240103T101329_PVI.jp2" locatorType="URL"/>
+				<checksum checksumName="MD5">3fc4599067d8e34232f175b013355aaf</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_25">
+			<byteStream mimeType="application/octet-stream" size="45">
+				<fileLocation href="./HTML/UserProduct_index.html" locatorType="URL"/>
+				<checksum checksumName="MD5">2c17efcb8b7026fee414ec942062f316</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_26">
+			<byteStream mimeType="application/octet-stream" size="103">
+				<fileLocation href="./HTML/UserProduct_index.xsl" locatorType="URL"/>
+				<checksum checksumName="MD5">34bd9a02d629051ab3d29c23f8716835</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_27">
+			<byteStream mimeType="application/octet-stream" size="900">
+				<fileLocation href="./HTML/star_bg.jpg" locatorType="URL"/>
+				<checksum checksumName="MD5">fc5f230fefb5faf57ca9dbd95de59ff3</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_28">
+			<byteStream mimeType="application/octet-stream" size="455">
+				<fileLocation href="./INSPIRE.xml" locatorType="URL"/>
+				<checksum checksumName="MD5">ab36ad7d472924bbc319042a7c84739e</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_29">
+			<byteStream mimeType="application/octet-stream" size="11753">
+				<fileLocation href="./MTD_MSIL1C.xml" locatorType="URL"/>
+				<checksum checksumName="MD5">f9e145e7a7f3fcda005d2c855aab837f</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_30">
+			<byteStream mimeType="application/octet-stream" size="215">
+				<fileLocation href="./rep_info/S2_PDI_Level-1C_Datastrip_Metadata.xsd" locatorType="URL"/>
+				<checksum checksumName="MD5">7ea26f73a253237decf2926b2cc80599</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_31">
+			<byteStream mimeType="application/octet-stream" size="210">
+				<fileLocation href="./rep_info/S2_PDI_Level-1C_Tile_Metadata.xsd" locatorType="URL"/>
+				<checksum checksumName="MD5">cb5cbdac37f677b6fb056270c2e264a7</checksum>
+			</byteStream>
+		</dataObject>
+		<dataObject ID="obj_32">
+			<byteStream mimeType="application/octet-stream" size="214">
+				<fileLocation href="./rep_info/S2_User_Product_Level-1C_Metadata.xsd" locatorType="URL"/>
+				<checksum checksumName="MD5">82bde3dd52d2ec0d8690e8fba04f819e</checksum>
+			</byteStream>
+		</dataObject>
+	</dataObjectSection>
+</xfdu:XFDU>

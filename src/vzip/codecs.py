@@ -5,6 +5,8 @@ zarr-python does not provide.
 compression 33003/33005/34712 with planar-separate tiles).
 `imagecodecs_jpeg`: each chunk is one complete JPEG stream (as virtualized
 JPEG-in-TIFF tiles are, profiles/tiff.md §3.6).
+`imagecodecs_jpegxr`: each chunk is one JPEG XR file (ITU-T T.832, with its
+container), as CZI JpgXr subblocks are (conventions/czi/README.md §3.1).
 `zlib`: a zlib stream (RFC 1950), as Neuroglancer names it (conventions §3, §9, §10).
 `n5_default`: an N5 default-mode block, header included (zarr-extensions
 `codecs/n5_default`; profiles/n5.md).
@@ -82,6 +84,36 @@ class JpegCodec(ArrayBytesCodec):
 
 
 register_codec("imagecodecs_jpeg", JpegCodec)
+
+
+@dataclass(frozen=True)
+class JpegXrCodec(ArrayBytesCodec):
+    """`imagecodecs_jpegxr`: one JPEG XR file per chunk, decoding to [y, x] or
+    [y, x, c] (color samples in R, G, B (A) order), before `transpose`."""
+
+    is_fixed_size = False
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Self:
+        return cls()
+
+    def to_dict(self) -> dict:
+        return {"name": "imagecodecs_jpegxr"}
+
+    async def _decode_single(self, chunk_bytes: Buffer, chunk_spec: ArraySpec) -> NDBuffer:
+        img = imagecodecs.jpegxr_decode(chunk_bytes.to_bytes())
+        img = np.asarray(img, dtype=chunk_spec.dtype.to_native_dtype()).reshape(chunk_spec.shape)
+        return chunk_spec.prototype.nd_buffer.from_ndarray_like(img)
+
+    async def _encode_single(self, chunk_array: NDBuffer, chunk_spec: ArraySpec) -> Buffer:
+        arr = np.squeeze(chunk_array.as_numpy_array())
+        return chunk_spec.prototype.buffer.from_bytes(imagecodecs.jpegxr_encode(arr, level=1.0))
+
+    def compute_encoded_size(self, input_byte_length: int, chunk_spec: ArraySpec) -> int:
+        raise NotImplementedError
+
+
+register_codec("imagecodecs_jpegxr", JpegXrCodec)
 
 
 @dataclass(frozen=True)

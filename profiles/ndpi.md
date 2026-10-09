@@ -31,15 +31,28 @@ not NDPI). Otherwise it is a TIFF (§3). This test never rejects.
 `n` `u32` **high words**, one per entry. An entry's value field is its 4
 bytes plus its high word `h`: an out-of-line value is at offset
 `low + h × 2^32`, and an inline value of count 1 and type LONG (4) or IFD
-(13) is `low + h × 2^32`. Other inline values ignore `h`. NDPI files have no
-SubIFDs; the limits and checks of §3.1 apply.
+(13) is `low + h × 2^32`. Other inline values ignore `h`. Only the main
+chain is read for the layout: an NDPI's SubIFDs, like the IFDs of its other
+pointer tags, are read in this layout for the source metadata only, and
+never reject the input ([the convention
+§5](../conventions/ndpi/README.md#5-source-metadata)). The limits and checks
+of §3.1 apply, with these values read (§3.1, **Values read**): the
+Magnification of every main-chain IFD, and every tag of the table of each
+level ([the convention §3](../conventions/ndpi/README.md#3-levels)); of a
+scalar tag, its first value, of McuStarts, McuStartsHighBytes and
+BitsPerSample, every value. (A LONG or IFD value of count 1, with its high
+word, can exceed 2^53 − 1 too.) No other value is read for the layout, so
+the other IFDs' tags have only their field types, counts and places
+checked.
 
 **Rejection.** The input is rejected when a check fails, and when the
 convention gives it no layout: wherever the convention says that the input
 is rejected, or that something MUST hold and it does not.
 
 **Strips.** A level's strip is the JPEG stream `S` = bytes
-`[StripOffsets, StripOffsets + StripByteCounts)` of the file.
+`[StripOffsets, StripOffsets + StripByteCounts)` of the file, which MUST
+lie within the file. StripByteCounts MUST be at least 4, the SOI and EOI
+markers of the shortest JPEG stream.
 
 - **Without McuStarts,** the level is one chunk, the whole image (chunk
   shape `[3, H, W]`), with the single range of `S`.
@@ -60,9 +73,16 @@ is rejected, or that something MUST hold and it does not.
 
 **Chunks of a strip with McuStarts.** A chunk is `a × b` intervals: `a` =
 `min(q, max(1, floor(1024 / (R × mw))))` intervals across and `b` intervals
-down, so the chunk shape is `[3, b × mh, a × R × mw]`. `b` is the largest
+down, so the chunk shape is `[3, b × mh, a × R × mw]`. `a × R × mw` MUST be
+at most 65535. The 2 bytes of `S` before `M[i]` (for `i ≥ 1`) and its last
+2 bytes, its restart markers and EOI, are not read: the chunks put their
+own, and the source metadata takes the strip's to be the standard sequence
+`FF D0 + ((i − 1) mod 8)` and `FF D9`
+([the convention §5](../conventions/ndpi/README.md#5-source-metadata)).
+`b` is the largest
 number from 1 to `min(r, floor(1024 / mh))` (at least 1) for which every
-chunk's payload is at most 65519 bytes (§1.2). Chunk `(u, v)` (row `u`,
+chunk's payload is at most 65519 bytes (§1.2); `b × mh` MUST be at most
+65535 (it always is, since `mh ≤ 120`). Chunk `(u, v)` (row `u`,
 column `v`) is the JPEG stream:
 
 1. the header up to its SOF0 segment, a shared byte string (§1.2): a range

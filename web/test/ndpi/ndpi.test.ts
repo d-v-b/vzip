@@ -55,4 +55,35 @@ test("the header around SOF0 is in data sources, numbered in order of first use"
     }
   }
   assert.equal(next, data.length + 1);
+  // Each McuStarts level's own SOF0, which the literal replaces, is in its IFD's source metadata.
+  const group = (k: number) => {
+    const e = out.entries.find((x) => x.key === `vzip_source/ifds/${k}/zarr.json`) as { bytes: Uint8Array };
+    return JSON.parse(new TextDecoder().decode(e.bytes)).attributes.vzip_virtualized.ndpi;
+  };
+  for (const k of [0, 1]) assert.equal(Buffer.from(group(k).sof0, "base64").subarray(0, 2).toString("hex"), "ffc0");
+  assert.equal(group(2).sof0, undefined);
+});
+
+for (const [name, message] of [
+  ["edge_reject_ndpi_wide_interval.ndpi", /65536 pixels wide/],
+] as const) {
+  test(`rejects ${name}`, async () => {
+    const bytes = new Uint8Array(fs.readFileSync(new URL(`../fixtures/ndpi/${name}`, import.meta.url)));
+    await assert.rejects(
+      virtualizeImage("https://data.test/x.ndpi", async (o, n) => bytes.subarray(o, o + n), bytes.length), message);
+  });
+}
+
+async function virtualizeFixture(name: string) {
+  const bytes = new Uint8Array(fs.readFileSync(new URL(`../fixtures/ndpi/${name}`, import.meta.url)));
+  return virtualizeImage(`https://data.test/${name}`, async (o, n) => bytes.subarray(o, o + n), bytes.length);
+}
+
+test("rejects a strip shorter than a JPEG stream's SOI and EOI", async () => {
+  await assert.rejects(virtualizeFixture("edge_reject_ndpi_short_strip.ndpi"), /3 bytes is shorter than 4/);
+});
+
+test("the values of an IFD that is not a level are not read", async () => {
+  const out = await virtualizeFixture("ndpi_unused_values.ndpi");
+  assert.ok(out.entries.some((e) => e.key === "vzip_source/ifds/1/data/zarr.json"));
 });

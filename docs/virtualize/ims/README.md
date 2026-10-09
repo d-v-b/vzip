@@ -33,12 +33,17 @@ resolution level.
 - **Codecs:** `bytes`, or `bytes` then `zlib` for deflate-compressed files.
 - **Scale and translation:** from the image extents (`ExtMin`, `ExtMax`),
   so each level's voxel size is the extent over its size, and the
-  translation is the extents' corner; the unit from `Unit` (micrometres by
+  translation is the extents' corner; the unit from `Unit` (micrometers by
   default).
 - **Time step:** the mean interval between the first and last time points'
   timestamps.
-- **Name and omero:** the image name, and each channel's name, colour and
+- **Name and omero:** the image name, and each channel's name, color and
   contrast range.
+- **Metadata:** the rest of the HDF5 file (every group's attributes, which
+  hold the extents, units, channels, acquisition settings and time points;
+  the histograms; the thumbnail; `DataSetTimes`; the `Scene` objects), mirrored
+  as a Zarr hierarchy under `vzip_source/hdf5`: each HDF5 group a Zarr
+  group, each dataset a Zarr array, attributes and links as JSON.
 
 ## Try it
 
@@ -54,7 +59,9 @@ uv run python -m vzip.virtualize https://downloads.openmicroscopy.org/images/Ima
 {"format": "ims", "levels": 4, "sizes": {"t": 1, "c": 2, "z": 64, "y": 1567, "x": 2048}, "dataType": "uint8", "chunkShape": [16, 256, 256], "compressed": [true, true, true, true], "chunks": 612, "channels": ["CollagenIV (TxRed)", "GFAP (FITC)"]}
 ```
 
-This took 6 s and wrote an 80 KB archive.
+This took 6 s and wrote an 80 KB archive, at VIRTUALIZE.md revision 16
+([overview](../README.md#formats)); the archive now also mirrors the HDF5
+file's other objects, so it is larger.
 
 ```python
 import zarr
@@ -105,8 +112,9 @@ Supported:
 
 - Files from Imaris 5.5 to 10, ImarisWriter, ImarisFileConverter and Andor
   Fusion: HDF5 superblock versions 0 to 3, compact, dense and symbol-table
-  groups, soft links (Imaris 10), chunks indexed by version 1 B-trees, fixed
-  arrays or as a single chunk.
+  groups, soft links (Imaris 10), and chunks under any of HDF5's chunk
+  indexes (version 1 and 2 B-trees, fixed and extensible arrays, implicit,
+  single chunk).
 - Uncompressed or deflate chunks.
 
 Rejected, with the message the command prints:
@@ -116,8 +124,8 @@ Rejected, with the message the command prints:
   `croppedRetinaLz4.ims`). No Zarr codec decodes these chunks as stored.
 - HDF5 files that are not Imaris images, including Imaris scene files
   without image data: `not an Imaris file (no DataSet group)`.
-- Datasets that are compact or contiguous, other chunk indexes, and data
-  types other than those above.
+- Image datasets that are compact or contiguous, and data types other than
+  those above.
 - More than 64 resolution levels, or more than 100000 datasets.
 
 ## Performance
@@ -132,7 +140,7 @@ Rejected, with the message the command prints:
 
 ## How it's verified
 
-`web/test/ims/verify.py` virtualizes 28 synthetic IMS files (including
+`web/test/ims/verify.py` virtualizes 42 synthetic IMS files (including
 inputs to reject) with the browser code, reads them back through `src/vzip`
 and zarr-python, and compares the pixels with h5py (cropped to the image
 size). `compare.py` checks that the Python and browser outputs are

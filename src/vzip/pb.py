@@ -101,6 +101,7 @@ class Range:
     offset: int = 0
     length: int = 0
     data: bytes | None = None
+    crc32c: int | None = None  # CRC-32C of the range's bytes (spec §5.2), source ranges only
 
     def encode(self) -> bytes:
         out = bytearray()
@@ -109,13 +110,16 @@ class Range:
         _put_uint(out, 4, self.length)
         if self.data is not None:
             _put_bytes(out, 5, self.data)
+        if self.crc32c is not None:  # optional: emitted whenever set, even if 0
+            _put_tag(out, 6, _VARINT)
+            _put_varint(out, self.crc32c)
         return bytes(out)
 
     @classmethod
     def decode(cls, buf) -> Range:
         source = offset = length = 0
-        data = None
-        for f, v in _known(buf, {1: _VARINT, 3: _VARINT, 4: _VARINT, 5: _LEN}):
+        data = crc = None
+        for f, v in _known(buf, {1: _VARINT, 3: _VARINT, 4: _VARINT, 5: _LEN, 6: _VARINT}):
             if f == 1:
                 source = _u32(v)
             elif f == 3:
@@ -124,11 +128,15 @@ class Range:
                 length = v
             elif f == 5:
                 data = bytes(v)
+            elif f == 6:
+                crc = _u32(v)
         if data is not None and (source or offset or length):
             raise ValueError("literal range with non-zero source/offset/length")
+        if data is not None and crc is not None:
+            raise ValueError("literal range with a crc32c")
         if offset + length > 0xFFFFFFFFFFFFFFFF:
             raise ValueError("offset + length exceeds 2^64 - 1")
-        return cls(source, offset, length, data)
+        return cls(source, offset, length, data, crc)
 
     @property
     def size(self) -> int:
@@ -250,15 +258,29 @@ def _utf8(v) -> str:
         raise ValueError(f"invalid UTF-8 in string field: {e}") from None
 
 
-def encode_source_table(sources: list[Source]) -> bytes:
+def encode_source_table(sources: list[Source], revision: int | None = None) -> bytes:
     out = bytearray()
     for src in sources:
         _put_bytes(out, 1, src.encode())
+    if revision is not None:  # optional: emitted whenever set (spec §6, §1.3)
+        _put_tag(out, 2, _VARINT)
+        _put_varint(out, revision)
     return bytes(out)
 
 
 def decode_source_table(buf) -> list[Source]:
-    return [Source.decode(v) for _, v in _known(buf, {1: _LEN})]
+    return decode_table(buf)[0]
+
+
+def decode_table(buf) -> tuple[list[Source], int | None]:
+    """The sources of a SourceTable, and the spec revision it records, if any (spec §6)."""
+    sources, revision = [], None
+    for f, v in _known(buf, {1: _LEN, 2: _VARINT}):
+        if f == 1:
+            sources.append(Source.decode(v))
+        else:
+            revision = _u32(v)
+    return sources, revision
 
 
 @dataclass(frozen=True, slots=True)

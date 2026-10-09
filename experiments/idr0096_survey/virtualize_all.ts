@@ -6,9 +6,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { openHttpFile } from "../../web/src/http.ts";
-import { blockReader } from "../../web/src/virtualize/common.ts";
-import { virtualizeTiff } from "../../web/src/virtualize/tiff/virtualize.ts";
+import { virtualizeIr } from "../../web/src/virtualize/ir/run.ts";
+import { openHttpSource } from "../../web/src/virtualize/ir/source.ts";
 import { writeVzip } from "../../web/src/writer.ts";
 
 const [base, list, outDir, concurrency = "6"] = process.argv.slice(2);
@@ -18,19 +17,16 @@ fs.mkdirSync(outDir, { recursive: true });
 async function one(i: number, name: string) {
   const url = new URL(name, base).href;
   const t0 = performance.now();
-  let requests = 0;
+  let source: Awaited<ReturnType<typeof openHttpSource>> | undefined;
+  const requests = () => source?.requests ?? 0;
   try {
-    const file = await openHttpFile(url);
-    const read = blockReader(async (o, n) => {
-      requests++;
-      return file.read(o, n);
-    }, file.size);
-    const virtual = await virtualizeTiff(url, read, file.size);
+    source = await openHttpSource(url);
+    const virtual = await virtualizeIr("tiff", url, source);
     const bytes = await writeVzip(virtual);
     fs.writeFileSync(path.join(outDir, `${i}.vzip`), bytes);
-    return { i, name, url, ok: true, size: file.size, archive: bytes.length, requests, ms: Math.round(performance.now() - t0), summary: virtual.summary };
+    return { i, name, url, ok: true, size: source.size, archive: bytes.length, requests: requests(), ms: Math.round(performance.now() - t0), summary: virtual.summary };
   } catch (e) {
-    return { i, name, url, ok: false, error: `${(e as Error).constructor.name}: ${(e as Error).message}`, requests, ms: Math.round(performance.now() - t0) };
+    return { i, name, url, ok: false, error: `${(e as Error).constructor.name}: ${(e as Error).message}`, requests: requests(), ms: Math.round(performance.now() - t0) };
   }
 }
 

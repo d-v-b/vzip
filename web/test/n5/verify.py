@@ -26,6 +26,7 @@ Usage: uv run python web/test/n5/verify.py [<store dir> ...]
 from __future__ import annotations
 
 import gzip
+import importlib.util
 import json
 import struct
 import subprocess
@@ -47,7 +48,16 @@ sys.path.insert(0, str(ROOT / "conformance" / "virtualize"))
 from proxy import Proxy  # noqa: E402
 
 import vzip.codecs  # noqa: E402,F401  (registers n5_default and zlib)
+from vzip.policy import Policy  # noqa: E402
 from vzip.store import VZipStore  # noqa: E402
+
+# The sources are served on 127.0.0.1, which spec §8.7 rule 3 refuses by default.
+LOOPBACK_SOURCES = Policy(allow_private_hosts=True)
+
+# The other objects' check is the Zarr v2 verifier's (conventions/n5/README.md §6 is its §5).
+_spec = importlib.util.spec_from_file_location("zarr2_verify", HERE.parent / "zarr2" / "verify.py")
+zarr2_verify = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(zarr2_verify)
 
 
 def decompress(body: bytes, compression: dict) -> bytes:
@@ -117,13 +127,13 @@ def arrays_of(out: Path) -> list[str]:
 
 
 def virtualize(url: str, out: Path) -> subprocess.CompletedProcess:
-    return subprocess.run(["node", str(ROOT / "web" / "conformance" / "virtualize.ts"), url, str(out)],
+    return subprocess.run(["node", str(ROOT / "web" / "conformance" / "virtualize.ts"), "--allow-private-hosts", url, str(out)],
                           capture_output=True, text=True)
 
 
 def check_store(store_dir: Path, out: Path) -> list[str]:
     problems = []
-    vz = VZipStore(str(out))
+    vz = VZipStore(str(out), policy=LOOPBACK_SOURCES)
     for path in arrays_of(out):
         attrs = json.loads((store_dir / path / "attributes.json").read_text())
         arr = zarr.open_array(vz, path=path, mode="r", zarr_format=3)
@@ -169,7 +179,7 @@ def remote(store_url: str, path: str) -> int:
                 raise
 
         want = read_n5(attrs, get)
-        got = zarr.open_group(VZipStore(str(out)), mode="r", zarr_format=3)[path][...]
+        got = zarr.open_group(VZipStore(str(out), policy=LOOPBACK_SOURCES), mode="r", zarr_format=3)[path][...]
         ok = got.shape == want.shape and np.array_equal(got, want)
         print(f"{path}: {got.dtype}{got.shape}, {'equal to read_n5' if ok else 'DIFFERS from read_n5'}, "
               f"{int(np.count_nonzero(want))} nonzero values")
@@ -195,7 +205,7 @@ def main(argv: list[str]) -> int:
                 failures += 1
                 print(f"{store_dir.name:40s} FAILED: {p.stderr.strip()[-300:]}")
                 continue
-            problems = check_store(store_dir, out)
+            problems = check_store(store_dir, out) + zarr2_verify.objects_problems(store_dir, out)
             failures += bool(problems)
             print(f"{store_dir.name:40s} {problems[:3] if problems else 'ok'} ({len(arrays_of(out))} arrays)")
     print(f"\n{failures} failures")

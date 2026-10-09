@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-tiff-v1/conventions/tiff/schema.json",
-  "title": "vzip TIFF convention, version 1",
-  "description": "The zarr.json of a node that declares the vzip TIFF convention (https://github.com/d-v-b/vzip/blob/virtualize-tiff-v1/conventions/tiff/README.md)",
+  "$id": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/conventions/tiff/schema.json",
+  "title": "vzip TIFF convention, version 0",
+  "description": "The zarr.json of a node that declares the vzip TIFF convention (https://github.com/d-v-b/vzip/blob/main/conventions/tiff/README.md)",
   "type": "object",
   "properties": {
     "zarr_format": {
@@ -12,7 +12,8 @@
     "node_type": {
       "type": "string",
       "enum": [
-        "group"
+        "group",
+        "array"
       ]
     },
     "attributes": {
@@ -31,7 +32,14 @@
           "maxContains": 1
         },
         "vzip_virtualized": {
-          "$ref": "#/$defs/rootProperty"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/rootProperty"
+            },
+            {
+              "$ref": "#/$defs/nodeProperty"
+            }
+          ]
         }
       },
       "required": [
@@ -57,11 +65,11 @@
         },
         "schema_url": {
           "type": "string",
-          "const": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-tiff-v1/conventions/tiff/schema.json"
+          "const": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/conventions/tiff/schema.json"
         },
         "spec_url": {
           "type": "string",
-          "const": "https://github.com/d-v-b/vzip/blob/virtualize-tiff-v1/conventions/tiff/README.md"
+          "const": "https://github.com/d-v-b/vzip/blob/main/conventions/tiff/README.md"
         },
         "name": {
           "type": "string",
@@ -87,7 +95,12 @@
         },
         "version": {
           "type": "integer",
-          "const": 1
+          "const": 0
+        },
+        "revision": {
+          "type": "integer",
+          "const": 23,
+          "description": "The VIRTUALIZE.md revision that produced the hierarchy (version 0 only)"
         },
         "source": {
           "type": "object",
@@ -109,36 +122,40 @@
       "required": [
         "profile",
         "version",
+        "revision",
         "source"
       ],
       "additionalProperties": false
     },
     "sourceMetadata": {
-      "type": "object",
-      "properties": {
-        "byte_order": {
-          "enum": [
-            "little",
-            "big"
-          ]
+      "anyOf": [
+        {
+          "type": "object",
+          "description": "The root's: the file's byte order and variant",
+          "properties": {
+            "byte_order": {
+              "enum": [
+                "little",
+                "big"
+              ]
+            },
+            "bigtiff": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "byte_order",
+            "bigtiff"
+          ],
+          "additionalProperties": false
         },
-        "bigtiff": {
-          "type": "boolean"
+        {
+          "$ref": "#/$defs/mirror"
         },
-        "ifds": {
-          "type": "array",
-          "description": "The main chain's IFDs, in order",
-          "items": {
-            "$ref": "#/$defs/ifd"
-          }
+        {
+          "$ref": "#/$defs/mirrorView"
         }
-      },
-      "required": [
-        "byte_order",
-        "bigtiff",
-        "ifds"
-      ],
-      "additionalProperties": false
+      ]
     },
     "headerValue": {
       "description": "A translated header value (conventions/README.md §6)",
@@ -147,7 +164,7 @@
           "type": "number"
         },
         {
-          "type": "string"
+          "$ref": "#/$defs/text"
         },
         {
           "type": "array",
@@ -164,83 +181,174 @@
         }
       ]
     },
-    "ifd": {
-      "type": "object",
-      "properties": {
-        "tags": {
-          "type": "object",
-          "description": "Each tag by its number in decimal",
-          "propertyNames": {
-            "pattern": "^(0|[1-9][0-9]*)$"
-          },
-          "additionalProperties": {
-            "$ref": "#/$defs/tag"
-          }
+    "text": {
+      "description": "A text value: a string (UTF-8), or its ISO 8859-1 reading when it is not UTF-8",
+      "anyOf": [
+        {
+          "type": "string"
         },
-        "subifds": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ifd"
-          }
+        {
+          "type": "object",
+          "properties": {
+            "latin1": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "latin1"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "mirror": {
+      "type": "object",
+      "description": "vzip_source's: the IR mirror's description (conventions/README.md §8.2)",
+      "properties": {
+        "ir": {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 2
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The source's size in bytes"
+            },
+            "elements": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The elements, column runs expanded"
+            },
+            "rows": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The rows the table stores"
+            },
+            "names": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "const": ""
+                }
+              ],
+              "description": "The interned names"
+            },
+            "types": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "const": ""
+                }
+              ],
+              "description": "The interned types (§8.6)"
+            },
+            "forms": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The interned forms, each a JSON text (§8.5)"
+            }
+          },
+          "required": [
+            "version",
+            "size",
+            "elements",
+            "rows",
+            "names",
+            "types",
+            "forms"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
-        "tags"
+        "ir"
       ],
       "additionalProperties": false
     },
-    "tag": {
+    "mirrorView": {
       "type": "object",
+      "description": "A view group's (vzip_source/tree/...): a struct's view document (conventions/README.md §8.7)",
       "properties": {
-        "type": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 65535
+        "$vz": {
+          "const": "derived",
+          "description": "A derived element's document"
         },
-        "count": {
-          "anyOf": [
-            {
-              "type": "integer",
-              "minimum": 0
-            },
-            {
-              "type": "string",
-              "pattern": "^[0-9]+$"
-            }
+        "$form": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A derived element's form (§8.5)"
+        },
+        "$partial": {
+          "const": true,
+          "description": "The document stops short of the struct's children"
+        }
+      },
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/viewValue"
+      }
+    },
+    "viewValue": {
+      "description": "A child's view: a JSON value, a nested document, or a $vz form",
+      "anyOf": [
+        {
+          "type": [
+            "string",
+            "number",
+            "boolean",
+            "null",
+            "array"
           ]
         },
-        "value": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "array",
-              "items": {
-                "anyOf": [
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "array",
-                    "items": {
-                      "type": "integer"
-                    },
-                    "minItems": 2,
-                    "maxItems": 2
-                  }
-                ]
-              }
+        {
+          "type": "object",
+          "properties": {
+            "$vz": {
+              "enum": [
+                "alias",
+                "group",
+                "element",
+                "derived",
+                "int",
+                "float",
+                "bytes",
+                "utf16"
+              ]
             }
+          },
+          "required": [
+            "$vz"
           ]
+        },
+        {
+          "type": "object"
+        }
+      ]
+    },
+    "nodeProperty": {
+      "type": "object",
+      "description": "Any other node's property: its source metadata only",
+      "properties": {
+        "tiff": {
+          "$ref": "#/$defs/sourceMetadata"
         }
       },
       "required": [
-        "type",
-        "count"
+        "tiff"
       ],
       "additionalProperties": false
     }

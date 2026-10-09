@@ -6,7 +6,7 @@ all of vzip's conventions share is in [conventions/README.md](../README.md),
 cited here as "conventions §n". How vzip produces this layout as a virtual
 store is the TIFF profile, [profiles/tiff.md](../../profiles/tiff.md).
 
-Convention version: 1 · UUID: `48e9ac4e-1156-4a62-955e-20467d9c2700` ·
+Convention version: 0 (until release, README §1) · UUID: `48e9ac4e-1156-4a62-955e-20467d9c2700` ·
 Schema: [schema.json](schema.json)
 
 This convention gives a layout only to the files that meet its
@@ -17,20 +17,23 @@ convention, and the profile rejects it.
 ## 1. Declaration
 
 The root declares the convention by [conventions §2](../README.md#2-attributes),
-with `"profile": "tiff"`, `"version": 1`, the file's URL as `source.url`,
+with `"profile": "tiff"`, `"version": 0`, `"revision": 23` (README §1), the file's URL as `source.url`,
 and the source metadata of §5 as the member `"tiff"`. Its CMO is:
 
 ```json
 {
   "uuid": "48e9ac4e-1156-4a62-955e-20467d9c2700",
-  "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-tiff-v1/conventions/tiff/schema.json",
-  "spec_url": "https://github.com/d-v-b/vzip/blob/virtualize-tiff-v1/conventions/tiff/README.md",
+  "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/conventions/tiff/schema.json",
+  "spec_url": "https://github.com/d-v-b/vzip/blob/main/conventions/tiff/README.md",
   "name": "vzip_virtualized",
   "description": "The Zarr layout of a TIFF source virtualized by vzip, and the source's metadata"
 }
 ```
 
-No other node declares it: the arrays have no source metadata.
+`vzip_source` declares it too, with the IR mirror's description (§5,
+[conventions §8](../README.md#8-the-ir-mirror)), and so does each group of
+the mirror's view that has a member; the mirror's arrays have no
+attributes.
 
 ## 2. The source
 
@@ -38,10 +41,12 @@ The file is a TIFF (magic 42) or BigTIFF (magic 43), in either byte order.
 Its **IFDs** are the image file directories of its **main chain**, which
 starts at the header's first-IFD offset and ends at a next-IFD offset of 0,
 and, for each of them, its **SubIFDs**: the IFDs whose offsets its
-`SubIFDs` tag (330) lists, in order. (A SubIFD's own SubIFDs and next IFD
-are not part of the source.) The main chain MUST have at least one IFD.
-**IFD 0** is the first IFD of the main chain. Of duplicate tags in an IFD,
-the first is used.
+`SubIFDs` tag (330) lists, in order, and theirs in turn. Main-chain IFDs
+are at **depth** 0 and the SubIFDs of an IFD at depth `d` at depth `d + 1`;
+the SubIFDs of an IFD at depth 4 are not read. (A SubIFD's next IFD is not
+part of the source.) The main chain MUST have at least one IFD. **IFD 0**
+is the first IFD of the main chain. Of duplicate tags in an IFD, the first
+is used.
 
 The layout uses these tags (absent tags take the defaults shown); field
 types and counts are as the profile checks them
@@ -53,6 +58,7 @@ types and counts are as the profile checks them
 | 258 | BitsPerSample | array | required |
 | 259 | Compression | scalar | 1 |
 | 262 | PhotometricInterpretation | scalar | none (required for JPEG with 3 samples, §4.3) |
+| 266 | FillOrder | scalar | 1 |
 | 270 | ImageDescription | text | none |
 | 277 | SamplesPerPixel | scalar | 1 |
 | 284 | PlanarConfiguration | scalar | 1 |
@@ -61,9 +67,10 @@ types and counts are as the profile checks them
 | 324, 325 | TileOffsets, TileByteCounts | array | required for tiled images |
 | 330 | SubIFDs | array | none |
 | 282, 283 | XResolution, YResolution | scalar | none |
-| 296 | ResolutionUnit | scalar | 2 |
+| 296 | ResolutionUnit | scalar | none (2 for TIFF, but see §4.4) |
 | 339 | SampleFormat | array | 1 |
 | 347 | JPEGTables | bytes | none |
+| 530 | YCbCrSubsampling | array | `[2, 2]` (TIFF 6.0) |
 
 **Format.** An IFD's **format** is the tuple (BitsPerSample, SamplesPerPixel,
 SampleFormat, PlanarConfiguration, Compression, Predictor). Computing it
@@ -218,7 +225,13 @@ are none):
 - **Stepping:** successive planes step through positions in
   `DimensionOrder` (default `XYZCT`; the letters after `XY` are fastest
   first, with sizes `SizeZ`, `Cp`, `SizeT`) and through consecutive IFD
-  indices. Planes past the last position are ignored.
+  indices. Planes past the last position are ignored: with `P` the plane
+  count and `L` the start position's index in that order (`L = a + A × (b
+  + B × c)` for the letters after `XY` with positions `a`, `b`, `c` and
+  sizes `A`, `B`), a `TiffData` covers `min(PlaneCount, P − L)` planes.
+- **Cost:** the planes covered, summed over all `TiffData` elements, MUST
+  be at most `4 × P + 1000`, else the input is rejected (so that a short
+  document cannot step through many more planes than the image has).
 - A plane mapped twice takes the later mapping.
 
 After all `TiffData` elements are applied, every plane MUST be mapped to an
@@ -261,7 +274,18 @@ Anything else is rejected. JPEG (Compression 7) additionally requires
 BitsPerSample 8, SampleFormat 1, and either SamplesPerPixel 1, or
 SamplesPerPixel 3 with PlanarConfiguration 1 and PhotometricInterpretation
 2 (RGB) or 6 (YCbCr); otherwise the input is rejected. (Old-style JPEG,
-Compression 6, is rejected.) `bytes` has `endian` from the TIFF's byte order
+Compression 6, is rejected.)
+
+The codecs read the bytes of a tile as they are, filled from each byte's
+most significant bit (FillOrder 1), and decode samples at full resolution.
+So, for every IFD that is a plane or a level:
+- when Compression is 1, 8, 32946 or 50000, FillOrder MUST be 1;
+- when PhotometricInterpretation is 6 (YCbCr) and Compression is neither 7
+  nor JPEG 2000 (whose streams hold their own sampling), YCbCrSubsampling
+  MUST be present and exactly `[1, 1]` (absent, it is TIFF 6.0's default
+  `[2, 2]`).
+
+Otherwise the input is rejected. `bytes` has `endian` from the TIFF's byte order
 (when the data type is larger than 1 byte). When `spp > 1` and
 PlanarConfiguration is 1 (interleaved), `transpose` comes first, for every
 compression including JPEG 2000.
@@ -288,9 +312,13 @@ path `"<level>"`.
      present decimal (as `PhysicalSize*`, §3) gives `PX = PY` = that
      value, and `x`, `y` the unit `micrometer`.
   3. **Resolution tags:** IFD 0 has XResolution `n / d` with `n` and `d`
-     positive and ResolutionUnit 2 (inch) or 3 (centimetre): `PX` is
-     `25400 / (n / d)` or `10000 / (n / d)`, with unit `micrometer`. `PY`
-     likewise from YResolution.
+     positive and a ResolutionUnit tag of 2 (inch) or 3 (centimeter):
+     `PX` is `25400 / (n / d)` or `10000 / (n / d)`, with unit
+     `micrometer`, if that is less than 25.4. `PY` likewise from
+     YResolution. (The ResolutionUnit default is not used, and neither is a
+     pixel of 25.4 µm or more, 1000 dpi or less: a resolution of 72, 96 or
+     300 dpi is the one photo and document software writes, not a pixel
+     size.)
 
   Otherwise `PX`, `PY`, `PZ` are 1 with no unit. `t` and `c` have no unit.
 - **Position.** The image has a translation ([conventions §5](../README.md#5-units)), the same at every level,
@@ -327,100 +355,141 @@ path `"<level>"`.
 
 ## 5. Source metadata
 
-The root's source metadata `S` ([conventions §2](../README.md#2-attributes))
-holds every tag of every IFD, so that nothing the file's tags say is lost:
-the instrument, the acquisition, the color profile, private tags, and the
-ImageDescription (and so the OME-XML or the Aperio description) as it is.
-It is an object with these members, in this order:
+The root's source metadata `S` is `{"byte_order": "little" | "big",
+"bigtiff": true | false}`. Everything else the file holds is on
+`vzip_source`, which is the file's **IR mirror**
+([conventions §8](../README.md#8-the-ir-mirror)): its table, from which the
+file is rebuilt byte for byte, and its view, `vzip_source/tree`. This
+section is the TIFF **source model**: the elements of a TIFF's IR. Nothing is
+left out, layout and dead space included (they are elements too, the dead
+space as gaps).
 
-- `byte_order`: `"little"` or `"big"`.
-- `bigtiff`: `true` for BigTIFF, `false` for TIFF.
-- `ifds`: an array of the main chain's IFDs, in chain order, each an object
-  with:
-  - `tags`: an object with one member per tag of the IFD, named by the tag
-    number in decimal, in ascending order of number (of duplicate tags, the
-    first in the IFD);
-  - `subifds`: present when the IFD has a `SubIFDs` tag: an array of its
-    SubIFDs, in the tag's order, each an object with only `tags`.
+### 5.1 Elements
 
-A tag is the object `{"type": t, "count": n, "value": v}`, where `t` is its
-field type and `n` its count, as integers (conventions §6), and `v` is its
-value translated by its type:
+Paths are relative to the IR's root; `<i>`, `<j>`, `<tag>` are decimal name
+indexes (conventions §8.1). Types are those of conventions §8.6, with `E` the
+file's byte order (`<` little, `>` big), `W` the offset type (`u4`, or `u8`
+for BigTIFF) and `C` the entry-count type (`u2`, or `u8`).
 
-| field type | `v` |
-|---|---|
-| BYTE (1), UNDEFINED (7) | the bytes, in base64 |
-| ASCII (2) | the bytes, without the last one if it is NUL, as text: UTF-8 if valid, else ISO 8859-1. (A NUL inside the value is kept, as U+0000; `n` tells whether a final NUL was dropped.) |
-| SHORT (3), LONG (4), SBYTE (6), SSHORT (8), SLONG (9), IFD (13), LONG8 (16), SLONG8 (17), IFD8 (18) | an array of the `n` integers |
-| RATIONAL (5), SRATIONAL (10) | an array of `n` pairs `[numerator, denominator]`, as integers |
-| FLOAT (11), DOUBLE (12) | an array of the `n` numbers |
+| path | kind | type | extent: what |
+|---|---|---|---|
+| `header` | struct | | the header (8 or 16 bytes) |
+| `header/byte_order` | value | `ascii[2]` | `II` or `MM` |
+| `header/magic` | value | `Eu2` | 42 or 43 |
+| `header/offset_size`, `header/reserved` | value | `Eu2` | BigTIFF only |
+| `header/first_ifd` | value | `EW` | the first IFD's offset |
+| `ifds/<i>` | struct | | main-chain IFD `i` (§2): its entry count, entries and next-IFD offset |
+| `…/entry_count` | value | `EC` | the entry count `n` |
+| `…/tags/<tag>` | struct | | the first entry of tag `<tag>` (12 or 20 bytes); a later one of the same tag is `…/tags/<tag>~<k>`, `k` = 1, 2, … |
+| `…/tags/<tag>/entry` | value | record | the entry's tag, field type and count (`{tag:Eu2,type:Eu2,count:EW}`), with `offset:EW` when the value is out of line, or `field:bytes[4\|8]` when the field type is unknown |
+| `…/tags/<tag>/value` | value | by field type | the value: in the entry's field (the bytes it uses; the rest of the field is a gap), or at its offset when it lies within the file. Its type is `ascii[n]` (ASCII), `Eu1[n]`, `Eu2[n]`, `Eu4[n]`, `Eu8[n]`, `Ei1[n]` … (integers), `Eu4[n,2]`, `Ei4[n,2]` (rationals), `Ef4[n]`, `Ef8[n]`, or `bytes[n]` (UNDEFINED) |
+| `…/next_ifd` | value | `EW` | the next-IFD offset |
+| `…/tiles`, `…/strips` | struct | | an IFD's tiles or strips (by its TileOffsets and TileByteCounts, or StripOffsets and StripByteCounts), when it has both tables |
+| `…/tiles/<j>`, `…/strips/<j>` | data | | tile or strip `j`, when its byte count is not 0 and it lies within the file; its form's geometry is `{"shape": [rows, columns], "samples": s, "bits": b}`, its codec `{"compression": c}`, and its recipe the bytes, or, for JPEG (7) with JPEGTables, the first 2 bytes, the tables without their SOI and EOI (a shared data source), and the rest |
+| `…/subifds/<j>` | struct | | SubIFD `j` of the IFD (to depth 4), as an IFD |
+| `…/exif`, `…/gps`, `…/interoperability`, `…/ifd_<tag>` | struct | | the IFD a pointer tag (§5.2) leads to (`…/<name>/<j>` when the tag has several values), as an IFD |
+| `ome/planes/<p>` | alias | | plane `p` of the OME-XML (§4.1): the main-chain IFD its `TiffData` names |
+| `gaps/<offset>` | gap | | bytes no other element claims (padding, unused space, image data of tables that do not lie within the file) |
 
-Numbers follow [conventions §6](../README.md#6-source-metadata-as-json)
-(integers above 2^53 − 1 in magnitude as decimal strings; NaN and the
-infinities as strings). `"value"` is absent, and the tag is recorded by its
-type and count only, when:
+An IFD whose tile (or strip) tables are at the offsets of an earlier IFD's,
+with the same counts and codec, names that IFD's `tiles` by an alias. An
+element whose bytes an earlier element claims (an IFD read twice through a
+pointer, a tile at another's offset) is an alias of that element.
 
-- the tag is one that locates the file's own structure:
-  StripOffsets (273), StripByteCounts (279), FreeOffsets (288),
-  FreeByteCounts (289), TileOffsets (324), TileByteCounts (325), SubIFDs
-  (330), JPEGInterchangeFormat (513), JPEGInterchangeFormatLength (514),
-  ExifIFD (34665), GPSIFD (34853) and InteroperabilityIFD (40965);
-- its field type is not one of the table's;
-- its value does not lie within the file: an out-of-line value at offset
-  `o` of `size × n` bytes, with `o + size × n` more than the file's size;
-- or the value budget is spent: the values are taken in the order of `S`
-  (IFD by IFD in chain order, each IFD's tags in ascending order, then its
-  SubIFDs'), and a value is included only when its size in the file
-  (`size × n` bytes), added to the sizes of the values included before it,
-  is at most 2^26 bytes (64 MiB).
+### 5.2 Which IFDs
 
-The tag values that the layout uses are therefore all in `S`, except the
-offsets and byte counts, whose content is the chunks themselves.
+The IFDs of §2, at depth 0 (`ifds/<i>`) and their SubIFDs (to depth 4); then
+the IFDs that pointer tags lead to: SubIFDs (330), ExifIFD (34665),
+GPSIFD (34853), InteroperabilityIFD (40965) when their field type is an
+unsigned integer type, GlobalParametersIFD (400) when it is LONG, and any
+other tag of field type IFD (13) or IFD8 (18) that is neither a tag the
+layout uses nor a layout table. The IFDs of §2 are visited in order (each
+IFD, then its SubIFDs, depth first), and each pointer value in order; an IFD
+that a value leads to is read when it lies within the file, has at least one
+entry and does not overlap an IFD already read, at depth at most 4, while at
+most 100000 IFDs are read and 10000 offsets tried. An IFD already read is an
+alias.
+
+### 5.3 Values
+
+An entry's value is an element when it lies within the file. Its bytes are
+in the source; the view shows it when it is a number, a record, a GUID or
+text (ASCII) of at most 1024 bytes (conventions §8.7), and a producer reads
+every such value.
+
+### 5.4 Equivalence
+
+The elements are determined by the file, and the mirror by its elements
+(conventions §8.8: one order, one folding, one encoding): hierarchies of one
+file are compared entry for entry, `vzip_source` included
+([VIRTUALIZE.md §1.1](../../VIRTUALIZE.md#11-output-and-equivalence)).
 
 ## 6. Example
 
-The root of a one-plane RGB OME-TIFF at `https://example.org/image.ome.tif`
-with zstd tiles and one SubIFD level (the OME-XML is shortened here):
+A one-plane RGB OME-TIFF at `https://example.org/image.ome.tif`, with zstd
+tiles and one SubIFD level (the OME-XML is shortened here). The root's
+property:
 
 ```json
-"vzip_virtualized": {
+{
   "profile": "tiff",
-  "version": 1,
-  "source": {"url": "https://example.org/image.ome.tif"},
+  "version": 0,
+  "revision": 23,
+  "source": {
+    "url": "https://example.org/image.ome.tif"
+  },
   "tiff": {
     "byte_order": "little",
-    "bigtiff": false,
-    "ifds": [{
-      "tags": {
-        "256": {"type": 4, "count": 1, "value": [128]},
-        "257": {"type": 4, "count": 1, "value": [96]},
-        "258": {"type": 3, "count": 3, "value": [8, 8, 8]},
-        "259": {"type": 3, "count": 1, "value": [50000]},
-        "262": {"type": 3, "count": 1, "value": [2]},
-        "270": {"type": 2, "count": 699, "value": "<?xml version=\"1.0\" encoding=\"UTF-8\"?><OME ...</OME>"},
-        "277": {"type": 3, "count": 1, "value": [3]},
-        "282": {"type": 5, "count": 1, "value": [[1, 1]]},
-        "283": {"type": 5, "count": 1, "value": [[1, 1]]},
-        "284": {"type": 3, "count": 1, "value": [1]},
-        "296": {"type": 3, "count": 1, "value": [1]},
-        "305": {"type": 2, "count": 12, "value": "tifffile.py"},
-        "322": {"type": 4, "count": 1, "value": [48]},
-        "323": {"type": 4, "count": 1, "value": [32]},
-        "324": {"type": 4, "count": 9},
-        "325": {"type": 3, "count": 9},
-        "330": {"type": 13, "count": 1}
-      },
-      "subifds": [{
-        "tags": {
-          "254": {"type": 4, "count": 1, "value": [1]},
-          "256": {"type": 4, "count": 1, "value": [64]},
-          "257": {"type": 4, "count": 1, "value": [48]},
-          "...": "the same as IFD 0's, but 270 and 330",
-          "324": {"type": 4, "count": 4},
-          "325": {"type": 3, "count": 4}
-        }
-      }]
-    }]
+    "bigtiff": false
   }
 }
 ```
+
+`vzip_source` is the IR mirror (§5). For the 5,319-byte JPEG-tiled file
+`jpeg_gray.tif` of vzip's test fixtures, its property is:
+
+```json
+{
+ "tiff": {
+  "ir": {
+   "version": 2,
+   "size": 5319,
+   "elements": 73,
+   "rows": 14,
+   "names": ["", "byte_order", "entry", "entry_count", "first_ifd", "gaps/", "header", "ifds/", "magic",
+             "next_ifd", "tags/", "tiles", "value"],
+   "types": ["", "<u2", "<u2[12]", "<u2[1]", "<u4", "<u4[1,2]", "<u4[12]", "<u4[1]", "ascii[12]",
+             "ascii[21]", "ascii[2]", "{tag:<u2,type:<u2,count:<u4,offset:<u4}", "{tag:<u2,type:<u2,count:<u4}"],
+   "forms": ["{\"geometry\":{\"shape\":[32,32],\"samples\":1,\"bits\":8},\"codec\":{\"compression\":7},\"recipe\":[[\"src\",0,null]]}"]
+  }
+ }
+}
+```
+
+Its 73 elements are 14 rows: IFD 0's 15 tags fold into one column run, its
+12 tiles into another, whose starts and lengths are stored as differences
+(conventions §8.8: encoding 2, which reads them from TileOffsets and
+TileByteCounts, needs 16 tiles or more), and the 7 gaps into a third, whose
+name indexes are their starts (encoding 3). The names and types are sorted.
+The view, `vzip_source/tree`, begins:
+
+```json
+{
+ "tiff": {
+  "header": {"byte_order": "II", "magic": 42, "first_ifd": 8},
+  "ifds/0": {
+   "entry_count": 15,
+   "tags/256": {"entry": {"tag": 256, "type": 4, "count": 1}, "value": [128]},
+   "tags/257": {"entry": {"tag": 257, "type": 4, "count": 1}, "value": [96]},
+   "tags/305": {"entry": {"tag": 305, "type": 2, "count": 12, "offset": 246}, "value": "tifffile.py"},
+   "tags/324": {"entry": {"tag": 324, "type": 4, "count": 12, "offset": 258},
+                "value": [336, 752, 1166, 1581, 1997, 2413, 2827, 3242, 3658, 4074, 4488, 4903]},
+   "next_ifd": 0,
+   "tiles": {}
+  }
+ }
+}
+```
+
+(abridged: the other tags are like 256's; a text value is shown up to its first
+NUL, so tag 305's 12 bytes are `tifffile.py`).

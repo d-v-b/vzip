@@ -1,0 +1,28 @@
+# url|name of the public CZI files in the corpus (profiles/czi.md; conventions/czi/PLAN.md §6).
+# OME sample images (idr0011 subset, (c) Ledesma-Fernández et al.; zenodo-10577186, (c) Stephan
+# Wagner-Conrad; zenodo-14968770, (c) Jürgen Bohl), and Zenodo records 19047136, 7015307, 10708864,
+# 8321543, 10724935, 8358320 (CC-BY-4.0) and 5823010 (CC0).
+https://downloads.openmicroscopy.org/images/Zeiss-CZI/idr0011/Plate1-Blue-A_TS-Stinger/Plate1-Blue-A-02-Scene-1-P2-E1-01.czi|idr0011_A02_S1|ends-sha256=bd682f8eafd78737edccc11329d9f0a5d48fe1622deabbe55a6c4957f00ffcd2
+https://downloads.openmicroscopy.org/images/Zeiss-CZI/idr0011/Plate1-Blue-A_TS-Stinger/Plate1-Blue-A-03-Scene-1-P1-D1-01.czi|idr0011_A03_S1|ends-sha256=ced7b822a7b7dd581cfff72db7fc6e7d896d5bcf10b6dee156dbbeb26ab98e0b
+https://downloads.openmicroscopy.org/images/Zeiss-CZI/zenodo-10577186/2023_11_30__RecognizedCode-27.czi|axioscan_recognizedcode27|ends-sha256=b3a285af3b9c7d00a7653603925f55197c2bcd15d6b3216c1194ce24646a143b
+https://downloads.openmicroscopy.org/images/Zeiss-CZI/zenodo-10577186/2023_11_30__RecognizedCode-27-Background%20subtraction-08.czi|axioscan_background_subtraction|ends-sha256=b2c62ae3c0827c8686809a269d5b13bfbd6a3b19f98d58cf87ecdfe1a4345a49
+https://downloads.openmicroscopy.org/images/Zeiss-CZI/zenodo-10577186/2023_11_30__RecognizedCode-27-Deconvolution%20%28defaults%29-11.czi|axioscan_deconvolution|ends-sha256=1f6b22f75e6fc1f486a59620fd7df7106474ef330c32069fa2b4753ad6ebc7af
+https://downloads.openmicroscopy.org/images/Zeiss-CZI/zenodo-14968770/2025_01_27__0007_offline_Zen_3_9_5.czi|zen395_offline|ends-sha256=4e07465f2e9cdff45d23eb38b9b8123e19eef53e8ca2545d407adea63b3d4407
+https://zenodo.org/api/records/19047136/files/xt-scan-lsm980.czi/content|lsm980_xt|ends-sha256=4ffb95044a2db212baa1bd668f9532a9b9c072bc5cbe28536e76413d35fccf7f
+https://zenodo.org/api/records/19047136/files/xz-scan-lsm980.czi/content|lsm980_xz|ends-sha256=2307384ef48443c80c83857edf503f277e4df30b828a3e906bfab61d810d9bc8
+https://zenodo.org/api/records/19047136/files/xzt-scan-lsm980.czi/content|lsm980_xzt|ends-sha256=206a9190d68a94468b0e3071bf4a4696ab1ed33eba8df3595b8d6c07d963a9ae
+https://zenodo.org/api/records/19047136/files/Image_1_2023_08_18__14_32_31_964.czi/content|image1_all_dims|ends-sha256=3a1846d436eef1f91f83d8277c10df6ac5cf2872fe98d32c0855fbc9fe2222a3
+https://zenodo.org/api/records/19047136/files/test_gray.czi/content|test_gray_tiles|ends-sha256=d0f013d55a5ace7c81c3715586938f63a973e5578597237b0a08cd4a2779e75c
+https://zenodo.org/api/records/19047136/files/ZeissLLS7Demo-Max.czi/content|lls7_demo_max|ends-sha256=8cd87aff24091a4ab0bca9da114d75cdffaa26bba7d4034a56fbb1bde2c44f5b
+https://zenodo.org/api/records/7015307/files/S%3D2_2x2_Z%3D4_CH%3D1.czi/content|testcam_S2_2x2_Z4|ends-sha256=e71413527180f24421e424a410d582822cc7a086ca65309fab1496e3ab6a3ae2
+https://zenodo.org/api/records/7015307/files/T%3D3_Z%3D5_CH%3D2.czi/content|testcam_T3_Z5_C2|ends-sha256=314f149369ee2ff939a7f457426c9cf24e8e0a51d7359fab1a93968937f08254
+https://zenodo.org/api/records/7015307/files/S%3D3_1Pos_2Mosaic_T%3D2%3DZ%3D3_CH%3D2.czi/content|testcam_S3_mosaic|ends-sha256=624146da614a5321fd33f1f59ac6ddb0b3f122101ff33f05ab3f3a3f11563b11
+https://zenodo.org/api/records/7015307/files/W96_B2%2BB4_S%3D2_T%3D1%3DZ%3D1_C%3D1_Tile%3D5x9.czi/content|testcam_W96_tiles|ends-sha256=244b41e2fd410783ce36124af4041b44933db4541d8fa5b437b1f25d54271e2d
+https://zenodo.org/api/records/7015307/files/S%3D2_3x3_T%3D3_CH%3D2.czi/content|testcam_S2_3x3_T3|ends-sha256=c8b079ca3845feb9d5be55b2d337cd042aee5b5a92912aafcb23d95a5e2ee2a6
+https://zenodo.org/api/records/7015307/files/S%3D1_3x3_T%3D3_Z%3D4_CH%3D2.czi/content|testcam_S1_3x3_T3_Z4|ends-sha256=5de55da4ebfa65dfc5d8c461c1f1bc04892b15e35d25c084c15dd3ac6826b9c5
+https://zenodo.org/api/records/10708864/files/ztacktimeposition16bit.czi/content|bioformats_ztackt|ends-sha256=98a903075093ede1638cc12baba046a1850bafd59e300fc3f4f7b86cfcf4ecdd
+https://zenodo.org/api/records/8321543/files/3Dexample.czi/content|zenblack_3d|ends-sha256=a00607d145009b1a00ae981931f94c31df366c7d755bf24012ad1ca72845cced
+https://zenodo.org/api/records/10724935/files/TEST%202023_10_10__1046.czi/content|axioscan_bgr24_test|ends-sha256=3393bc55ed2440afa5d228538deac799c61315a5e040b854d5785b1853d8a3a6
+https://zenodo.org/api/records/10724935/files/TEST%202023_10_10__1046_merged.czi/content|axioscan_bgr24_merged|ends-sha256=3393bc55ed2440afa5d228538deac799c61315a5e040b854d5785b1853d8a3a6
+https://zenodo.org/api/records/8358320/files/Import%20issue.czi/content|import_issue|ends-sha256=c923c75ec84207a16d229e5bc2132793fe5f164ef902a5ad9462114db51616e4
+https://zenodo.org/api/records/5823010/files/mouse_01_05.czi/content|inflammasome_mouse_01_05|ends-sha256=1c3d711b96020abd270faad56cbe31a2fb9b83be5475ab2a614d93ccb8a8c815

@@ -7,7 +7,7 @@ What all of vzip's conventions share is in
 vzip produces this layout as a virtual store from a listed store is the
 OME-Zarr profile, [profiles/ome-zarr.md](../../profiles/ome-zarr.md).
 
-Convention version: 1 · UUID: `b74ea302-65bb-49ae-b81f-f9bb52cd4eed` ·
+Convention version: 0 (until release, README §1) · UUID: `b74ea302-65bb-49ae-b81f-f9bb52cd4eed` ·
 Schema: [schema.json](schema.json)
 
 This convention gives a layout only to the hierarchies that meet its
@@ -44,7 +44,7 @@ whose keys are exactly Zarr v2's for either separator, and its `transpose`,
 ## 1. Declaration
 
 The root declares the convention by [conventions §2](../README.md#2-attributes),
-with `"profile": "ome-zarr"`, `"version": 1`, the store's URL (ending in
+with `"profile": "ome-zarr"`, `"version": 0`, `"revision": 23` (README §1), the store's URL (ending in
 `/`) as `source.url`, and the root's source metadata (§8), if it has any,
 as the member `"ome-zarr"`. Every other node that has source metadata
 declares it with `{"ome-zarr": S}`. Its CMO is:
@@ -52,8 +52,8 @@ declares it with `{"ome-zarr": S}`. Its CMO is:
 ```json
 {
   "uuid": "b74ea302-65bb-49ae-b81f-f9bb52cd4eed",
-  "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-ome-zarr-v1/conventions/ome-zarr/schema.json",
-  "spec_url": "https://github.com/d-v-b/vzip/blob/virtualize-ome-zarr-v1/conventions/ome-zarr/README.md",
+  "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/conventions/ome-zarr/schema.json",
+  "spec_url": "https://github.com/d-v-b/vzip/blob/main/conventions/ome-zarr/README.md",
   "name": "vzip_virtualized",
   "description": "The Zarr layout of a OME-Zarr source virtualized by vzip, and the source's metadata"
 }
@@ -66,19 +66,24 @@ applies, with the same rejections: the candidates and nodes (explicit and
 implicit groups, arrays, nothing read inside an array), the `.zgroup`,
 `.zarray` and `.zattrs` documents, each array's `zarr.json` (shape, data
 type, chunk grid, the `v2` chunk key encoding with the array's separator,
-fill value, codecs and attributes), and its chunk keys and chunk objects.
-The hierarchy has the same keys as the Zarr v2 convention's hierarchy, plus §7's OME-XML
-objects, and the same `zarr.json` documents except for:
+fill value, codecs and attributes), and its chunk keys and chunk objects;
+and so do its rules for source metadata ([§4](../zarr2/README.md#4-source-metadata))
+and other objects ([§5](../zarr2/README.md#5-other-objects)), except where
+this convention says otherwise. The hierarchy has the same keys as the Zarr
+v2 convention's hierarchy, except that §7's OME-XML objects keep their own
+keys, and the same `zarr.json` documents except for:
 
-- the attributes of OME groups (§5);
+- the attributes of OME groups (§5), and their source metadata (§8);
 - the member `dimension_names` of image levels (§6).
 
 Every other node, called **not OME** here, is converted by [the Zarr v2 convention](../zarr2/README.md) unchanged:
 implicit groups, explicit groups without OME members (such as the row
 groups of a plate, or a group of tables next to an image), and arrays that
-are not image levels, their attributes kept as source metadata (§8). Objects that are
-not part of [the Zarr v2 convention](../zarr2/README.md)'s hierarchy (other than §7's) are not part of the
-output either.
+are not image levels, with their source metadata (§8). The objects that are
+not part of [the Zarr v2 convention](../zarr2/README.md)'s nodes or chunks
+are its other objects, kept whole under `vzip_source/objects/`
+([the Zarr v2 convention §5](../zarr2/README.md#5-other-objects)), except
+§7's.
 
 ## 3. OME groups
 
@@ -248,8 +253,8 @@ For each well at path `W`:
 ## 5. Group attributes
 
 The attributes of an OME group whose `.zattrs` is `A` are the member
-`ome`, and the declaration of §1 with `A` without its OME members as the
-group's source metadata (§8), when that is not empty. `ome` is:
+`ome`, and the declaration of §1 with the group's source metadata (§8),
+when it has any. `ome` is:
 
 ```json
 {"version": "0.5", "multiscales": [...], "omero": ..., ...}
@@ -270,10 +275,51 @@ changed only as follows:
   schemas, have none);
 - `labels`, `bioformats2raw.layout` and `series`: unchanged.
 
-Every other member of `A` (for example `_creator`, or a user's own) is
-in the group's source metadata, under the key (§8). A group that is not an
-OME group has its whole `.zattrs` as source metadata, as in the
-[Zarr v2 convention](../zarr2/README.md#4-source-metadata).
+**The inverse.** The 0.4 value that `ome` gives back for each of its
+members `k` but `version` is, when `k` is not **unversioned** (listed in
+the group's source metadata `U`, §8):
+
+- `multiscales`: each multiscale with the member `"version": "0.4"` added
+  (0.4 asks each multiscale for one, as a SHOULD);
+- `omero`, `image-label`, `plate` and `well`: the object with the member
+  `"version": "0.4"` added (0.4 asks `image-label`, `plate` and `well` for
+  one, as a SHOULD, and its `omero` example has one);
+- `labels`, `bioformats2raw.layout` and `series`: the value (0.4 gives
+  these no version).
+
+and, when `k` is unversioned, the value of `ome`'s member unchanged (each
+multiscale, or the object, without a `version`).
+
+A member `k` of `A` is unversioned when it is:
+
+- `multiscales`, no multiscale has the member `version`, and none of them
+  has dropped datasets (L7);
+- `omero`, `image-label`, `plate` or `well`, and the object has no member
+  `version`.
+
+An OME member of `A` is **given back** when the inverse of its member of
+`ome` equals it, as a JSON value. As `ome` differs from `A` only by the
+`version` members and the dropped datasets, this is so exactly when:
+
+- `multiscales`: none of the multiscales has dropped datasets (L7), and
+  either every multiscale has the member `version` and it is the string
+  `"0.4"`, or none has the member `version` (it is unversioned);
+- `omero`, `image-label`, `plate` and `well`: the object has the member
+  `version` and it is the string `"0.4"`, or it has no member `version`
+  (it is unversioned) (for `image-label`, `plate` and `well`, §4 allows
+  only `"0.4"` or no version; for `omero`, which §4 does not check, any
+  other value is not given back);
+- `labels`, `bioformats2raw.layout` and `series`: always.
+
+A member that is not given back (one with another `omero` version,
+`multiscales` of which only some have a `version`, or `multiscales` with
+dropped datasets) is kept whole, as written, in the group's attributes in
+its source metadata (§8);
+so is every member of `A` that is not an OME member (for example
+`_creator`, or a user's own). So the group's `.zattrs` is recovered as the
+inverse of each member of `ome`, with the members of the kept attributes
+set over them. A group that is not an OME group keeps its whole `.zattrs`,
+as in the [Zarr v2 convention](../zarr2/README.md#4-source-metadata).
 
 ## 6. Arrays
 
@@ -298,17 +344,36 @@ their own separator.
 A bioformats2raw collection SHOULD hold its OME-XML metadata in
 `OME/METADATA.ome.xml`, which OME-Zarr 0.5 keeps at the same place. For each
 collection `C`, the object `C/OME/METADATA.ome.xml` (`OME/METADATA.ome.xml`
-for the root), if the store has it, is in the hierarchy under that key, as
-the object is (an object of size 0 is not). It is not read. (The
+for the root), if the store has it and its size is not 0, is in the
+hierarchy under that key, as the object is. It is not read. (An empty one
+holds nothing: it is one of the Zarr v2 convention's empty objects, whose
+key its §5 keeps.) (The
 group `OME` itself is a node only if it has a `.zgroup`; the object is kept
-either way.)
+either way.) Every other object that is not a node's document or a chunk,
+OME-XML elsewhere included, is one of the
+[Zarr v2 convention](../zarr2/README.md#5-other-objects)'s other objects,
+kept whole under `vzip_source/objects/`.
 
 ## 8. Source metadata
 
 A node's source metadata `S` ([conventions §2](../README.md#2-attributes)) is
-its `.zattrs`, as in the [Zarr v2 convention](../zarr2/README.md#4-source-metadata),
-except for an OME group, whose `S` is its `.zattrs` without its OME members
-(which §5 converts into `ome`). A node with none has no source metadata.
+the [Zarr v2 convention](../zarr2/README.md#4-source-metadata)'s,
+`{"attributes": A, "metadata": M}`, with a third member for an OME group,
+`{"attributes": A, "metadata": M, "unversioned": U}`, each member present
+only when it is not empty, with the same `M` (the members of `.zgroup` or
+`.zarray` that the `zarr.json` does not reproduce) and the same rule for
+numbers (an integer literal is kept exactly), except that the attributes
+`A` of an OME group are only the members of its `.zattrs` that §5 does not
+give back: `ome` (§5) is a translation, and `A` keeps what it cannot give
+back. `U` is the array of the names of the group's unversioned members
+(§5), in the order `multiscales`, `omero`, `image-label`, `plate`,
+`well`: so a member that 0.4 allowed to have no version is given back
+from `ome` by name, not copied whole. (`U` is not a member of `M`, whose
+members are the `.zgroup`'s own.) Every other node's `A` is its whole
+`.zattrs`. A node with none of them has no source metadata; in particular
+an OME group whose `.zattrs` has only OME members of version `"0.4"` (a
+typical image or well), and whose `.zgroup` has only `zarr_format`, has
+none, and does not declare the convention unless it is the root.
 
 ## 9. Not checked
 
@@ -328,7 +393,9 @@ This section is informative. This convention does not check:
 
 ## 10. Example
 
-The root of the store `https://example.org/i.zarr/`, an image:
+The root of the store `https://example.org/i.zarr/`, an image whose multiscale has
+`"version": "0.4"`, which `ome` gives back, so that the root has no source
+metadata:
 
 ```json
 {
@@ -375,17 +442,83 @@ The root of the store `https://example.org/i.zarr/`, an image:
     "zarr_conventions": [
       {
         "uuid": "b74ea302-65bb-49ae-b81f-f9bb52cd4eed",
-        "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/tags/virtualize-ome-zarr-v1/conventions/ome-zarr/schema.json",
-        "spec_url": "https://github.com/d-v-b/vzip/blob/virtualize-ome-zarr-v1/conventions/ome-zarr/README.md",
+        "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/conventions/ome-zarr/schema.json",
+        "spec_url": "https://github.com/d-v-b/vzip/blob/main/conventions/ome-zarr/README.md",
         "name": "vzip_virtualized",
         "description": "The Zarr layout of a OME-Zarr source virtualized by vzip, and the source's metadata"
       }
     ],
     "vzip_virtualized": {
       "profile": "ome-zarr",
-      "version": 1,
+      "version": 0,
+      "revision": 23,
       "source": {
         "url": "https://example.org/i.zarr/"
+      }
+    }
+  }
+}
+```
+
+Its child `nested`, an image whose multiscale has no `version` (0.4 allows
+that), so that the multiscale is unversioned: `ome` gives it back as it is,
+and the source metadata names it rather than copying it:
+
+```json
+{
+  "zarr_format": 3,
+  "node_type": "group",
+  "attributes": {
+    "ome": {
+      "version": "0.5",
+      "multiscales": [
+        {
+          "axes": [
+            {
+              "name": "k",
+              "type": null
+            },
+            {
+              "name": "y",
+              "type": "space"
+            },
+            {
+              "name": "x",
+              "type": "space"
+            }
+          ],
+          "datasets": [
+            {
+              "path": "0",
+              "coordinateTransformations": [
+                {
+                  "type": "scale",
+                  "scale": [
+                    1,
+                    1,
+                    1
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "zarr_conventions": [
+      {
+        "uuid": "b74ea302-65bb-49ae-b81f-f9bb52cd4eed",
+        "schema_url": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/conventions/ome-zarr/schema.json",
+        "spec_url": "https://github.com/d-v-b/vzip/blob/main/conventions/ome-zarr/README.md",
+        "name": "vzip_virtualized",
+        "description": "The Zarr layout of a OME-Zarr source virtualized by vzip, and the source's metadata"
+      }
+    ],
+    "vzip_virtualized": {
+      "ome-zarr": {
+        "unversioned": [
+          "multiscales"
+        ]
       }
     }
   }

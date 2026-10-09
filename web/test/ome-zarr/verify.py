@@ -49,7 +49,11 @@ sys.path.insert(0, str(ROOT / "conformance" / "virtualize"))
 from proxy import Proxy  # noqa: E402
 
 import vzip.codecs  # noqa: E402,F401  (registers zlib)
+from vzip.policy import Policy  # noqa: E402
 from vzip.store import VZipStore  # noqa: E402
+
+# The sources are served on 127.0.0.1, which spec §8.7 rule 3 refuses by default.
+LOOPBACK_SOURCES = Policy(allow_private_hosts=True)
 
 _spec = importlib.util.spec_from_file_location("zarr2_verify", HERE.parent / "zarr2" / "verify.py")
 zarr2_verify = importlib.util.module_from_spec(_spec)
@@ -118,7 +122,7 @@ def input_groups(store_dir: Path) -> dict[str, dict]:
 
 
 def v05_check(out: Path) -> tuple[list[str], list[str], int]:
-    vz = VZipStore(str(out))
+    vz = VZipStore(str(out), policy=LOOPBACK_SOURCES)
     return validate(lambda p: zarr.open_group(vz, path=p, mode="r", zarr_format=3), output_groups(out), v05)
 
 
@@ -141,7 +145,7 @@ def remote(store_url: str, paths: list[str]) -> int:
             print("   ", x)
         failures = len(problems)
         for path in paths:
-            got = zarr.open_array(VZipStore(str(out)), path=path, mode="r", zarr_format=3)[...]
+            got = zarr.open_array(VZipStore(str(out), policy=LOOPBACK_SOURCES), path=path, mode="r", zarr_format=3)[...]
             want = zarr.open_array(FsspecStore.from_url(store_url, read_only=True), path=path, mode="r",
                                    zarr_format=2)[...]
             ok = zarr2_verify.same(got, want)

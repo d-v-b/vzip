@@ -172,7 +172,16 @@ def validate(path: Path, desc: dict) -> list[str]:
             problems.append("__vz__/sources is not DEFLATE")
         if soff != sr["off"] + 30 + len(SOURCES) or ssize != sr["csize"]:
             problems.append("comment does not locate the __vz__/sources body")
-        want = pbref.source_table(desc.get("sources", []))
+        # SPEC.md §6: the revision is recorded by the writer and only reported by readers,
+        # so the description may leave it to the table; the encoding must still be canonical
+        revision = desc.get("revision")
+        if revision is None and SOURCES in bodies:
+            try:
+                table = pbref.SourceTable.FromString(bodies[SOURCES])
+                revision = table.revision if table.HasField("revision") else None
+            except Exception:  # noqa: BLE001 - the comparison below reports the body
+                pass
+        want = pbref.source_table(desc.get("sources", []), revision)
         if bodies.get(SOURCES) != want:
             problems.append(f"source table body {bodies.get(SOURCES, b'').hex()} != {want.hex()}")
 

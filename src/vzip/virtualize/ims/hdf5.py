@@ -7,20 +7,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from vzip.virtualize.common import Reader, Rejected
+from vzip.virtualize.common import Reader, Rejected, json_number, text_json
 
 SIGNATURE = b"\x89HDF\r\n\x1a\n"
 UNDEFINED = 2**64 - 1
 MAX_SAFE = 2**53 - 1
 MAX_BLOCKS = 1000  # blocks of one object header (§8.2)
+MAX_HEADERS = 4096  # object headers held in memory at once
 MAX_BTREE2_DEPTH = 16  # §8.4
 # The record size of each type of version 2 B-tree read: huge fractal heap
-# objects, link names and attribute names (§8.4).
+# objects, link names and attribute names (§8.4); chunk records (types 10 and
+# 11) have the size the dataset gives them (§8.5).
 RECORD_SIZES = {1: 24, 5: 11, 8: 17}
 
 # Message types (§8.2).
 DATASPACE, LINK_INFO, DATATYPE, FILL_VALUE, LINK, LAYOUT = 0x01, 0x02, 0x03, 0x05, 0x06, 0x08
 FILTERS, ATTRIBUTE, CONTINUATION, SYMBOL_TABLE, ATTRIBUTE_INFO = 0x0B, 0x0C, 0x10, 0x11, 0x15
+EXTERNAL_FILES = 0x07
 
 
 def le(data: bytes, at: int, n: int) -> int:
@@ -51,8 +54,8 @@ def log2(v: int) -> int:
 
 
 # A link's target: an object header address (a hard link), a path (a soft
-# link), or None (any other kind of link).
-Target = int | bytes | None
+# link), or (type, value) for any other type of link (§8.9).
+Target = int | bytes | tuple[int, bytes | None]
 
 
 @dataclass
@@ -60,6 +63,7 @@ class Message:
     type: int
     flags: int
     data: bytes
+    offset: int = 0  # where the file holds the data
 
 
 @dataclass
@@ -78,20 +82,28 @@ class Dataspace:
 
 @dataclass
 class Dataset:
-    dims: list[int]
+    dims: list[int] | None  # None for a null dataspace (source metadata only)
     maxdims: list[int] | None
     datatype: Datatype
     chunk: list[int]  # chunk dimensions, without the element size
     grid: list[int]  # chunks per dimension
     filters: list[int]  # filter identifiers, in pipeline order
-    index: str  # "btree1", "single" or "farray"
+    index: str  # "btree1", "single", "implicit", "farray", "earray" or "btree2"
     index_address: int | None
     single_size: int | None  # single chunk index: the filtered chunk's size
+    layout: str = "chunked"  # "compact", "contiguous" or "chunked"
+    compact: bytes = b""  # a compact dataset's data
+    data_address: int | None = None  # a contiguous dataset's data, or None if unallocated
+    fill: bytes | None = None  # the fill value, or None for the default (zero bytes)
+    type_message: bytes = b""  # the datatype message
+    named: int | None = None  # the committed datatype's object header, for a shared datatype
+    single_mask: int = 0  # single chunk index: the filtered chunk's filter mask
+    raw_edges: bool = False  # partial edge chunks are stored unfiltered (layout flag 1, §8.5)
 
 
 def parse_datatype(d: bytes) -> Datatype:
     cv = le(d, 0, 1)
-    if not 1 <= cv >> 4 <= 3:
+    if not 1 <= cv >> 4 <= 5:
         raise Rejected(f"unsupported datatype message version {cv >> 4}")
     return Datatype(cv & 15, le(d, 4, 4), le(d, 1, 3), d[8:])
 
@@ -119,6 +131,7 @@ class Hdf5:
         self.size = size
         self._headers: dict[int, list[Message]] = {}
         self._heaps: dict[int, FractalHeap] = {}
+        self._collections: dict[int, dict[int, tuple[int, int]]] = {}
         head = read(0, 9)
         if head[:8] != SIGNATURE:
             raise Rejected("not an HDF5 file")
@@ -146,6 +159,8 @@ class Hdf5:
 
     def header(self, at: int) -> list[Message]:
         if at not in self._headers:
+            if len(self._headers) >= MAX_HEADERS:
+                self._headers.clear()  # a cache: memory bounded, whatever the number of objects
             self._headers[at] = self._read_header(at)
         return self._headers[at]
 
@@ -190,7 +205,7 @@ class Hdf5:
                     raise Rejected("object header message runs past its block")
                 pos = body + size
                 if typ != CONTINUATION:
-                    messages.append(Message(typ, mflags, data[body:pos]))
+                    messages.append(Message(typ, mflags, data[body:pos], start + body))
                     continue
                 if mflags & 2:
                     raise Rejected("shared continuation message")
@@ -225,6 +240,30 @@ class Hdf5:
         if found[0].flags & 2:
             raise Rejected(f"shared message of type {typ}")
         return found[0].data
+
+    def committed(self, shared: bytes) -> tuple[bytes, int]:
+        """The datatype message of the committed datatype that a shared
+        datatype message leads to, and its object header (§8.9)."""
+        version = le(shared, 0, 1)
+        if version == 1:
+            at = address(le(shared, 8, 8))
+        elif version == 2 or (version == 3 and le(shared, 1, 1) == 2):
+            at = address(le(shared, 2, 8))
+        else:
+            raise Rejected("a datatype shared other than as a committed datatype")
+        if at is None:
+            raise Rejected("a shared datatype at an undefined address")
+        return self.message(self.header(at), DATATYPE), at
+
+    def datatype(self, messages: list[Message]) -> tuple[bytes, int | None]:
+        """The datatype message of an object header, through a committed datatype
+        when it is shared, and that datatype's object header (or None) (§8.9)."""
+        found = [m for m in messages if m.type == DATATYPE]
+        if len(found) != 1:
+            raise Rejected(f"object header has {len(found)} messages of type {DATATYPE}")
+        if found[0].flags & 2:
+            return self.committed(found[0].data)
+        return found[0].data, None
 
     # ---- groups (§8.3)
 
@@ -296,7 +335,7 @@ class Hdf5:
                     raise Rejected(f"soft link {name!r} to {target!r} does not resolve through hard links")
                 at = step
             return at
-        if target is None:
+        if not isinstance(target, int):
             raise Rejected(f"link {name!r} is neither hard nor soft")
         return target
 
@@ -339,8 +378,9 @@ class Hdf5:
 
     # ---- version 2 B-trees and fractal heaps (§8.4)
 
-    def btree2(self, at: int, typ: int) -> list[bytes]:
-        """The records of the version 2 B-tree at `at`, which MUST have type `typ`."""
+    def btree2(self, at: int, typ: int, sizes=None) -> list[bytes]:
+        """The records of the version 2 B-tree at `at`, which MUST have type `typ`
+        and a record size in `sizes` (by default the type's, RECORD_SIZES)."""
         h = self.read(at, 38)
         if h[:4] != b"BTHD" or h[4] != 0 or h[5] != typ:
             raise Rejected(f"no version 2 B-tree of type {typ} at {at}")
@@ -348,7 +388,7 @@ class Hdf5:
         root, root_count = address(le(h, 16, 8)), le(h, 24, 2)
         if depth > MAX_BTREE2_DEPTH:
             raise Rejected(f"version 2 B-tree depth {depth}")
-        if record_size != RECORD_SIZES[typ] or node_size < 10 + record_size:
+        if record_size not in (sizes if sizes is not None else (RECORD_SIZES[typ],)) or node_size < 10 + record_size:
             raise Rejected("invalid version 2 B-tree node or record size")
         leaf_max = (node_size - 10) // record_size
         count_size = log2(leaf_max) // 8 + 1
@@ -391,22 +431,25 @@ class Hdf5:
 
     # ---- attributes (§8.6)
 
-    def attributes(self, at: int) -> dict[bytes, bytes]:
-        """An object's attributes: name -> attribute message."""
+    def attributes(self, at: int, where: dict[bytes, int] | None = None) -> dict[bytes, bytes]:
+        """An object's attributes: name -> attribute message; `where` receives
+        name -> the message's address in the file."""
         messages = self.header(at)
         out: dict[bytes, bytes] = {}
 
-        def add(data: bytes) -> None:
+        def add(data: bytes, offset: int) -> None:
             name = attribute_name(data)
             if name in out:
                 raise Rejected(f"two attributes named {name!r}")
             out[name] = data
+            if where is not None:
+                where[name] = offset
 
         for m in messages:
             if m.type == ATTRIBUTE:
                 if m.flags & 2:
                     raise Rejected("shared attribute message")
-                add(m.data)
+                add(m.data, m.offset)
         info = self.message(messages, ATTRIBUTE_INFO, False)
         if info is not None:
             if le(info, 0, 1) != 0:
@@ -420,29 +463,54 @@ class Hdf5:
                 for record in self.btree2(btree, 8):
                     if record[8] & 2:
                         raise Rejected("shared dense attribute")
-                    add(fh.get(record[:8]))
+                    found = fh.where(record[:8])
+                    add(self.read(*found), found[0])
         return out
 
     # ---- datasets (§8.5)
 
-    def dataset(self, at: int) -> Dataset:
+    def dataset(self, at: int, any_layout: bool = False) -> Dataset:
+        """A dataset: a chunked one with a zero fill value (§8.5), or, with
+        `any_layout`, one of any layout and fill value (the source metadata)."""
         messages = self.header(at)
         space = parse_dataspace(self.message(messages, DATASPACE))
-        datatype = parse_datatype(self.message(messages, DATATYPE))
-        fill = self.message(messages, FILL_VALUE, False)
+        type_message, named = self.datatype(messages) if any_layout else (self.message(messages, DATATYPE), None)
+        datatype = parse_datatype(type_message)
+        fill_message = self.message(messages, FILL_VALUE, False)
         filters = parse_filters(self.message(messages, FILTERS, False))
         layout = self.message(messages, LAYOUT)
-        if fill is not None and not fill_is_zero(fill):
+        fill = fill_value(fill_message) if fill_message is not None else None
+        if any_layout and fill is not None and len(fill) not in (0, datatype.size):
+            raise Rejected("the fill value is not of the datatype's size")
+        fill = fill or None
+        if not any_layout and fill is not None and any(fill):
             raise Rejected("the fill value is not zero")
         if space.dims is None:
+            if any_layout:
+                return Dataset(None, None, datatype, [], [], filters, "", None, None, "null", fill=fill,
+                               type_message=type_message, named=named)
             raise Rejected("dataset with a null dataspace")
         rank = len(space.dims)
         version, cls = le(layout, 0, 1), le(layout, 1, 1)
         if version not in (3, 4, 5):
             raise Rejected(f"unsupported layout message version {version}")
+        if cls == 3:
+            raise Rejected("a virtual dataset, whose data is in other datasets")
+        if cls != 2 and any_layout and cls in (0, 1):
+            ds = Dataset(space.dims, space.maxdims, datatype, [], [], filters, "", None, None,
+                         "compact" if cls == 0 else "contiguous", fill=fill, type_message=type_message, named=named)
+            if cls == 0:
+                n = le(layout, 2, 2)
+                if 4 + n > len(layout):
+                    raise Rejected("truncated compact dataset")
+                ds.compact = layout[4 : 4 + n]
+            else:
+                ds.data_address = address(le(layout, 2, 8))
+                length(le(layout, 10, 8))
+            return ds
         if cls != 2:
             raise Rejected(f"dataset layout class {cls} is not chunked")
-        single_size = None
+        single_size, single_mask, raw_edges = None, 0, False
         if version == 3:
             ndims = le(layout, 2, 1)
             index, index_address = "btree1", address(le(layout, 3, 8))
@@ -458,21 +526,30 @@ class Hdf5:
             if itype == 1:
                 index = "single"
                 if flags & 2:
-                    single_size = length(le(layout, p, 8))
-                    if le(layout, p + 8, 4) != 0:
-                        raise Rejected("a chunk's filter mask is not 0")
+                    single_size, single_mask = length(le(layout, p, 8)), le(layout, p + 8, 4)
                     p += 12
+            elif itype == 2:
+                index = "implicit"
             elif itype == 3:
                 index = "farray"
                 le(layout, p, 1)  # page bits: the fixed array header's are used
                 p += 1
+            elif itype == 4:
+                index = "earray"
+                le(layout, p, 5)  # the extensible array header's parameters are used
+                p += 5
+            elif itype == 5:
+                index = "btree2"
+                le(layout, p, 6)  # node size, split and merge percents: the B-tree header's are used
+                p += 6
             else:
                 raise Rejected(f"unsupported chunk index type {itype}")
             index_address = address(le(layout, p, 8))
-            if filters and flags & 1:
-                raise Rejected("partial edge chunks are not filtered")
+            raw_edges = bool(filters and flags & 1)
             if filters and index == "single" and not flags & 2:
                 raise Rejected("single filtered chunk without its size")
+            if filters and index == "implicit":
+                raise Rejected("implicit chunk index with filters")
         if ndims != rank + 1 or dims[-1] != datatype.size:
             raise Rejected("chunk dimensions do not match the dataspace and datatype")
         chunk = dims[:-1]
@@ -484,25 +561,89 @@ class Hdf5:
             total *= grid[-1]
             if total > MAX_SAFE:
                 raise Rejected("more than 2^53 - 1 chunks")
-        return Dataset(space.dims, space.maxdims, datatype, chunk, grid, filters, index, index_address, single_size)
+        return Dataset(space.dims, space.maxdims, datatype, chunk, grid, filters, index, index_address, single_size,
+                       fill=fill, type_message=type_message, named=named, single_mask=single_mask, raw_edges=raw_edges)
 
-    def chunks(self, ds: Dataset) -> dict[tuple[int, ...], tuple[int, int]]:
-        """The allocated chunks: grid coordinates -> (address, size) (§8.5)."""
+    # ---- the global heap (§8.9)
+
+    def global_object(self, at: int, index: int) -> tuple[int, int]:
+        """The (address, size) of the object `index` of the global heap collection at `at`."""
+        if at not in self._collections:
+            head = self.read(at, 16)
+            if head[:4] != b"GCOL" or head[4] != 1:
+                raise Rejected(f"no global heap collection at {at}")
+            size = length(le(head, 8, 8))
+            if size < 16 or at + size > self.size:
+                raise Rejected("a global heap collection outside the file")
+            data = self.read(at, size)
+            objects: dict[int, tuple[int, int]] = {}
+            p = 16
+            while p + 16 <= size:
+                i, n = le(data, p, 2), length(le(data, p + 8, 8))
+                if i == 0:
+                    break  # free space
+                if p + 16 + n > size:
+                    raise Rejected("a global heap object outside its collection")
+                objects.setdefault(i, (at + p + 16, n))
+                p += 16 + _pad8(n)
+            self._collections[at] = objects
+        found = self._collections[at].get(index)
+        if found is None:
+            raise Rejected(f"no global heap object {index} at {at}")
+        return found
+
+    def virtual_mapping(self, layout: bytes) -> list[dict]:
+        """The mappings of a virtual dataset's layout message, from the global heap (§8.9)."""
+        if le(layout, 0, 1) not in (4, 5) or le(layout, 1, 1) != 3:
+            raise Rejected("not a virtual dataset layout")
+        at = address(le(layout, 2, 8))
+        if at is None:
+            return []
+        where, n = self.global_object(at, le(layout, 10, 4))
+        d = self.read(where, n)
+        if le(d, 0, 1) != 0:
+            raise Rejected("unsupported virtual dataset mapping version")
+        count, p = le(d, 1, 8), 9
+        out = []
+        for _ in range(count):
+            names = []
+            for _ in range(2):
+                end = d.find(b"\0", p)
+                if end < 0:
+                    raise Rejected("truncated virtual dataset mapping")
+                names.append(text_json(d[p:end]))
+                p = end + 1
+            source, p = parse_selection(d, p)
+            selection, p = parse_selection(d, p)
+            out.append({"file": names[0], "dataset": names[1], "source": source, "selection": selection})
+        return out
+
+    def chunks(self, ds: Dataset, masks: dict | None = None) -> dict[tuple[int, ...], tuple[int, int]]:
+        """The allocated chunks: grid coordinates -> (address, size) (§8.5). A
+        chunk's filter mask MUST be 0, unless `masks` receives the chunks' that
+        are not (§8.9); a partial edge chunk stored unfiltered has every
+        filter's bit set."""
         out: dict[tuple[int, ...], tuple[int, int]] = {}
         nbytes = ds.datatype.size
         for c in ds.chunk:
             nbytes *= c
         filtered = bool(ds.filters)
 
-        def add(coords: tuple[int, ...], at: int, size: int) -> None:
+        def add(coords: tuple[int, ...], at: int, size: int, mask: int = 0) -> None:
+            if ds.raw_edges and any((c + 1) * k > n for c, k, n in zip(coords, ds.chunk, ds.dims)):
+                mask = (1 << len(ds.filters)) - 1  # a partial edge chunk, stored unfiltered: every filter skipped
+            if mask:
+                if masks is None:
+                    raise Rejected("a chunk's filter mask is not 0")
+                masks[coords] = mask
             if coords in out:
-                raise Rejected(f"chunk {coords} indexed twice")
+                raise Rejected(f"chunk {_coords(coords)} indexed twice")
             if not filtered and size != nbytes:
-                raise Rejected(f"unfiltered chunk {coords} of {size} bytes, not {nbytes}")
+                raise Rejected(f"unfiltered chunk {_coords(coords)} of {size} bytes, not {nbytes}")
             if size < 1:
-                raise Rejected(f"chunk {coords} is empty")
+                raise Rejected(f"chunk {_coords(coords)} is empty")
             if at + size > self.size:
-                raise Rejected(f"chunk {coords} lies outside the file")
+                raise Rejected(f"chunk {_coords(coords)} lies outside the file")
             out[coords] = (at, size)
 
         at = ds.index_address
@@ -513,29 +654,164 @@ class Hdf5:
             for key, child in self._btree1(at, 1, 8 + 8 * (rank + 1), set(), None):
                 size, mask = le(key, 0, 4), le(key, 4, 4)
                 offsets = [le(key, 8 + 8 * i, 8) for i in range(rank + 1)]
-                if mask:
-                    raise Rejected("a chunk's filter mask is not 0")
                 if offsets[-1] != 0 or any(o % c or o >= n for o, c, n in zip(offsets, ds.chunk, ds.dims)):
-                    raise Rejected(f"invalid chunk offset {offsets}")
-                add(tuple(o // c for o, c in zip(offsets, ds.chunk)), child, size)
+                    raise Rejected(f"invalid chunk offset {_coords(offsets)}")
+                add(tuple(o // c for o, c in zip(offsets, ds.chunk)), child, size, mask)
         elif ds.index == "single":
             if any(g != 1 for g in ds.grid):
                 raise Rejected("single chunk index for more than one chunk")
-            add((0,) * rank, at, ds.single_size if filtered else nbytes)
-        else:
+            add((0,) * rank, at, ds.single_size if filtered else nbytes, ds.single_mask if filtered else 0)
+        elif ds.index == "implicit":
+            maxgrid = self.implicit(ds)
+            total = _product(ds.grid)
+            for i in range(total):
+                coords = _unravel(i, ds.grid)
+                add(coords, at + _ravel(coords, maxgrid) * nbytes, nbytes)
+        elif ds.index == "farray":
             self._fixed_array(ds, at, filtered, nbytes, add)
+        elif ds.index == "earray":
+            self._extensible_array(ds, at, filtered, nbytes, add)
+        else:
+            self._btree2_chunks(ds, at, filtered, add)
         return out
 
+    def implicit(self, ds: Dataset) -> list[int]:
+        """The maximum grid of an implicit chunk index, whose last chunk MUST lie within the file (§8.5)."""
+        maxgrid = _max_grid(ds, False)
+        nbytes = _product(ds.chunk) * ds.datatype.size
+        # The last chunk is the furthest: when it lies within the file, so do the others.
+        if _product(ds.grid) and ds.index_address + (_ravel([g - 1 for g in ds.grid], maxgrid) + 1) * nbytes > self.size:
+            raise Rejected("an implicit chunk index past the end of the file")
+        return maxgrid
+
+    def _entry(self, data: bytes, k: int, entry: int, filtered: bool, nbytes: int) -> tuple[int | None, int, int]:
+        """An array index's entry: (the chunk's address or None, its size, its filter mask) (§8.5)."""
+        chunk_at = address(le(data, k * entry, 8))
+        if chunk_at is None or not filtered:
+            return chunk_at, nbytes, 0
+        return chunk_at, length(le(data, k * entry + 8, entry - 12)), le(data, k * entry + entry - 4, 4)
+
+    def _btree2_chunks(self, ds: Dataset, at: int, filtered: bool, add) -> None:
+        rank = len(ds.dims)
+        sizes = range(13 + 8 * rank, 21 + 8 * rank) if filtered else (8 + 8 * rank,)
+        for record in self.btree2(at, 11 if filtered else 10, sizes):
+            chunk_at = address(le(record, 0, 8))
+            if chunk_at is None:
+                raise Rejected("a chunk record with an undefined address")
+            p, size, mask = 8, None, 0
+            if filtered:
+                n = len(record) - 12 - 8 * rank
+                size, mask = length(le(record, 8, n)), le(record, 8 + n, 4)
+                p += n + 4
+            coords = tuple(le(record, p + 8 * i, 8) for i in range(rank))
+            if any(c >= g for c, g in zip(coords, ds.grid)):
+                raise Rejected(f"invalid chunk coordinates {_coords(coords)}")
+            add(coords, chunk_at, size if filtered else _product(ds.chunk) * ds.datatype.size, mask)
+
+    def _extensible_array(self, ds: Dataset, at: int, filtered: bool, nbytes: int, add) -> None:
+        maxgrid = _max_grid(ds, True)
+        unlimited = [i for i, m in enumerate(maxgrid) if m is None]
+        if len(unlimited) != 1:
+            raise Rejected("an extensible array index without exactly one unlimited dimension")
+        u = unlimited[0]
+        order = [u, *[i for i in range(len(maxgrid)) if i != u]]  # the unlimited dimension first
+        down = _product([maxgrid[i] for i in order[1:]])
+        limit = ds.grid[u] * down  # no index at or beyond it is in the grid
+        h = self.read(at, 68)
+        if h[:4] != b"EAHD" or h[4] != 0:
+            raise Rejected(f"no extensible array header at {at}")
+        client, entry, bits, ib_count, db_min, sb_min, page_bits = h[5], h[6], h[7], h[8], h[9], h[10], h[11]
+        if client != int(filtered) or ((not 13 <= entry <= 20) if filtered else entry != 8):
+            raise Rejected("the extensible array does not match the dataset")
+        if not (_power(db_min) and _power(sb_min) and log2(db_min) <= bits <= 64 and page_bits <= 64):
+            raise Rejected("invalid extensible array parameters")
+        iblock = address(le(h, 60, 8))
+        if iblock is None:
+            return
+        offset_size = (bits + 7) // 8
+        page = 1 << page_bits
+        nsblks = 1 + bits - log2(db_min)
+        ib_sblks = 2 * log2(sb_min)  # the super blocks whose data blocks the index block holds
+        ib_dblks = 2 * (sb_min - 1)
+        if ib_sblks > nsblks:
+            raise Rejected("invalid extensible array parameters")
+
+        def found(first: int, data: bytes, n: int) -> None:
+            for k in range(n):
+                chunk_at, size, mask = self._entry(data, k, entry, filtered, nbytes)
+                if chunk_at is None:
+                    continue
+                rest = first + k
+                outer, inner = divmod(rest, down)
+                coords = [0] * len(maxgrid)
+                coords[u] = outer
+                for i, c in zip(order[1:], _unravel(inner, [maxgrid[i] for i in order[1:]])):
+                    coords[i] = c
+                if all(c < g for c, g in zip(coords, ds.grid)):
+                    add(tuple(coords), chunk_at, size, mask)
+
+        def data_block(block_at: int, first: int, n: int, pages: bytes | None, d: int) -> None:
+            prefix = 14 + offset_size
+            head = self.read(block_at, prefix)
+            if head[:4] != b"EADB" or head[4] != 0 or head[5] != client:
+                raise Rejected(f"no extensible array data block at {block_at}")
+            want = min(n, limit - first)
+            if n <= page:
+                found(first, self.read(block_at + prefix, want * entry), want)
+                return
+            if pages is None:
+                raise Rejected("a paged extensible array data block in the index block")
+            npages = n // page
+            for j in range(npages):
+                if j * page >= want:
+                    break
+                bit = d * npages + j
+                if pages[bit // 8] & (0x80 >> (bit % 8)):
+                    m = min(page, want - j * page)
+                    found(first + j * page, self.read(block_at + prefix + 4 + j * (page * entry + 4), m * entry), m)
+
+        head = self.read(iblock, 14)
+        if head[:4] != b"EAIB" or head[4] != 0 or head[5] != client:
+            raise Rejected(f"no extensible array index block at {iblock}")
+        body = self.read(iblock + 14, ib_count * entry + 8 * ib_dblks + 8 * (nsblks - ib_sblks))
+        found(0, body, min(ib_count, limit))
+        dblks = body[ib_count * entry : ib_count * entry + 8 * ib_dblks]
+        sblks = body[ib_count * entry + 8 * ib_dblks :]
+        start, k = ib_count, 0
+        for s in range(nsblks):
+            count, n = 1 << (s // 2), (1 << ((s + 1) // 2)) * db_min
+            if start >= limit:
+                break
+            needed = min(count, -(-(limit - start) // n))  # the data blocks that hold indexes below the limit
+            if s < ib_sblks:
+                for d in range(needed):
+                    block_at = address(le(dblks, 8 * (k + d), 8))
+                    if block_at is not None:
+                        data_block(block_at, start + d * n, n, None, d)
+                k += count
+            else:
+                sblock = address(le(sblks, 8 * (s - ib_sblks), 8))
+                if sblock is not None:
+                    npages = n // page if n > page else 0
+                    bitmap = count * ((npages + 7) // 8)
+                    prefix = 14 + offset_size
+                    shead = self.read(sblock, prefix + bitmap + 8 * count)
+                    if shead[:4] != b"EASB" or shead[4] != 0 or shead[5] != client:
+                        raise Rejected(f"no extensible array super block at {sblock}")
+                    pages = shead[prefix : prefix + bitmap]
+                    for d in range(needed):
+                        block_at = address(le(shead, prefix + bitmap + 8 * d, 8))
+                        if block_at is not None:
+                            data_block(block_at, start + d * n, n, pages, d)
+            start += count * n
+
     def _fixed_array(self, ds: Dataset, at: int, filtered: bool, nbytes: int, add) -> None:
-        if ds.maxdims is not None and ds.maxdims != ds.dims:
-            raise Rejected("fixed array index with maximum dimensions other than the dimensions")
+        maxgrid = _max_grid(ds, False)
         h = self.read(at, 28)
         if h[:4] != b"FAHD" or h[4] != 0:
             raise Rejected(f"no fixed array header at {at}")
         client, entry, page_bits, count = h[5], h[6], h[7], le(h, 8, 8)
-        total = 1
-        for g in ds.grid:
-            total *= g
+        total = _product(maxgrid)
         if client != int(filtered) or count != total:
             raise Rejected("the fixed array does not match the dataset")
         if (not 13 <= entry <= 20) if filtered else entry != 8:
@@ -560,19 +836,62 @@ class Hdf5:
         for first, n, page_at in pages:
             data = self.read(page_at, n * entry)
             for k in range(n):
-                chunk_at = address(le(data, k * entry, 8))
+                chunk_at, size, mask = self._entry(data, k, entry, filtered, nbytes)
                 if chunk_at is None:
                     continue
-                size = nbytes
-                if filtered:
-                    size = length(le(data, k * entry + 8, entry - 12))
-                    if le(data, k * entry + entry - 4, 4) != 0:
-                        raise Rejected("a chunk's filter mask is not 0")
-                rest, coords = first + k, []
-                for g in reversed(ds.grid):
-                    coords.append(rest % g)
-                    rest //= g
-                add(tuple(reversed(coords)), chunk_at, size)
+                coords = _unravel(first + k, maxgrid)
+                if all(c < g for c, g in zip(coords, ds.grid)):
+                    add(coords, chunk_at, size, mask)
+
+
+def _coords(values) -> str:
+    """Coordinates as reasons give them: `[1, 2]`."""
+    return "[" + ", ".join(str(v) for v in values) + "]"
+
+
+def _product(values) -> int:
+    n = 1
+    for v in values:
+        n *= v
+    return n
+
+
+def _power(v: int) -> bool:
+    return v >= 1 and v & (v - 1) == 0
+
+
+def _unravel(i: int, grid: list[int]) -> tuple[int, ...]:
+    """The coordinates of index `i` in row-major order over `grid`."""
+    coords = []
+    for g in reversed(grid):
+        coords.append(i % g)
+        i //= g
+    return tuple(reversed(coords))
+
+
+def _ravel(coords, grid: list[int]) -> int:
+    i = 0
+    for c, g in zip(coords, grid):
+        i = i * g + c
+    return i
+
+
+def _max_grid(ds: Dataset, unlimited: bool) -> list[int | None]:
+    """The number of chunks along each dimension at the maximum dimensions
+    (§8.5): None for an unlimited one, which only `unlimited` allows."""
+    if ds.maxdims is None:
+        return list(ds.grid)
+    out: list[int | None] = []
+    for n, m, c in zip(ds.dims, ds.maxdims, ds.chunk):
+        if m == UNDEFINED and unlimited:
+            out.append(None)
+        elif m == UNDEFINED or m > MAX_SAFE or m < n:
+            raise Rejected("a maximum dimension that the chunk index does not allow")
+        else:
+            out.append(-(-m // c))
+    if _product(g for g in out if g is not None) > MAX_SAFE:
+        raise Rejected("more than 2^53 - 1 chunks")
+    return out
 
 
 class FractalHeap:
@@ -606,6 +925,10 @@ class FractalHeap:
 
     def get(self, heap_id: bytes) -> bytes:
         """The object with this heap ID."""
+        return self.f.read(*self.where(heap_id))
+
+    def where(self, heap_id: bytes) -> tuple[int, int]:
+        """The (address, size) of the object with this heap ID: one run of the file."""
         if len(heap_id) != self.id_length:
             raise Rejected("invalid fractal heap ID")
         kind = heap_id[0] >> 4
@@ -628,9 +951,9 @@ class FractalHeap:
             self._blocks.add((block, start))
         if offset < start or offset + n > start + size:
             raise Rejected("fractal heap object outside its block")
-        return self.f.read(block + offset - start, n)
+        return block + offset - start, n
 
-    def _huge(self, key: int) -> bytes:
+    def _huge(self, key: int) -> tuple[int, int]:
         """The huge object with this key, from the huge objects' B-tree."""
         if self._huge_objects is None:
             if self.huge_tree is None:
@@ -643,7 +966,7 @@ class FractalHeap:
                 self._huge_objects[k] = (at, n)
         if key not in self._huge_objects:
             raise Rejected(f"no huge fractal heap object {key}")
-        return self.f.read(*self._huge_objects[key])
+        return self._huge_objects[key]
 
     def _locate(self, at: int, rows: int, start: int, offset: int) -> tuple[int, int, int]:
         """The direct block (address, heap offset, size) holding `offset`,
@@ -692,7 +1015,10 @@ def parse_link(d: bytes) -> tuple[bytes, Target]:
             raise Rejected("truncated soft link")
         return name, d[p + name_length + 2 : p + name_length + 2 + n]
     if kind != 0:
-        return name, None
+        # Any other type: its value, or None when it does not lie within the message (§8.9).
+        q = p + name_length
+        n = le(d, q, 2) if q + 2 <= len(d) else None
+        return name, (kind, d[q + 2 : q + 2 + n] if n is not None and q + 2 + n <= len(d) else None)
     target = address(le(d, p + name_length, 8))
     if target is None:
         raise Rejected("hard link to an undefined address")
@@ -720,6 +1046,15 @@ def _pad8(n: int) -> int:
 
 def attribute_value(d: bytes) -> tuple[Datatype, int, bytes]:
     """An attribute's (datatype, element count, data) (§8.6)."""
+    type_message, dims, data = attribute_parts(d)
+    count = 1
+    for n in dims:
+        count *= n
+    return parse_datatype(type_message), count, data
+
+
+def attribute_parts(d: bytes) -> tuple[bytes, list[int], bytes]:
+    """An attribute's (datatype message, dimensions, data) (§8.6)."""
     flags, name_size, type_size, space_size, p = _attribute_layout(d)
     if flags & 3:
         raise Rejected("attribute with a shared datatype or dataspace")
@@ -727,6 +1062,7 @@ def attribute_value(d: bytes) -> tuple[Datatype, int, bytes]:
     p += pad(name_size)
     if p + type_size > len(d):
         raise Rejected("truncated attribute message")
+    q = p
     datatype = parse_datatype(d[p : p + type_size])
     p += pad(type_size)
     if p + space_size > len(d):
@@ -740,25 +1076,63 @@ def attribute_value(d: bytes) -> tuple[Datatype, int, bytes]:
         count *= n
     if p + count * datatype.size > len(d):
         raise Rejected("truncated attribute data")
-    return datatype, count, d[p : p + count * datatype.size]
+    return d[q : q + type_size], space.dims, d[p : p + count * datatype.size]
 
 
-def fill_is_zero(d: bytes) -> bool:
-    """Whether a fill value message gives no fill value, or zero (§8.5)."""
+def attribute_full(d: bytes, committed=None) -> tuple[bytes, list[int] | None, bytes, int | None, int]:
+    """An attribute's (datatype message, dimensions or None for a null
+    dataspace, data, committed datatype's object header or None, where the
+    data starts in the message), its shared datatype resolved by `committed`
+    (§8.9)."""
+    flags, name_size, type_size, space_size, p = _attribute_layout(d)
+    if flags & 2:
+        raise Rejected("an attribute with a shared dataspace")
+    pad = _pad8 if le(d, 0, 1) == 1 else (lambda n: n)
+    p += pad(name_size)
+    if p + type_size > len(d):
+        raise Rejected("truncated attribute message")
+    type_message, named = d[p : p + type_size], None
+    if flags & 1:
+        if committed is None:
+            raise Rejected("an attribute with a shared datatype")
+        type_message, named = committed(type_message)
+    datatype = parse_datatype(type_message)
+    p += pad(type_size)
+    if p + space_size > len(d):
+        raise Rejected("truncated attribute message")
+    space = parse_dataspace(d[p : p + space_size])
+    p += pad(space_size)
+    if space.dims is None:
+        return type_message, None, b"", named, p
+    count = 1
+    for n in space.dims:
+        count *= n
+    if p + count * datatype.size > len(d):
+        raise Rejected("truncated attribute data")
+    return type_message, space.dims, d[p : p + count * datatype.size], named, p
+
+
+def fill_value(d: bytes) -> bytes:
+    """The fill value of a fill value message, or no bytes when it gives none (§8.5)."""
     version = le(d, 0, 1)
     if version in (1, 2):
         if version == 2 and not le(d, 3, 1):
-            return True
+            return b""
         size, p = le(d, 4, 4), 8
     elif version == 3:
         if not le(d, 1, 1) & 0x20:
-            return True
+            return b""
         size, p = le(d, 2, 4), 6
     else:
         raise Rejected(f"unsupported fill value message version {version}")
     if p + size > len(d):
         raise Rejected("truncated fill value message")
-    return not any(d[p : p + size])
+    return d[p : p + size]
+
+
+def fill_is_zero(d: bytes) -> bool:
+    """Whether a fill value message gives no fill value, or zero (§8.5)."""
+    return not any(fill_value(d))
 
 
 def parse_filters(d: bytes | None) -> list[int]:
@@ -783,3 +1157,66 @@ def parse_filters(d: bytes | None) -> list[int]:
             raise Rejected("truncated filter pipeline message")
         ids.append(fid)
     return ids
+
+
+def parse_selection(d: bytes, p: int) -> tuple[dict, int]:
+    """The serialized dataspace selection at `p`: its description (conventions/ims/README.md
+    §5.3) and where it ends (§8.9)."""
+    kind, version = le(d, p, 4), le(d, p + 4, 4)
+    p += 8
+    if kind in (0, 3):
+        if version != 1:
+            raise Rejected(f"unsupported selection version {version}")
+        le(d, p, 8)
+        return {"select": "none" if kind == 0 else "all"}, p + 8
+    if kind == 1:
+        if version == 1:
+            enc, p = 4, p + 8
+        elif version == 2:
+            enc, p = le(d, p, 1), p + 1
+        else:
+            raise Rejected(f"unsupported selection version {version}")
+        flags = 0
+    elif kind == 2:
+        if version == 1:
+            flags, enc, p = 0, 4, p + 8
+        elif version == 2:
+            flags, enc, p = le(d, p, 1), 8, p + 5
+        elif version == 3:
+            flags, enc, p = le(d, p, 1), le(d, p + 1, 1), p + 2
+        else:
+            raise Rejected(f"unsupported selection version {version}")
+        if flags & ~1:
+            raise Rejected("unknown selection flags")
+    else:
+        raise Rejected(f"unknown selection type {kind}")
+    if enc not in (2, 4, 8):
+        raise Rejected(f"invalid selection encoding size {enc}")
+    rank = le(d, p, 4)
+    p += 4
+    ones = (1 << (8 * enc)) - 1
+    if not flags & 1 and rank == 0:
+        raise Rejected("a selection of rank 0")
+
+    def values(q: int, n: int) -> list:
+        return [json_number(le(d, q + enc * i, enc)) for i in range(n)]
+
+    if flags & 1:  # a regular hyperslab: start, stride, count and block of each dimension
+        if 4 * rank * enc > len(d) - p:
+            raise Rejected("truncated selection")
+        out: dict = {"select": "hyperslab", "rank": rank, "start": [], "stride": [], "count": [], "block": []}
+        for i in range(rank):
+            for j, name in enumerate(("start", "stride", "count", "block")):
+                v = le(d, p + enc * (4 * i + j), enc)
+                out[name].append("unlimited" if j >= 2 and v == ones else json_number(v))
+        return out, p + 4 * rank * enc
+    n = le(d, p, enc)
+    p += enc
+    width = (2 if kind == 2 else 1) * rank * enc  # a block's start and end, or a point
+    if n > len(d) - p or n * width > len(d) - p:
+        raise Rejected("truncated selection")
+    if kind == 1:
+        points = [values(p + width * i, rank) for i in range(n)]
+        return {"select": "points", "rank": rank, "points": points}, p + n * width
+    blocks = [[values(p + width * i, rank), values(p + width * i + rank * enc, rank)] for i in range(n)]
+    return {"select": "hyperslab", "rank": rank, "blocks": blocks}, p + n * width

@@ -19,9 +19,10 @@ import http.client
 import math
 import os
 import re
+import socket
 import threading
 import zlib
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import dataclass, field
 from email.message import Message
 from pathlib import Path
@@ -48,9 +49,10 @@ from vzip.archive import (
     Entry,
     parse_central_directory,
     parse_local_header,
+    InflateLimitError,
     inflate_clean,
     parse_tail,
-    read_source_table,
+    read_table,
 )
 from vzip.errors import (
     ArchiveError,
@@ -62,6 +64,7 @@ from vzip.errors import (
     VzipError,
 )
 from vzip.pb import Reference, Source, decode_cd_index, parts
+from vzip.policy import Policy, crc32c
 from vzip.uri import file_path, file_uri
 from vzip.uri import resolve as resolve_reference
 
@@ -145,7 +148,9 @@ class _Pool:
             if idle:
                 return idle.pop(), True
         cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
-        return cls(host, port, timeout=60), False
+        conn = cls(host, port, timeout=60)
+        conn._create_connection = _refuse_unchecked  # connect() must go through _connect
+        return conn, False
 
     def put(self, scheme: str, host: str, port: int | None, conn) -> None:
         with self._lock:
@@ -159,12 +164,96 @@ class _Pool:
 _POOL = _Pool()
 
 
-def _send(url: str, headers: dict[str, str]) -> tuple[int, Message, bytes]:
-    """One GET of `url`, without following redirects: (status, headers, body)."""
+# Resolves host names (replaceable in tests).
+_getaddrinfo = socket.getaddrinfo
+
+Check = Callable[[str], None]
+"""Raises ResolutionError for an IP address the reader's policy refuses (spec §8.7 rule 3)."""
+
+
+def _refuse_unchecked(*args, **kwargs):
+    raise AssertionError("a pooled connection was opened without an address check")
+
+
+def _connect(conn: http.client.HTTPConnection, check: Check | None) -> None:
+    """Open `conn` to an address of its host that `check` allows (spec §8.7 rule 3).
+
+    The host is resolved here, each address is checked, and the socket is
+    connected to the checked address itself, so a name that resolves
+    differently a moment later (DNS rebinding) cannot reach a refused
+    address. The request keeps the host name: `Host`, and for https the TLS
+    server name and certificate check, come from `conn.host`."""
+
+    def create(address, timeout, source_address=None):
+        host, port = address
+        refused, error = None, None
+        for family, type_, proto, _, sockaddr in _getaddrinfo(host, port, 0, socket.SOCK_STREAM):
+            if check is not None:
+                try:
+                    check(sockaddr[0])
+                except ResolutionError as e:
+                    refused = refused or e
+                    continue
+            sock = socket.socket(family, type_, proto)
+            try:
+                sock.settimeout(timeout)
+                if source_address:
+                    sock.bind(source_address)
+                sock.connect(sockaddr)
+                return sock
+            except OSError as e:
+                sock.close()
+                error = e
+        if error is not None:
+            raise error
+        if refused is not None:
+            raise refused
+        raise OSError(f"{host}: no address")
+
+    conn._create_connection = create
+    try:
+        conn.connect()
+    finally:
+        conn._create_connection = _refuse_unchecked
+
+
+def _proxy(url: str) -> str | None:
+    """The proxy a request for `url` goes through, if any: the scheme's proxy from the
+    environment (`http_proxy`, `https_proxy`, in either case) or, where urllib reads
+    them, the system's settings, unless `no_proxy` (or the system) exempts the host.
+    `all_proxy` is not used."""
     import urllib.request
 
     pu = urlparse(url)
-    if urllib.request.getproxies().get(pu.scheme) and not urllib.request.proxy_bypass(pu.hostname):
+    proxy = urllib.request.getproxies().get(pu.scheme)
+    if not proxy or urllib.request.proxy_bypass(pu.hostname):
+        return None
+    return proxy
+
+
+def _send(url: str, headers: dict[str, str], check: Check | None = None,
+          unchecked_proxy: bool = False) -> tuple[int, Message, bytes]:
+    """One GET of `url`, without following redirects: (status, headers, body).
+
+    `check` is applied to the address the request is sent to: when a new
+    connection is opened, and again to a reused one's peer. A request that
+    would go through a proxy cannot be checked, so with `check` it is
+    refused unless `unchecked_proxy` (spec §8.7 rule 3)."""
+    pu = urlparse(url)
+    proxy = _proxy(url)
+    if proxy is not None:
+        if check is not None:
+            if not unchecked_proxy:
+                raise ResolutionError(
+                    f"{url}: the request would go through the proxy {proxy}, and the reader "
+                    f"cannot check the address the proxy connects to (spec §8.7); set "
+                    f"allow_unchecked_proxy=True to send it anyway, or exempt the host with "
+                    f"no_proxy")
+            # Check what the name resolves to here: this catches literal addresses and
+            # honest names, not DNS rebinding.
+            port = pu.port or (443 if pu.scheme == "https" else 80)
+            for *_, sockaddr in _getaddrinfo(pu.hostname, port, 0, socket.SOCK_STREAM):
+                check(sockaddr[0])
         return _send_urllib(url, headers)
     # the request target exactly as written in the URL: path and query, without the fragment
     rest = url.split("://", 1)[1]
@@ -173,9 +262,16 @@ def _send(url: str, headers: dict[str, str]) -> tuple[int, Message, bytes]:
     for attempt in (0, 1):
         conn, reused = _POOL.get(pu.scheme, pu.hostname, pu.port)
         try:
+            if conn.sock is None:
+                _connect(conn, check)
+            if check is not None:  # also a reused connection, opened for another archive
+                check(conn.sock.getpeername()[0])
             conn.request("GET", target, headers=headers)
             r = conn.getresponse()
             body = r.read()
+        except ResolutionError:
+            conn.close()
+            raise
         except Exception:
             conn.close()
             if reused and attempt == 0:  # the server closed an idle connection: retry once
@@ -209,8 +305,18 @@ def _send_urllib(url: str, headers: dict[str, str]) -> tuple[int, Message, bytes
 _REDIRECTS = (301, 302, 303, 307, 308)
 
 
-def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int | None]:
-    """Bytes [start, end) of an http(s) object, and its size if known (spec §6.2)."""
+def http_range(url: str, start: int, end: int, src: Source,
+               allow: Callable[[str], None] | None = None,
+               address: Callable[[str, str], None] | None = None,
+               unchecked_proxy: bool = False) -> tuple[bytes, int | None]:
+    """Bytes [start, end) of an http(s) object, and its size if known (spec §6.2).
+
+    `allow(url)` raises for a redirect target the reader's policy refuses
+    (spec §8.7); it is called before the request to that target is sent.
+    `address(url, ip)` raises for an IP address the policy refuses (rule 3);
+    it is called on the address each request is sent to, before sending it.
+    With `address`, a request that would go through a proxy is refused unless
+    `unchecked_proxy`."""
     import email.utils
 
     from vzip.uri import is_uri_reference
@@ -228,8 +334,11 @@ def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int 
         headers["If-Unmodified-Since"] = email.utils.format_datetime(when, usegmt=True)
     first = url
     for redirects in range(6):  # spec §6.2: at most 5 redirects
+        check = None if address is None else (lambda ip, u=url: address(u, ip))
         try:
-            status, msg, body = _send(url, headers)
+            status, msg, body = _send(url, headers, check, unchecked_proxy)
+        except ResolutionError:
+            raise
         except Exception as e:  # noqa: BLE001
             raise ResolutionError(f"{url}: {type(e).__name__}: {e}") from None
         if status not in _REDIRECTS:
@@ -245,6 +354,8 @@ def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int 
         if urlparse(newurl).scheme.lower() not in ("http", "https"):
             raise ResolutionError(f"redirect to a non-http URL: {newurl}")
         _check_http_url(newurl)
+        if allow is not None:
+            allow(newurl)
         if redirects == 5:
             raise ResolutionError(f"{first}: more than 5 redirects")
         url = newurl
@@ -260,7 +371,9 @@ def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int 
     etag, last_modified = msg.get("ETag"), msg.get("Last-Modified")
     # spec §6.2: servers may ignore conditional headers, so check the response itself
     if src.etag is not None and etag != src.etag:
-        raise ResolutionError(f"{url}: ETag {etag!r} does not match the pin {src.etag!r}")
+        raise ResolutionError(f"{url}: the ETag is {etag!r}, but the archive pins {src.etag!r}: "
+                              f"the source changed since the archive was written, or its server "
+                              f"does not send the ETag")
     if src.modified_not_after is not None:
         lm = imf_fixdate(last_modified)
         if lm is None:
@@ -283,6 +396,13 @@ def http_range(url: str, start: int, end: int, src: Source) -> tuple[bytes, int 
         raise ResolutionError(f"{url}: server returned {crange!r} ({len(body)} bytes) for "
                               f"[{start}, {end})")
     return body, None if total == "*" else int(total)
+
+
+def _size_mismatch(url: str, pin: int, size: int | None) -> str:
+    if size is None:
+        return f"{url}: the archive pins the size {pin}, which the response does not give"
+    return (f"{url}: the source is {size} bytes, but the archive pins {pin}: the source "
+            f"changed since the archive was written")
 
 
 def _check_http_url(url: str) -> None:
@@ -354,8 +474,15 @@ class VZipStore(Store):
         resolve: bool = True,
         resolver: Resolver | None = None,
         stats: Stats | None = None,
+        policy: Policy | None = None,
     ) -> None:
+        """`policy` says which sources may be resolved, and the reader's limits
+        (spec §8.7). The default, `Policy()`, lets every archive read `http`
+        and `https` sources on public hosts, not through a proxy, and a local
+        archive also read `file` sources; it refuses every other scheme, and
+        loopback, private and special addresses."""
         super().__init__(read_only=True)
+        self.policy = policy or Policy()
         # spec §6: absolute, lexically normalised, symlinks not resolved
         self.url = url if urlparse(url).scheme else file_uri(url)
         self.resolve = resolve
@@ -364,6 +491,7 @@ class VZipStore(Store):
         self._entries: dict[str, Entry] = {}
         self._keys: list[str] = []
         self._sources: list[Source] = []
+        self.revision: int | None = None  # the spec revision the writer followed (spec §1.3)
         self.is_vzip = False
         self._buf, self._buf_start = b"", 0  # bytes fetched while opening
         self._key_cache: dict[str, bytes] = {}  # values of hidden entries used by key ranges
@@ -454,7 +582,7 @@ class VZipStore(Store):
                 self._entries[e.key] = Entry(
                     e.key, -1, e.size, e.csize, e.method, None, e.data_offset
                 )
-            self._sources = read_source_table(self._slice(d.sources_offset, d.sources_size, 8))
+            self._sources, self.revision = read_table(self._slice(d.sources_offset, d.sources_size, 8))
         else:
             # Unpaged: the vzip comment locates the URL table, so one more read (at
             # most) gets both it and the whole central directory.
@@ -468,17 +596,28 @@ class VZipStore(Store):
             if INDEX_KEY in self._entries:
                 raise ValueError("__vz__/index entry in an archive without a page index")
             if d.sources_offset is not None:
-                self._sources = read_source_table(self._slice(d.sources_offset, d.sources_size, 8))
+                self._sources, self.revision = read_table(
+                    self._slice(d.sources_offset, d.sources_size, 8))
             elif SOURCES_KEY in self._entries:
                 e = self._entries[SOURCES_KEY]
-                self._sources = read_source_table(await self._entry_bytes(e, 0, e.size))
+                self._sources, self.revision = read_table(await self._entry_bytes(e, 0, e.size))
+        if len(self._sources) > self.policy.max_sources:  # spec §8.7 rule 4
+            raise ArchiveError(f"the source table has {len(self._sources)} sources; this reader "
+                               f"allows {self.policy.max_sources}")
         if any(src.url == "" or src.key == "" for src in self._sources):
             raise ValueError("empty url or key in the source table")
 
     def _slice(self, offset: int, n: int, method: int) -> bytes:
+        """A format entry's body, fetched while opening (inflated within spec §8.7 rule 6)."""
         lo = offset - self._buf_start
         raw = self._buf[lo : lo + n]
-        return inflate_clean(raw) if method == 8 else raw
+        if method != 8:
+            return raw
+        try:
+            return inflate_clean(raw, self.policy.max_format_entry)
+        except InflateLimitError as e:
+            raise ArchiveError(f"a format entry {e}; this reader allows "
+                               f"{self.policy.max_format_entry} (spec §8.7)") from None
 
     def _refresh_keys(self) -> None:
         self._keys = sorted(
@@ -553,17 +692,23 @@ class VZipStore(Store):
             # already fetched by _open (e.g. metadata written with late=True)
             lo = e.data_offset - self._buf_start
             raw = self._buf[lo : lo + e.csize]
-            return (inflate_clean(raw) if e.method == 8 else raw)[start:end]
+            return (self._inflate(e, raw) if e.method == 8 else raw)[start:end]
         if e.method == 8:  # deflated: inflate the whole entry
             if e.data_offset is None:
                 await self._locate(e)
             raw = await self._read(self.url, e.data_offset, e.data_offset + e.csize, external=False)
-            return inflate_clean(raw)[start:end]
+            return self._inflate(e, raw)[start:end]
         if e.method != 0:
             raise NotImplementedError(f"zip compression method {e.method}")
         if e.data_offset is None:
             await self._locate(e)
         return await self._read(self.url, e.data_offset + start, e.data_offset + end, external=False)
+
+    def _inflate(self, e: Entry, raw: bytes) -> bytes:
+        """An entry's DEFLATE body, inflated no further than its record's size allows
+        (spec §8.7 rule 6); a format entry by the policy's bound."""
+        limit = self.policy.max_format_entry if e.name in (SOURCES_KEY, INDEX_KEY) else e.size
+        return inflate_clean(raw, limit)
 
     async def _locate(self, e: Entry) -> None:
         hdr = await self._read(
@@ -618,11 +763,16 @@ class VZipStore(Store):
     async def _url_bytes(self, src: Source, start: int, end: int) -> bytes:
         """Bytes [start, end) of a url source, checking its pins (spec §6.1)."""
         url = resolve_reference(self.url, src.url)
+        allow = lambda u: self.policy.check(self.url, u)  # noqa: E731
+        # spec §8.7 rule 3: check every address, unless the application allows them all
+        address = None if self.policy.allow_private_hosts else self.policy.check_address
+        allow(url)  # spec §8.7
         if urlparse(url).scheme.lower() in ("http", "https"):  # spec §6.2, pinned or not
-            data, size = await asyncio.to_thread(http_range, url, start, end, src)
+            data, size = await asyncio.to_thread(http_range, url, start, end, src, allow, address,
+                                                 self.policy.allow_unchecked_proxy)
             self.stats.record(url, start, len(data), external=True)
             if src.size is not None and size != src.size:
-                raise ResolutionError(f"size pin {src.size} != {size}")
+                raise ResolutionError(_size_mismatch(url, src.size, size))
             return data
         if not src.pinned:
             return await self._read(url, start, end, external=True)
@@ -632,7 +782,7 @@ class VZipStore(Store):
             if src.etag is not None:
                 raise ResolutionError("an etag pin cannot be checked for a file: URL")
             if src.size is not None and st.st_size != src.size:
-                raise ResolutionError(f"size pin {src.size} != {st.st_size}")
+                raise ResolutionError(_size_mismatch(url, src.size, st.st_size))
             if (src.modified_not_after is not None
                     and math.floor(st.st_mtime) > src.modified_not_after):
                 raise ResolutionError("modified_not_after pin failed: the file changed")
@@ -651,7 +801,7 @@ class VZipStore(Store):
             raise ResolutionError(f"pin check or read failed for {url}: {exc}") from None
         self.stats.record(url, start, len(data), external=True)
         if src.size is not None and res.meta["size"] != src.size:
-            raise ResolutionError(f"size pin {src.size} != {res.meta['size']}")
+            raise ResolutionError(_size_mismatch(url, src.size, res.meta["size"]))
         if len(data) != end - start:
             raise ResolutionError(f"{url} is shorter than {end} bytes")
         return data
@@ -667,16 +817,27 @@ class VZipStore(Store):
             if r.data is None and r.source >= len(self._sources):
                 raise PayloadError(f"range uses source {r.source}; the table has "
                                    f"{len(self._sources)}")
-        pieces = []
+        # Each piece is the bytes of a range overlapping the window: literal bytes, a
+        # coroutine (a key source), or a (source, a, b) read of a url source. A range
+        # with a crc32c is read whole and checked (spec §8.3); `cuts` says which part
+        # of each piece the window takes, and which checksum it must have.
+        pieces: list = []
+        cuts: list[tuple[int, int, int | None]] = []
         pos = 0
         for r in parts(ref):
             lo, hi = max(start, pos), min(end, pos + r.size)
             if lo < hi:
-                a, b = r.offset + lo - pos, r.offset + hi - pos
                 if r.data is not None:
                     pieces.append(r.data[lo - pos : hi - pos])
+                    cuts.append((0, hi - lo, None))
                     pos += r.size
                     continue
+                if r.crc32c is None:
+                    a, b = r.offset + lo - pos, r.offset + hi - pos
+                    cuts.append((0, b - a, None))
+                else:
+                    a, b = r.offset, r.offset + r.length
+                    cuts.append((lo - pos, hi - pos, r.crc32c))
                 src = self._sources[r.source]
                 if src.data is not None:
                     if b > len(src.data):
@@ -696,6 +857,11 @@ class VZipStore(Store):
             else:
                 runs.append([source, a, b])
         coros = [p for p in pieces if not isinstance(p, (bytes, tuple))]
+        if len(runs) > self.policy.max_reads:  # spec §8.7 rule 5, before any read
+            for c in coros:
+                c.close()
+            raise RequestError(f"the value needs {len(runs)} reads; this reader allows "
+                               f"{self.policy.max_reads} (spec §8.7)")
         coros += [self._url_bytes(self._sources[s], a, b) for s, a, b in runs]
         try:
             done = await asyncio.gather(*coros)
@@ -713,13 +879,18 @@ class VZipStore(Store):
             raise AssertionError("read not covered by a run")
 
         out = []
-        for p in pieces:
+        for p, (lo, hi, crc) in zip(pieces, cuts):
             if isinstance(p, bytes):
-                out.append(p)
+                data = p
             elif isinstance(p, tuple):
-                out.append(from_runs(*p))
+                data = from_runs(*p)
             else:
-                out.append(next(other))
+                data = next(other)
+            if crc is not None and crc32c(data) != crc:  # spec §5.2: the source changed
+                raise ResolutionError(f"the bytes read do not match the range's crc32c "
+                                      f"{crc:#010x} (got {crc32c(data):#010x}): the source "
+                                      f"changed since the archive was written")
+            out.append(data[lo:hi])
         return b"".join(out)
 
     # ------------------------------------------------------------ zarr API

@@ -3,6 +3,16 @@
   "private": true,
   "type": "module",
   "description": "vzip in the browser: a service worker that serves vzip archives, and virtualized TIFFs, as plain HTTP Zarr",
+  "imports": {
+    "#net": {
+      "node": "./src/net_node.ts",
+      "default": "./src/net_browser.ts"
+    },
+    "#irwasm": {
+      "node": "./src/virtualize/ir/wasm_node.ts",
+      "default": "./src/virtualize/ir/wasm_browser.ts"
+    }
+  },
   "license": "MIT OR Apache-2.0",
   "scripts": {
     "build": "node build.mjs",

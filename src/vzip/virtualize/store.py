@@ -5,26 +5,28 @@ chunk object).
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
 import stat
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
 from vzip.uri import is_uri_reference
-from vzip.virtualize.common import Rejected, _retry, declare
+from vzip.virtualize.common import CONVENTION_KEY, Rejected, _retry, declare
 
 MAX_SAFE = 2**53 - 1
 MAX_DOCUMENT = 1 << 24
 MAX_DEPTH = 256
 UA = "vzip-virtualize"
 
-_SPLIT = re.compile(r"^(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$")
+_SPLIT = re.compile(r"^(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?\Z")
 _UNRESERVED = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 _PATH_SAFE = _UNRESERVED | frozenset(b"!$&'()*+,;=:@/")
 
@@ -34,7 +36,7 @@ class ListingFailed(OSError):
 
 
 class StoreLimit(OSError):
-    """An implementation's resource limit (§1.2, §12): a failure, not a rejection."""
+    """An implementation's resource limit (§1.2, §14): a failure, not a rejection."""
 
 
 # ---------------------------------------------------------------- URLs (§1.4, §1.5)
@@ -132,17 +134,21 @@ class Element:
     name: str
     children: list[Element] = field(default_factory=list)
     text: list[str] = field(default_factory=list)
+    # The attributes, (name, value) in document order, values with references replaced.
+    attributes: list[tuple[str, str]] = field(default_factory=list)
 
 
 class _Xml:
-    """The XML subset of §1.5."""
+    """The XML subset of §1.5. `what` names the document in rejections."""
 
-    def __init__(self, s: str) -> None:
+    def __init__(self, s: str, what: str = "listing") -> None:
         self.s = s
         self.pos = 0
+        self.what = what
+        self.depth = 0  # of the element being read
 
     def fail(self, why: str):
-        raise Rejected(f"listing is not well formed: {why} at {self.pos}")
+        raise Rejected(f"{self.what} is not well formed: {why} at {self.pos}")
 
     def ws(self) -> None:
         s, n = self.s, len(self.s)
@@ -212,6 +218,14 @@ class _Xml:
     def element(self) -> Element:
         if not self.at("<"):
             self.fail("expected an element")
+        self.depth += 1
+        if self.depth > MAX_DEPTH:
+            self.fail(f"elements nest more than {MAX_DEPTH} deep")
+        el = self._element()
+        self.depth -= 1
+        return el
+
+    def _element(self) -> Element:
         self.pos += 1
         el = Element(self.name())
         s = self.s
@@ -219,7 +233,7 @@ class _Xml:
             if self.pos < len(s) and s[self.pos] in _WS:
                 self.ws()
                 if self.pos < len(s) and s[self.pos] in _NAME_START:
-                    self.name()
+                    name = self.name()
                     self.ws()
                     if not self.at("="):
                         self.fail("expected =")
@@ -229,15 +243,17 @@ class _Xml:
                     if q not in ("'", '"'):
                         self.fail("expected a quoted value")
                     self.pos += 1
+                    value = []
                     while True:
-                        self.chardata(q)
+                        value.append(self.chardata(q))
                         if self.at("&"):
-                            self.reference()
+                            value.append(self.reference())
                         elif self.at(q):
                             self.pos += 1
                             break
                         else:
                             self.fail("bad attribute value")
+                    el.attributes.append((name, "".join(value)))
                     continue
             break
         if self.at("/>"):
@@ -288,6 +304,11 @@ class _Xml:
         return root
 
 
+def parse_xml(text: str, what: str) -> Element:
+    """The root element of a document in the XML subset of §1.5, or Rejected (naming `what`)."""
+    return _Xml(text, what).document()
+
+
 def _text(el: Element) -> str:
     if el.children:
         raise Rejected(f"listing: <{el.name}> has a child element")
@@ -328,6 +349,8 @@ def parse_listing(body: bytes, prefix: str) -> tuple[list[tuple[str, int]], str 
     if _text(truncated[0]) == "true":
         if not token:
             raise Rejected("truncated listing without a NextContinuationToken")
+        if not objects:  # a page that lists nothing could be followed forever
+            raise Rejected("truncated listing without a Contents")
         return objects, token
     return objects, None
 
@@ -346,17 +369,19 @@ def _float(s: str) -> float:
     return v
 
 
-def _int(s: str) -> int | float:
+def _int(s: str) -> int:
+    """An integer literal, kept exact (conventions/n5, zarr2, ome-zarr: copied values keep
+    every digit), and rejected when its binary64 value is infinite (§1.6)."""
     try:
         v = int(s)
     except ValueError:  # more digits than Python converts: far beyond binary64
         raise Rejected("JSON number is not finite in binary64") from None
-    if -MAX_SAFE <= v <= MAX_SAFE:
-        return v
-    try:
-        return float(v)
-    except OverflowError:
-        raise Rejected("JSON number is not finite in binary64") from None
+    if not -MAX_SAFE <= v <= MAX_SAFE:
+        try:
+            float(v)
+        except OverflowError:
+            raise Rejected("JSON number is not finite in binary64") from None
+    return v
 
 
 _TOKENS = re.compile(r'"(?:[^"\\]|\\.)*"|[\[\]{}]', re.S)
@@ -405,11 +430,23 @@ def is_number(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+def num(v):
+    """A number as the layout reads it (§1.6): its binary64 value. Integers beyond
+    2^53 − 1 are parsed exactly, so that copied values keep their digits; this is
+    the value the layout's checks and arithmetic use."""
+    return float(v) if isinstance(v, int) and not isinstance(v, bool) and not -MAX_SAFE <= v <= MAX_SAFE else v
+
+
 # ---------------------------------------------------------------- stores (§1.4, §1.5)
 
 
 def _ignored(rel: str) -> bool:
     return rel == "" or rel.endswith("/") or any(s in ("", ".", "..") for s in rel.split("/"))
+
+
+def _folder_marker(rel: str, size: int) -> bool:
+    """An ignored object whose key is not recorded (§1.4): an empty one whose relative key is empty or ends in /."""
+    return size == 0 and (rel == "" or rel.endswith("/"))
 
 
 WORKERS = 16
@@ -423,11 +460,13 @@ class _Prefetch:
     a document of MAX_DOCUMENT bytes is read). Each result, the bytes or the
     exception the read raised, is handed over once, by `take`, when the
     profile reads that key; so a failed read fails the profile exactly where
-    the sequential read would, and only if the profile reads that key."""
+    the sequential read would, and only if the profile reads that key. Each
+    thread calls `release`, if given, as it ends (to close the connections it
+    kept alive)."""
 
     def __init__(self, read: Callable[[str], bytes], plan: list[tuple[str, int]], workers: int, budget: int,
-                 wanted: Callable[[str], bool | None] | None) -> None:
-        self._read, self._budget, self._wanted = read, budget, wanted
+                 wanted: Callable[[str], bool | None] | None, release: Callable[[], None] | None = None) -> None:
+        self._read, self._budget, self._wanted, self._release = read, budget, wanted, release
         self._queue = [k for k, _ in reversed(plan)]  # popped from the end: the next key in plan order
         self._size = dict(plan)
         self._state: dict[str, str] = {k: "queued" for k, _ in plan}  # queued, running, done
@@ -464,15 +503,19 @@ class _Prefetch:
                 self._cv.wait()
 
     def _work(self) -> None:
-        while (key := self._next()) is not None:
-            try:
-                r = (True, self._read(key))
-            except Exception as e:  # handed over as is by take()
-                r = (False, e)
-            with self._cv:
-                self._state[key] = "done"
-                self._result[key] = r
-                self._cv.notify_all()
+        try:
+            while (key := self._next()) is not None:
+                try:
+                    r = (True, self._read(key))
+                except Exception as e:  # handed over as is by take()
+                    r = (False, e)
+                with self._cv:
+                    self._state[key] = "done"
+                    self._result[key] = r
+                    self._cv.notify_all()
+        finally:
+            if self._release is not None:
+                self._release()
 
     def take(self, key: str) -> tuple[bool, object] | None:
         """The result of reading `key`, waiting for it; None if `key` was not
@@ -495,10 +538,14 @@ class _Prefetch:
 
 
 class Store:
-    """A listed store: `objects` maps each relative key to its size (§1.4)."""
+    """A listed store: `objects` maps each relative key to its size (§1.4), `ignored`
+    holds the relative keys of the ignored objects that are recorded, and `folders`
+    those of the empty objects whose keys end in `/` (directories, to the SAFE profile)."""
 
     url: str
     objects: dict[str, int]
+    ignored: list[str]
+    folders: list[str]
     listed: int = 0
     requests: int = 0
     workers: int = 1
@@ -507,6 +554,10 @@ class Store:
     _kept: dict[str, tuple[bool, object]] | None = None
 
     def read(self, key: str) -> bytes:  # pragma: no cover - interface
+        raise NotImplementedError
+
+    def read_range(self, key: str, offset: int, length: int) -> bytes:  # pragma: no cover - interface
+        """The bytes [offset, offset + length) of the object `key` (profiles/safe.md §12.2)."""
         raise NotImplementedError
 
     def prefetch(self, keys, wanted: Callable[[str], bool | None] | None = None) -> None:
@@ -519,12 +570,18 @@ class Store:
         if self.workers <= 1 or self._prefetch is not None:
             return
         plan = [(k, self.objects[k]) for k in dict.fromkeys(keys) if 0 < self.objects[k] <= MAX_DOCUMENT]
-        self._prefetch = _Prefetch(self.read, plan, self.workers, self.prefetch_bytes, wanted)
+        self._prefetch = _Prefetch(self.read, plan, self.workers, self.prefetch_bytes, wanted, self._release)
+
+    def _release(self) -> None:
+        """Closes the connections the calling thread keeps alive, if any."""
 
     def close(self) -> None:
-        """Stops reading ahead."""
+        """Stops reading ahead, and closes the calling thread's kept-alive connections
+        (each reading-ahead thread closes its own as it ends). The store can still be
+        read afterwards."""
         if self._prefetch is not None:
             self._prefetch.close()
+        self._release()
 
     def document(self, key: str, *, keep: bool = False):
         """The JSON document at `key` (§1.6). With `keep`, its bytes are kept
@@ -561,6 +618,10 @@ class Store:
             rel = key[len(prefix):]
             if not _ignored(rel):
                 self.objects[rel] = size
+            elif not _folder_marker(rel, size):
+                self.ignored.append(rel)
+            elif rel and not _ignored(rel[:-1]):
+                self.folders.append(rel)
         self.listed = len(seen)
 
 
@@ -576,8 +637,14 @@ class HttpStore(Store):
         self.url = url
         self.endpoint, self.prefix = listing_endpoint(url)
         self.objects = {}
+        self.ignored = []
+        self.folders = []
         self._open = opener or (lambda req: urllib.request.urlopen(req, timeout=120))
+        # Kept-alive connections for the object reads, one per thread and host (not with a test's opener).
+        self._keep = opener is None
+        self._local = threading.local()
         seen: set[str] = set()
+        tokens: set[str] = set()
         token = None
         while True:
             q = f"?list-type=2&prefix={query_encode(self.prefix)}"
@@ -590,6 +657,9 @@ class HttpStore(Store):
                 raise StoreLimit(f"the store lists more than {max_objects} objects")
             if token is None:
                 break
+            if token in tokens:  # the listing would repeat itself (§1.5)
+                raise Rejected(f"the listing gives the continuation token {token[:80]!r} again")
+            tokens.add(token)
 
     def _get_listing(self, url: str) -> bytes:
         self.requests += 1
@@ -611,20 +681,63 @@ class HttpStore(Store):
             raise Rejected(f"the store has no listing: {url} answered HTTP {status}")
         return body
 
+    def _get_range(self, url: str, start: int, end: int) -> bytes:
+        """The bytes [start, end) of the object at `url`. Each thread keeps a connection
+        alive per host: a new TLS connection per range costs a round trip or more, which
+        dominates the many small reads of a SAFE product's band files. Redirects and
+        errors go through urllib."""
+        headers = {"Range": f"bytes={start}-{end - 1}", "User-Agent": UA}
+        parts = urllib.parse.urlsplit(url)
+        target = parts.path + (f"?{parts.query}" if parts.query else "")
+        host = (parts.scheme, parts.netloc)
+
+        def get():
+            conns = getattr(self._local, "conns", None)
+            if conns is None:
+                conns = self._local.conns = {}
+            conn = conns.pop(host, None)
+            if conn is not None:
+                try:
+                    conn.request("GET", target, headers=headers)
+                    r = conn.getresponse()
+                    data = r.read()
+                    if r.status in (200, 206):
+                        conns[host] = conn
+                        return data
+                except (OSError, http.client.HTTPException):
+                    pass
+                conn.close()
+            with self._open(urllib.request.Request(url, headers=headers)) as r:
+                data = r.read()
+                if self._keep and urllib.parse.urlsplit(r.geturl()) == parts:  # no redirect
+                    cls = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+                    conns[host] = cls(parts.netloc, timeout=120)
+                return data
+
+        return _retry(get)
+
+    def _release(self) -> None:
+        conns = getattr(self._local, "conns", None)
+        while conns:
+            conns.popitem()[1].close()
+
     def read(self, key: str) -> bytes:
         size = self.objects[key]
         if size == 0:
             return b""
         url = object_url(self.location, key)
-        req = urllib.request.Request(url, headers={"Range": f"bytes=0-{size - 1}", "User-Agent": UA})
-
-        def get():
-            with self._open(req) as r:
-                return r.read()
-
-        data = _retry(get)
+        data = self._get_range(url, 0, size)
         if len(data) != size:
             raise OSError(f"{url}: read {len(data)} bytes, the listing says {size}")
+        return data
+
+    def read_range(self, key: str, offset: int, length: int) -> bytes:
+        if length == 0:
+            return b""
+        url = object_url(self.location, key)
+        data = self._get_range(url, offset, offset + length)
+        if len(data) != length:
+            raise OSError(f"{url}: read {len(data)} bytes at {offset}, not {length}")
         return data
 
 
@@ -636,6 +749,8 @@ class DirStore(Store):
         self.url = url
         self.root = Path(path)
         self.objects = {}
+        self.ignored = []
+        self.folders = []
         listed = []
         for dirpath, dirnames, filenames in os.walk(path):
             dirnames[:] = [d for d in dirnames if not os.path.islink(os.path.join(dirpath, d))]
@@ -657,6 +772,14 @@ class DirStore(Store):
     def read(self, key: str) -> bytes:
         data = (self.root / key).read_bytes()
         if len(data) != self.objects[key]:
+            raise OSError(f"{key}: the file changed while it was read")
+        return data
+
+    def read_range(self, key: str, offset: int, length: int) -> bytes:
+        with open(self.root / key, "rb") as fh:
+            fh.seek(offset)
+            data = fh.read(length)
+        if len(data) != length:
             raise OSError(f"{key}: the file changed while it was read")
         return data
 
@@ -684,7 +807,10 @@ def choose_profile(store: Store) -> str:
         return "zarr2"
     if "attributes.json" in store.objects:
         return "n5"
-    raise Rejected("not an N5 or Zarr v2 store: the root has no .zarray, .zgroup or attributes.json")
+    if "manifest.safe" in store.objects:
+        return "safe"
+    raise Rejected("not an N5, Zarr v2 or SAFE store: the root has no .zarray, .zgroup, attributes.json "
+                   "or manifest.safe")
 
 
 # ---------------------------------------------------------------- hierarchy and output
@@ -713,32 +839,72 @@ def parent_of(path: str) -> str:
     return path.rpartition("/")[0]
 
 
+class PathTrie:
+    """Paths (the root `""` included), each with a value, as a tree of their
+    segments: finding a key's nearest ancestor among them takes time linear in
+    the key's length, without rebuilding any prefix."""
+
+    __slots__ = ("children", "value")
+
+    def __init__(self) -> None:
+        self.children: dict[str, PathTrie] = {}
+        self.value = None
+
+    def add(self, path: str, value) -> None:
+        node = self
+        if path:
+            for s in path.split("/"):
+                child = node.children.get(s)
+                if child is None:
+                    child = node.children[s] = PathTrie()
+                node = child
+        node.value = value
+
+    def nearest(self, segs: list[str]) -> tuple[object, int] | None:
+        """(value, j) of the nearest proper ancestor of the key with segments
+        `segs` that has a value, at the path `segs[:j]`; or None."""
+        node, best = self, None
+        if self.value is not None and segs != [""]:
+            best = (self.value, 0)
+        for j in range(len(segs) - 1):
+            node = node.children.get(segs[j])
+            if node is None:
+                break
+            if node.value is not None:
+                best = (node.value, j + 1)
+        return best
+
+
+def implicit_groups(nodes) -> set[str]:
+    """The proper ancestors of `nodes` that are not nodes. Each walk stops at a
+    path already seen, so the time is that of the paths it adds."""
+    nodes = set(nodes)
+    implicit: set[str] = set()
+    for path in nodes:
+        i = len(path)
+        while i > 0:
+            i = path.rfind("/", 0, i)
+            p = path[:i] if i > 0 else ""
+            if p in nodes or p in implicit:
+                break
+            implicit.add(p)
+            i = max(i, 0)
+    return implicit
+
+
 def classify(candidates: dict[str, str]) -> tuple[dict[str, str], set[str]]:
     """Nodes from candidates {path: kind}, kind 'array' or 'group', classified
     from the root down (conventions/n5/README.md §2, conventions/zarr2/README.md §2): candidates inside an array are dropped.
     Returns ({path: kind}, implicit groups)."""
     nodes: dict[str, str] = {}
-    arrays: set[str] = set()
+    arrays = PathTrie()
     for path in sorted(candidates, key=lambda p: (depth(p), p)):
-        p, inside = path, False
-        while p:
-            p = parent_of(p)
-            if p in arrays:
-                inside = True
-                break
-        if inside:
+        if arrays.nearest(path.split("/")) is not None:
             continue
         nodes[path] = candidates[path]
         if candidates[path] == "array":
-            arrays.add(path)
-    implicit: set[str] = set()
-    for path in nodes:
-        p = path
-        while p:
-            p = parent_of(p)
-            if p not in nodes:
-                implicit.add(p)
-    return nodes, implicit
+            arrays.add(path, True)
+    return nodes, implicit_groups(nodes)
 
 
 def canonical_index(s: str, limit: int) -> bool:
@@ -755,21 +921,47 @@ def find_chunks(objects: dict[str, int], arrays: dict[str, Callable[[str], bool]
     """The chunk objects (§1.4): for each object, the array that is its
     nearest ancestor decides with `is_chunk(rest)` whether the rest of the key
     is one of its chunk keys. Returns [(key, size)] in key order."""
+    trie = PathTrie()
+    for path, test in arrays.items():
+        trie.add(path, test)
     out = []
     for key, size in objects.items():
         segs = key.split("/")
-        for j in range(len(segs) - 1, -1, -1):
-            d = "/".join(segs[:j])
-            test = arrays.get(d)
-            if test is not None:
-                if test("/".join(segs[j:])):
-                    out.append((key, size))
-                break
+        found = trie.nearest(segs)
+        if found is not None and found[0]("/".join(segs[found[1]:])):
+            out.append((key, size))
     out.sort()
     return out
 
 
 GROUP_IMPLICIT = {"zarr_format": 3, "node_type": "group", "attributes": {}}
+SOURCE_GROUP = "vzip_source"
+OBJECTS = "vzip_source/objects/"
+EMPTY_KEY = "vzip_source/empty.json"  # the empty objects' keys under a root array (conventions/zarr2/README.md §5)
+# A last segment that a Zarr reader takes for a node's document, followed by any number of `~`.
+_NODE_NAME = re.compile(r"(?:zarr\.json|\.zarray|\.zgroup)~*\Z")
+
+
+def object_key(key: str) -> str:
+    """The hierarchy's key of the other object `key` (conventions/zarr2/README.md §5,
+    conventions/n5/README.md §6): `vzip_source/objects/<key>`, with `~` appended to a last
+    segment that is `zarr.json`, `.zarray` or `.zgroup` followed by any number of `~`, so
+    that no Zarr reader opens a node there, and the key maps back one to one."""
+    return OBJECTS + key + ("~" if _NODE_NAME.match(key.rpartition("/")[2]) else "")
+
+
+def source_metadata(attributes: dict, metadata: dict, unversioned: list[str] | None = None) -> dict:
+    """A store node's source metadata S (conventions/zarr2/README.md §4, conventions/n5/README.md §5,
+    conventions/ome-zarr/README.md §8): `{"attributes": A, "metadata": M, "unversioned": U}`,
+    each member only when it is not empty."""
+    s = {}
+    if attributes:
+        s["attributes"] = attributes
+    if metadata:
+        s["metadata"] = metadata
+    if unversioned:
+        s["unversioned"] = unversioned
+    return s
 
 
 def doc_key(path: str) -> str:
@@ -785,6 +977,11 @@ class StoreOutput:
     docs: dict[str, object] = field(default_factory=dict)
     chunks: list[tuple[str, int]] = field(default_factory=list)  # (key, size), sorted, size > 0
     summary: dict = field(default_factory=dict)
+    # The source key of each entry whose key is not its object's (the objects under vzip_source/objects/).
+    origins: dict[str, str] = field(default_factory=dict)
+    # The CRC-32C of a url source's bytes, when the references are to carry
+    # checksums (SPEC.md §5.2); set by vzip.virtualize.virtualize_store.
+    checksum: Callable[[str, int, int], int] | None = None
 
     def declare(self, profile: str, omes: dict[str, dict] | None = None) -> None:
         """Declares the profile's convention (conventions §2). Each document's
@@ -808,9 +1005,39 @@ class StoreOutput:
             if key.startswith("__vz__/"):
                 raise Rejected(f"output key {key!r} is in the reserved __vz__/ space")
 
+    def keep_objects(self, objects: dict[str, int], used: set[str], nodes, ignored=()) -> int:
+        """Adds every nonempty object of the store that is not in `used` (the node
+        documents the hierarchy represents, the nonempty chunk objects, the objects
+        referenced under their own key, and those the convention leaves out), whole,
+        at its `object_key`, lists the keys of the empty ones (empty chunk objects
+        included) and the recorded `ignored` keys (§1.4), and adds the group
+        `vzip_source` when there is one (conventions/zarr2/README.md §5,
+        conventions/n5/README.md §6). Returns how many objects are kept. A hierarchy with a
+        node at `vzip_source` or below it then rejects the input (`nodes`: every node path)."""
+        empty = sorted(k for k, n in objects.items() if n == 0 and k not in used)
+        kept = [(k, n) for k, n in objects.items() if n > 0 and k not in used]
+        ignored = sorted(ignored)
+        if not kept and not empty and not ignored:
+            return 0
+        own = {**({"empty": empty} if empty else {}), **({"ignored": ignored} if ignored else {})} or None
+        if self.docs.get(doc_key(""), {}).get("node_type") != "array":
+            for p in nodes:
+                if p == SOURCE_GROUP or p.startswith(SOURCE_GROUP + "/"):
+                    raise Rejected(f"the node {p} is where the store's other objects go ({OBJECTS}...)")
+            # The keys of empty and ignored objects are the source metadata of vzip_source.
+            profile = self.docs[doc_key("")]["attributes"][CONVENTION_KEY]["profile"]
+            self.docs[doc_key(SOURCE_GROUP)] = dict(GROUP_IMPLICIT, attributes=declare({}, profile, None, own))
+        elif own:
+            # An array has no children: under a root array, the keys are plain keys of the archive.
+            self.docs[EMPTY_KEY] = own
+        for k, n in kept:
+            self.origins[object_key(k)] = k
+        self.chunks = sorted(self.chunks + [(object_key(k), n) for k, n in kept])
+        return len(kept)
+
     @property
     def sources(self) -> list[str]:
-        return [object_url(self.url, k) for k, _ in self.chunks]
+        return [object_url(self.url, self.origins.get(k, k)) for k, _ in self.chunks]
 
     def refs(self) -> dict[str, list[tuple[int, int, int]]]:
         return {k: [(i, 0, n)] for i, (k, n) in enumerate(self.chunks)}
@@ -819,8 +1046,16 @@ class StoreOutput:
         from vzip.archive import VZipWriter
 
         with open(out_path, "wb") as fh:
-            w = VZipWriter(fh, page_size=1 << 16)
-            w.add_url_refs((k, object_url(self.url, k), n) for k, n in self.chunks)
+            w = VZipWriter(fh, page_size=1 << 16, checksum=self.checksum)
+            # each source pins its object's listed size (§1.4)
+            w.add_url_refs(((k, object_url(self.url, self.origins.get(k, k)), n) for k, n in self.chunks),
+                           pin_size=True)
             for key in sorted(self.docs):
-                w.add_bytes(key, json.dumps(self.docs[key], indent=2).encode(), late=True)
+                # The empty objects' keys are UTF-8, as JSON.stringify writes them (the documents
+                # may hold strings that are not, and are escaped).
+                data = json.dumps(self.docs[key], separators=(",", ":"), ensure_ascii=key != EMPTY_KEY).encode()
+                # The hierarchy's documents are read when the archive opens; those of vzip_source
+                # (the empty objects' keys), like chunks, only when asked for.
+                source = key.startswith(SOURCE_GROUP + "/")
+                w.add_bytes(key, data, compress=source, late=not source)
             w.close()
