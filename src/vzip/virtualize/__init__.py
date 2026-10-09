@@ -18,10 +18,9 @@ A file or a store at an http(s) URL is read under the reader policy (SPEC.md
 §8.7): a host that is, or resolves to, a loopback, private, link-local or special
 address is refused unless the policy has `allow_private_hosts`
 (`--allow-private-hosts`), and a request that would go through a proxy unless
-`allow_unchecked_proxy`. TIFF, ND2 and CZI sources, and stores (their listing,
-every object read and every redirect), are read entirely under it; the other file
-profiles' readers are today's, after the policy has admitted the source's first
-request.
+`allow_unchecked_proxy`. Every request for the input is made under it: a file's,
+and a store's listing and object reads, each redirect target checked before it is
+requested.
 
 Every url source pins its size, and the input file's source its ETag when
 every response for it gave the same strong one (VIRTUALIZE.md §1.2, §1.4).
@@ -141,7 +140,10 @@ def virtualize(location: str, url: str | None = None, *, checksums: bool = False
         if checksums:
             out.checksum = lambda u, offset, length: crc32c(transport.get(offset, offset + length))
         return fmt, out
-    read, size = http_reader(location) if location.startswith(("http://", "https://")) else file_reader(location)
+    if location.startswith(("http://", "https://")):
+        read, size = http_reader(location, policy=policy)
+    else:
+        read, size = file_reader(location)
     url = url or location
     fmt, out = _virtualize_file(url, read, size)
     out.size = size
