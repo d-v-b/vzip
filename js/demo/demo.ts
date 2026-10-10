@@ -1,3 +1,4 @@
+import { Archive } from "../src/archive.ts";
 import {
   archiveDownloadUrl,
   archiveZarrUrl,
@@ -5,19 +6,10 @@ import {
   registerVzipWorker,
 } from "../src/client.ts";
 import { WORKER_HEADER } from "../src/server.ts";
+import { sampleRanges, tooNarrow, usableWindow } from "./contrast.ts";
 
-const EXAMPLE =
-  "https://ftp.ebi.ac.uk/pub/databases/IDR/idr0096-tratwal-marrowquant/20210609-ftp-ome-tiffs/4000_d11_m5_LT_2%20(20x_01).ome.tiff";
-// A Nikon ND2 time-lapse (BioImage Archive S-BIAD3015, 4.6 GB).
-const ND2_EXAMPLE =
-  "https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/1-SR_1_9_6hPre-C_MC1.nd2";
-// A Nikon ND2 z-stack with five channels (BioImage Archive S-BIAD2077, 263 MB).
-const ND2_ZSTACK_EXAMPLE =
-  "https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/077/S-BIAD2077/Files/373_230614_A1_Blk_Reg2_40x.nd2";
-// An Aperio SVS slide with JPEG 2000 tiles (TCGA, via Zenodo 7189465, CC BY 4.0, 538 MB).
-const SVS_EXAMPLE = "https://zenodo.org/api/records/7189465/files/TCGA-CM-4752.svs/content";
-// A Hamamatsu NDPI slide (QuPath's tutorial data, Zenodo 18302140, CC BY 4.0, 221 MB).
-const NDPI_EXAMPLE = "https://zenodo.org/api/records/18302140/files/ki67_lymphoma.ndpi/content";
+// The examples are the links with a data-url attribute in index.html, where
+// their sources and licenses are noted.
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const input = $<HTMLInputElement>("url");
@@ -48,7 +40,7 @@ const METERS: Record<string, number> = {
 interface OmeroChannel {
   label?: string;
   color?: string;
-  window?: { start: number; end: number };
+  window?: { min?: number; max?: number; start: number; end: number };
 }
 
 /** One image to show: its Zarr URL, a name, and its translation (one number per axis, in the axes' units). */
@@ -70,7 +62,7 @@ interface ShownImage {
  * to scroll. Otherwise (planar TIFF, one channel per chunk) each channel is a
  * layer of its own.
  */
-function neuroglancerState(
+function imageState(
   images: ShownImage[],
   axes: { name: string; unit?: string }[],
   scale: number[],
@@ -78,8 +70,12 @@ function neuroglancerState(
   chunks: number[],
   dtype: string,
   omero: OmeroChannel[] = [],
+  labels: { name: string; url: string }[] = [],
 ) {
-  const n = shape.length;
+  // The two displayed axes: x and y, or else the last two.
+  let xi = axes.findIndex((a) => a.name === "x");
+  let yi = axes.findIndex((a) => a.name === "y");
+  if (xi < 0 || yi < 0) [yi, xi] = [axes.length - 2, axes.length - 1];
   // The coordinate space, declared up front so that displayDimensions can
   // name x and y before the layers load (otherwise Neuroglancer may display a
   // non-spatial axis such as t).
@@ -109,10 +105,10 @@ function neuroglancerState(
   const view = {
     dimensions,
     position,
-    displayDimensions: ["x", "y"],
+    displayDimensions: [axes[xi].name, axes[yi].name],
     // With the coordinate space declared, this counts full-resolution voxels
     // per screen pixel.
-    crossSectionScale: Math.max(shape[n - 2] / 600, shape[n - 1] / 850),
+    crossSectionScale: Math.max(shape[yi] / 600, shape[xi] / 850),
     layout: "xy",
   };
   const many = images.length > 1;
@@ -169,6 +165,16 @@ function neuroglancerState(
   };
 }
 
+/** {@link imageState}, with a segmentation layer for each OME-Zarr label image. */
+function neuroglancerState(...args: Parameters<typeof imageState>) {
+  const state = imageState(...args);
+  const labels = args[7] ?? [];
+  state.layers.push(...labels.map((l) => ({
+    type: "segmentation", source: `${l.url}|zarr3:`, name: `labels ${l.name}`,
+  })) as never[]);
+  return state;
+}
+
 const RGB_SHADER = `void main() {
   emitRGB(vec3(toNormalized(getDataValue(0)), toNormalized(getDataValue(1)), toNormalized(getDataValue(2))));
 }
@@ -212,7 +218,215 @@ function translationOf(ms: { datasets?: { coordinateTransformations?: { type: st
   return ms?.datasets?.[0]?.coordinateTransformations?.find((t) => t.type === "translation")?.translation;
 }
 
+type ArrayMeta = any;
+
+/**
+ * The chunk shape of a Zarr array: that of a regular chunk grid, or for a
+ * rectilinear one (clipped CZI levels) the largest chunk length per axis.
+ */
+function chunkShapeOf(a: ArrayMeta): number[] {
+  const { name, configuration } = a.chunk_grid;
+  if (name !== "rectilinear") return configuration.chunk_shape;
+  return configuration.chunk_shapes.map((lengths: number | (number | [number, number])[]) =>
+    typeof lengths === "number" ? lengths : Math.max(...lengths.map((l) => (Array.isArray(l) ? l[0] : l))),
+  );
+}
+
+/** One level of an image: its path (for the table), URL and metadata. */
+interface Level {
+  path: string;
+  /** The array's URL, ending in "/". */
+  url: string;
+  meta: ArrayMeta;
+}
+
+/**
+ * What can be opened in Neuroglancer as one view: an OME-Zarr image, every
+ * series of a file together, one series, or a plain array.
+ */
+interface View {
+  label: string;
+  name: string;
+  /** The URL shown as the Zarr URL. */
+  url: string;
+  images: ShownImage[];
+  axes: { name: string; unit?: string }[];
+  scale: number[];
+  levels: Level[];
+  omero: OmeroChannel[];
+  labels: { name: string; url: string }[];
+  note?: string;
+}
+
+type Multiscale = any;
+
+/** The view of the OME-Zarr multiscale image at `url` (a group URL). */
+async function omeView(url: string, ms: Multiscale, label: string, withLabels = false): Promise<View> {
+  const levels = await Promise.all(
+    ms.datasets.map(async (d: { path: string }) => ({
+      path: d.path, url: `${url}${d.path}/`, meta: await getJson(`${url}${d.path}/zarr.json`),
+    })),
+  );
+  const scale = ms.datasets[0].coordinateTransformations?.find(
+    (t: { type: string }) => t.type === "scale",
+  )?.scale ?? levels[0].meta.shape.map(() => 1);
+  const group = await getJson(`${url}zarr.json`);
+  // An OME-Zarr store's label images, as segmentation layers. (Only an
+  // OME-Zarr input has them; looking for them elsewhere would be a 404.)
+  let labels: { name: string; url: string }[] = [];
+  if (withLabels) {
+    try {
+      const names: string[] = (await getJson(`${url}labels/zarr.json`)).attributes?.ome?.labels ?? [];
+      labels = names.map((n) => ({ name: n, url: `${url}labels/${n}/` }));
+    } catch {
+      // No labels.
+    }
+  }
+  return {
+    label, name: ms.name ?? label, url, images: [{ url, name: ms.name ?? label, translation: translationOf(ms) }],
+    axes: ms.axes, scale, levels, omero: group.attributes?.ome?.omero?.channels ?? [], labels,
+  };
+}
+
+/** The view of a plain Zarr array (no OME-Zarr metadata) at `url`. */
+function arrayView(url: string, path: string, meta: ArrayMeta): View {
+  // Neuroglancer names unnamed zarr v3 dimensions dim_0, dim_1, …
+  const axes = meta.shape.map((_: number, i: number) => ({ name: meta.dimension_names?.[i] ?? `dim_${i}` }));
+  const label = path === "" ? "the array" : path;
+  return {
+    label, name: label, url, images: [{ url, name: path || "array" }], axes,
+    scale: axes.map(() => 1), levels: [{ path: path || "/", url, meta }], omero: [], labels: [],
+  };
+}
+
+/** The views of a bioformats2raw layout: each series, and all of them together when they can be. */
+async function seriesViews(zarrUrl: string): Promise<View[]> {
+  const series: string[] = (await getJson(`${zarrUrl}OME/zarr.json`)).attributes?.ome?.series ?? [];
+  const groups = await Promise.all(series.map((s) => getJson(`${zarrUrl}${s}/zarr.json`)));
+  const views = await Promise.all(series.map((s, i) => {
+    const ms = groups[i].attributes?.ome?.multiscales?.[0];
+    return omeView(`${zarrUrl}${s}/`, ms, `series ${s}${ms?.name ? ` (${ms.name})` : ""}`);
+  }));
+  if (views.length < 2) return views;
+  // Series are shown together, each placed by its translation, when they have
+  // the same axes, data type and channels (the stage positions of an ND2 or a
+  // CZI); otherwise (CZI scenes of other types or axes) one at a time.
+  const key = (v: View) => {
+    const m = v.levels[0].meta;
+    const c = v.axes.findIndex((a) => a.name === "c");
+    return JSON.stringify([v.axes.map((a) => a.name), m.data_type, c < 0 ? 0 : m.shape[c], c < 0 ? 0 : chunkShapeOf(m)[c]]);
+  };
+  if (views.some((v) => key(v) !== key(views[0]))) {
+    views[0].note = `${views.length} series of different axes, data types or channels: pick one.`;
+    return views;
+  }
+  const placed = views.every((v) => v.images[0].translation !== undefined);
+  const all: View = {
+    ...views[0],
+    label: `all ${views.length} series`,
+    url: views[0].url,
+    images: views.map((v) => v.images[0]),
+    labels: [],
+    note: `${views.length} images (series ${series[0]}–${series[series.length - 1]}), ` +
+      (placed ? "placed at their stage positions; zoom out in Neuroglancer to see them all." :
+        "without stage positions, so they overlap."),
+  };
+  return [all, ...views];
+}
+
+/**
+ * The arrays of the hierarchy at `zarrUrl`, outside `vzip_source`, from the
+ * keys of its archive (which the worker holds in memory): a Zarr hierarchy
+ * cannot otherwise be listed.
+ */
+async function listArrays(zarrUrl: string): Promise<{ path: string; meta: ArrayMeta }[]> {
+  const r = await fetch(archiveDownloadUrl(zarrUrl));
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  const archive = await Archive.open(new Uint8Array(await r.arrayBuffer()), zarrUrl, () => {
+    throw new Error("not read");
+  });
+  const paths = archive.keys()
+    .filter((k) => (k === "zarr.json" || k.endsWith("/zarr.json")) && !k.startsWith("vzip_source/"))
+    .map((k) => k.slice(0, -"zarr.json".length).replace(/\/$/, ""));
+  const nodes = await Promise.all(paths.map(async (path) => ({
+    path, meta: await getJson(`${zarrUrl}${path === "" ? "" : `${path}/`}zarr.json`),
+  })));
+  return nodes.filter((n) => n.meta.node_type === "array");
+}
+
 let prefix: Promise<string> | undefined;
+let views: View[] = [];
+
+function showLevels(rows: Omit<Level, "url">[]) {
+  $("levels").replaceChildren(
+    ...rows.map(({ path, meta: a }) => {
+      const tr = document.createElement("tr");
+      for (const v of [
+        path,
+        a.shape.join(" × "),
+        chunkShapeOf(a).join(" × ") + (a.chunk_grid.name === "rectilinear" ? " (clipped)" : ""),
+        a.data_type,
+        a.codecs.map((c: { name: string }) => c.name).join(", "),
+      ]) {
+        const td = document.createElement("td");
+        td.textContent = v;
+        tr.append(td);
+      }
+      return tr;
+    }),
+  );
+}
+
+let shown: View | undefined;
+
+/** Shows `view`: its levels, and a Neuroglancer link. */
+async function showView(view: View) {
+  shown = view;
+  $("name").textContent = view.name;
+  $("zarr-url").textContent = view.url;
+  $("view-note").textContent = view.note ?? "";
+  showLevels(view.levels);
+  const level0 = view.levels[0].meta;
+  const dataType: string = level0.data_type;
+  const coarsest = view.levels[view.levels.length - 1];
+  const sample = (channels?: number[]) =>
+    sampleRanges(coarsest.url, coarsest.meta, view.axes, chunkShapeOf(coarsest.meta), channels);
+  // Each channel's contrast: the file's window when it is usable, else one
+  // sampled from the data (contrast.ts). 8-bit data keeps its full range.
+  let omero = view.omero;
+  const c = view.axes.findIndex((a) => a.name === "c");
+  const nc = c >= 0 ? level0.shape[c] : 0;
+  if (dataType !== "uint8" && nc > 1 && nc <= 16) {
+    const need = Array.from({ length: nc }, (_, k) => k).filter((k) => !usableWindow(omero[k]?.window, dataType));
+    const ranges = need.length > 0 ? await sample(need) : [];
+    omero = Array.from({ length: nc }, (_, k) => {
+      const ch = omero[k] ?? {};
+      if (usableWindow(ch.window, dataType)) return ch;
+      // A sampled range, or else (the chunks hold every channel, or their
+      // codec is not decoded here) the file's window unless it is too narrow.
+      const r = ranges[need.indexOf(k)];
+      if (r !== undefined) return { ...ch, window: { start: r[0], end: r[1] } };
+      return { ...ch, window: ch.window && !tooNarrow(ch.window, dataType) ? ch.window : undefined };
+    });
+  }
+  const state = neuroglancerState(
+    view.images, view.axes, view.scale, level0.shape, chunkShapeOf(level0), dataType, omero, view.labels,
+  );
+  // An image shown with Neuroglancer's default shader gets a sampled range too.
+  const plain = state.layers.filter((l) => l.type === "image" && !("shader" in l));
+  if (plain.length > 0 && dataType !== "uint8") {
+    const [range] = await sample();
+    if (range !== undefined) {
+      for (const l of plain) {
+        Object.assign(l, { shader: `#uicontrol invlerp normalized(range=[${range[0]}, ${range[1]}])\nvoid main() {\n  emitGrayscale(normalized());\n}\n` });
+      }
+    }
+  }
+  if (shown !== view) return;
+  const ng = $<HTMLAnchorElement>("open-ng");
+  ng.hidden = false;
+  ng.href = new URL(`neuroglancer/#!${encodeURIComponent(JSON.stringify(state))}`, location.href).href;
+}
 
 async function virtualize(url: string) {
   $("result").hidden = true;
@@ -227,87 +441,60 @@ async function virtualize(url: string) {
   const zarrUrl = isArchive ? archiveZarrUrl(p, url) : imageZarrUrl(p, url);
   setStatus(isArchive ? "Opening the archive…" : "Reading the file's structure…");
   const t0 = performance.now();
-  const group = await getJson(`${zarrUrl}zarr.json`);
+  const root = await getJson(`${zarrUrl}zarr.json`);
   const ms = Math.round(performance.now() - t0);
-  // The images: the root itself, or every series of a bioformats2raw layout
-  // (e.g. the stage positions of an ND2), shown together.
-  let imageUrl = zarrUrl;
-  let ms0 = group.attributes?.ome?.multiscales?.[0];
-  let images: ShownImage[] = [{ url: zarrUrl, name: "image", translation: translationOf(ms0) }];
-  const seriesRow = $("series-row");
-  seriesRow.hidden = true;
-  if (ms0 === undefined && group.attributes?.ome?.["bioformats2raw.layout"] !== undefined) {
-    const series: string[] = (await getJson(`${zarrUrl}OME/zarr.json`)).attributes?.ome?.series ?? [];
-    const groups = await Promise.all(series.map((s) => getJson(`${zarrUrl}${s}/zarr.json`)));
-    images = series.map((s, i) => {
-      const m = groups[i].attributes?.ome?.multiscales?.[0];
-      return { url: `${zarrUrl}${s}/`, name: m?.name ?? `series ${s}`, translation: translationOf(m) };
-    });
-    imageUrl = images[0].url;
-    ms0 = groups[0]?.attributes?.ome?.multiscales?.[0];
-    if (series.length > 1) {
-      const placed = images.every((img) => img.translation !== undefined);
-      $("series-count").textContent = `${series.length} images (series ${series[0]}–${series[series.length - 1]}), ` +
-        (placed ? "placed at their stage positions; zoom out in Neuroglancer to see them all." :
-          "without stage positions, so they overlap.");
-      seriesRow.hidden = false;
+  const attrs = root.attributes ?? {};
+  const map = $<HTMLAnchorElement>("open-map");
+  const picker = $<HTMLSelectElement>("view");
+  map.hidden = true;
+  $("view-row").hidden = true;
+  if (attrs.vzip_virtualized?.profile === "safe") {
+    // A Sentinel-2 product: GeoZarr groups of JPEG 2000 bands, for a map
+    // viewer (map.html) rather than Neuroglancer.
+    const safe = attrs.vzip_virtualized.safe ?? {};
+    views = [];
+    $("name").textContent = `${safe.PRODUCT_URI ?? url.split("/").pop()} (${safe.PROCESSING_LEVEL ?? "Sentinel-2"})`;
+    $("zarr-url").textContent = zarrUrl;
+    $("view-note").textContent = `${safe.SENSING_TIME ?? ""} ${attrs["proj:code"] ?? ""}`;
+    showLevels(await listArrays(zarrUrl));
+    $("open-ng").hidden = true;
+    map.hidden = false;
+    map.href = new URL(`map.html?url=${encodeURIComponent(url)}`, location.href).href;
+  } else {
+    const ms0 = attrs.ome?.multiscales?.[0];
+    if (root.node_type === "array") {
+      views = [arrayView(zarrUrl, "", root)];
+    } else if (ms0 !== undefined) {
+      views = [await omeView(zarrUrl, ms0, ms0.name ?? "image", attrs.vzip_virtualized?.profile === "ome-zarr")];
+    } else if (attrs.ome?.["bioformats2raw.layout"] !== undefined) {
+      views = await seriesViews(zarrUrl);
+    } else {
+      // No OME-Zarr image (a Zarr v2 or N5 hierarchy without one): its arrays.
+      views = (await listArrays(zarrUrl)).map(({ path, meta }) => arrayView(`${zarrUrl}${path}/`, path, meta));
+      if (views.length === 0) throw new Error("no arrays to show");
     }
+    if (views.length > 1) {
+      picker.replaceChildren(...views.map((v, i) => new Option(v.label, String(i))));
+      $("view-row").hidden = false;
+    }
+    await showView(views[0]);
   }
-  if (ms0 === undefined) throw new Error("not an OME-Zarr multiscale image");
-  const rows = await Promise.all(
-    ms0.datasets.map(async (d: { path: string }) => [d.path, await getJson(`${imageUrl}${d.path}/zarr.json`)]),
-  );
-  const tbody = $("levels");
-  tbody.replaceChildren(
-    ...rows.map(([path, a]) => {
-      const tr = document.createElement("tr");
-      for (const v of [
-        path,
-        a.shape.join(" × "),
-        a.chunk_grid.configuration.chunk_shape.join(" × "),
-        a.data_type,
-        a.codecs.map((c: { name: string }) => c.name).join(", "),
-      ]) {
-        const td = document.createElement("td");
-        td.textContent = v;
-        tr.append(td);
-      }
-      return tr;
-    }),
-  );
-  $("name").textContent = ms0.name ?? url.split("/").pop();
-  $("zarr-url").textContent = imageUrl;
-  const [, level0] = rows[0];
-  const scale = ms0.datasets[0].coordinateTransformations?.find(
-    (t: { type: string }) => t.type === "scale",
-  )?.scale ?? level0.shape.map(() => 1);
-  const omero = (await getJson(`${imageUrl}zarr.json`)).attributes?.ome?.omero?.channels ?? [];
-  const state = neuroglancerState(
-    images, ms0.axes, scale, level0.shape, level0.chunk_grid.configuration.chunk_shape, level0.data_type, omero,
-  );
-  $<HTMLAnchorElement>("open-ng").href = new URL(
-    `neuroglancer/#!${encodeURIComponent(JSON.stringify(state))}`,
-    location.href,
-  ).href;
   $<HTMLAnchorElement>("download").href = archiveDownloadUrl(zarrUrl);
   $("result").hidden = false;
   setStatus(`Ready in ${ms} ms.`);
 }
 
+$("view").addEventListener("change", () => {
+  showView(views[Number($<HTMLSelectElement>("view").value)]).catch((e) => setStatus(String(e.message ?? e), true));
+});
 $("form").addEventListener("submit", (event) => {
   event.preventDefault();
   virtualize(input.value.trim()).catch((e) => setStatus(String(e.message ?? e), true));
 });
-for (const [id, url] of [
-  ["example", EXAMPLE],
-  ["example-nd2", ND2_EXAMPLE],
-  ["example-nd2-zstack", ND2_ZSTACK_EXAMPLE],
-  ["example-svs", SVS_EXAMPLE],
-  ["example-ndpi", NDPI_EXAMPLE],
-]) {
-  $(id).addEventListener("click", (event) => {
+for (const link of document.querySelectorAll<HTMLAnchorElement>("a[data-url]")) {
+  link.addEventListener("click", (event) => {
     event.preventDefault();
-    input.value = url;
+    input.value = link.dataset.url!;
     $<HTMLFormElement>("form").requestSubmit();
   });
 }

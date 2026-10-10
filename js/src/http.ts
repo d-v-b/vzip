@@ -97,7 +97,11 @@ export async function readHttpRange(
   try {
     response = options.fetch
       ? await options.fetch(url, { headers, signal }, options.allow)
-      : await fetch(url, { headers, signal, redirect: "follow" });
+      // `no-store`: Chromium's HTTP cache lets one request at a time read a
+      // URL, so cached range requests to one file would be sent one after
+      // another; bypassing it lets them run in parallel (6 at once over
+      // HTTP/1.1, where the cache held S3 to about 17 requests a second).
+      : await fetch(url, { headers, signal, redirect: "follow", cache: "no-store" });
   } catch (e) {
     signal?.throwIfAborted();
     throw new HttpResolutionError(`${url}: ${(e as Error).message}`);

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentinel-2 map</title>
+<meta name="description" content="A Sentinel-2 SAFE product, virtualized to GeoZarr in the browser by a service worker, on a map (OpenLayers).">
+<link rel="stylesheet" href="map.css">
+<style>
+  :root {
+    --bg: #fafaf8; --fg: #1d1d1b; --muted: #6b6b66; --line: #deddd8;
+    --panel: #ffffff; --accent: #2d5bd7; --error: #b3261e;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #141413; --fg: #ecebe6; --muted: #9b9a94; --line: #34332f;
+      --panel: #1d1d1b; --accent: #8aa8ff; --error: #f2b8b5; }
+  }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); }
+  body { display: flex; flex-direction: column; }
+  header { padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+    display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; font-size: 0.9rem; }
+  header .title { flex: 1 1 320px; min-width: 0; }
+  header strong { display: block; word-break: break-all; }
+  #meta, #readout { color: var(--muted); }
+  #status { color: var(--muted); }
+  #status.error { color: var(--error); }
+  a { color: var(--accent); }
+  select, input { font: inherit; }
+  select { max-width: 100%; padding: 2px 4px; border: 1px solid var(--line); border-radius: 4px;
+    background: var(--panel); color: var(--fg); }
+  label { display: inline-flex; gap: 6px; align-items: center; }
+  #map { flex: 1; min-height: 300px; }
+  footer { padding: 6px 16px; font-size: 0.8rem; color: var(--muted); border-top: 1px solid var(--line); background: var(--panel); }
+</style>
+</head>
+<body>
+<header>
+  <div class="title"><strong id="name">Sentinel-2 product</strong><span id="meta"></span></div>
+  <select id="rendering" aria-label="rendering"></select>
+  <label>Brightness <input id="brightness" type="range" min="0.25" max="4" step="0.05" value="1"></label>
+  <a id="back" href="./">Back to the demo</a>
+  <div id="status" role="status" style="flex-basis: 100%"></div>
+</header>
+<div id="map"></div>
+<footer><span id="readout">&nbsp;</span><br>
+  Read with <a href="https://openlayers.org/">OpenLayers</a> (BSD-2-Clause) GeoZarr and
+  <a href="https://github.com/LaurenzV/hayro">hayro-jpeg2000</a> (Apache-2.0 OR MIT), from a Zarr URL served by
+  <a href="https://github.com/d-v-b/vzip">vzip</a>'s service worker. Basemap © OpenStreetMap contributors.</footer>
+<script type="module" src="map.js"></script>
+</body>
+</html>
