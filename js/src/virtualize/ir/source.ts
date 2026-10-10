@@ -107,7 +107,9 @@ export class HttpSource implements RangeSource {
   retries = 0;
   requests = 0;
   private readonly etags = new EtagLog();
-  private readonly send: (url: string, headers: Record<string, string>, signal?: AbortSignal) => Promise<Response>;
+  private readonly send: (
+    url: string, headers: Record<string, string>, signal?: AbortSignal, cache?: RequestCache,
+  ) => Promise<Response>;
   private readonly refusals = new Set<string>();
   private readonly attempts: number;
   private readonly baseDelay: number;
@@ -148,10 +150,13 @@ export class HttpSource implements RangeSource {
           throw e;
         }
       }, policy);
-    this.send = async (u, headers, signal) => {
+    this.send = async (u, headers, signal, cache = "no-store") => {
       const response = checked
         ? await checked(u, { headers, signal }, allow)
-        : await fetch(u, { headers, signal, redirect: "follow" });
+        // `no-store` (but for the opening read, below), as readHttpRange does
+        // (http.ts): Chromium's HTTP cache sends the range requests to one URL
+        // one at a time.
+        : await fetch(u, { headers, signal, redirect: "follow", cache });
       if (response.redirected) {
         try {
           allow(response.url);
@@ -167,7 +172,10 @@ export class HttpSource implements RangeSource {
   /** Checks the URL, then reads its first `OPEN` bytes: the size, and the bytes the run is seeded with. */
   async open(): Promise<this> {
     const t = performance.now();
-    const response = await this.retry(() => this.get(`bytes=0-${OPEN - 1}`));
+    // Through the HTTP cache: a server that hides Content-Range is asked for
+    // the size with a HEAD request, which Chromium can then answer from the
+    // cached response when the server's CORS rules allow only GET.
+    const response = await this.retry(() => this.get(`bytes=0-${OPEN - 1}`, undefined, "default"));
     const seconds = (performance.now() - t) / 1000;
     if (response.status === 416) {
       await response.body?.cancel();
@@ -209,12 +217,12 @@ export class HttpSource implements RangeSource {
   }
 
   /** One GET of a range (redirects followed and checked); a 429 or 5xx is a Transient. */
-  private async get(range: string, signal?: AbortSignal): Promise<Response> {
+  private async get(range: string, signal?: AbortSignal, cache?: RequestCache): Promise<Response> {
     this.requests++;
     const headers = { ...this.headers, Range: range, "Accept-Encoding": "identity" };
     let response: Response;
     try {
-      response = await this.send(this.at, headers, signal ?? this.signal);
+      response = await this.send(this.at, headers, signal ?? this.signal, cache);
     } catch (e) {
       if (e instanceof VzipError || e instanceof HttpResolutionError) throw e;
       if (this.refusals.has((e as Error).message)) throw new VzipError("resolution", (e as Error).message);
