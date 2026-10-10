@@ -4,11 +4,13 @@
 // and its worker), and the Rust core's wasm32 build (vzip_ir.wasm, which
 // `#irwasm` fetches from beside the script; `just js::wasm` builds it).
 //
-// The JPEG 2000 decoder (jpeg2000_decoder.wasm: hayro-jpeg2000, Apache-2.0
-// OR MIT) is the Neuroglancer fork's (https://github.com/d-v-b/neuroglancer,
-// branch vzip, src/sliceview/jpeg2000/), read from $NEUROGLANCER, by default
-// a clone next to this repository (../neuroglancer), as serve.mjs and
-// pages.sh read the fork. Without it the map page cannot decode bands.
+// The JPEG 2000 and JPEG XR decoders (jpeg2000_decoder.wasm: hayro-jpeg2000,
+// Apache-2.0 OR MIT; jpegxr.wasm: jxrlib, BSD-2-Clause) are the Neuroglancer
+// fork's (https://github.com/d-v-b/neuroglancer, branch vzip,
+// src/sliceview/jpeg2000/ and src/sliceview/jpegxr/), read from
+// $NEUROGLANCER, by default a clone next to this repository (../neuroglancer),
+// as serve.mjs and pages.sh read the fork. Without them the map page cannot
+// decode bands, and the demo cannot sample contrast from such chunks.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -23,7 +25,10 @@ if (!fs.existsSync(wasm)) {
   process.exit(1);
 }
 const neuroglancer = process.env.NEUROGLANCER ?? path.join(here, "../../neuroglancer");
-const jpeg2k = path.join(neuroglancer, "src/sliceview/jpeg2000/jpeg2000_decoder.wasm");
+const decoders = [
+  path.join(neuroglancer, "src/sliceview/jpeg2000/jpeg2000_decoder.wasm"),
+  path.join(neuroglancer, "src/sliceview/jpegxr/jpegxr.wasm"),
+];
 fs.rmSync(dist, { recursive: true, force: true });
 const common = { bundle: true, target: "es2022", sourcemap: true, logLevel: "info" };
 const build = (entry, outfile, options = {}) =>
@@ -41,8 +46,10 @@ await build("demo/map/jpeg2k_worker.ts", "jpeg2k_worker.js", { format: "iife", m
 fs.copyFileSync(path.join(here, "demo/index.html"), path.join(dist, "index.html"));
 fs.copyFileSync(path.join(here, "demo/map/map.html"), path.join(dist, "map.html"));
 fs.copyFileSync(wasm, path.join(dist, "vzip_ir.wasm"));
-if (fs.existsSync(jpeg2k)) {
-  fs.copyFileSync(jpeg2k, path.join(dist, "jpeg2000_decoder.wasm"));
-} else {
-  console.warn(`${jpeg2k} is missing: the map page will not decode JPEG 2000 bands (set NEUROGLANCER)`);
+for (const decoder of decoders) {
+  if (fs.existsSync(decoder)) {
+    fs.copyFileSync(decoder, path.join(dist, path.basename(decoder)));
+  } else {
+    console.warn(`${decoder} is missing: the pages will not decode its codec (set NEUROGLANCER)`);
+  }
 }

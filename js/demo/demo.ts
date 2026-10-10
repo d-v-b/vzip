@@ -6,6 +6,7 @@ import {
   registerVzipWorker,
 } from "../src/client.ts";
 import { WORKER_HEADER } from "../src/server.ts";
+import { sampleRanges, tooNarrow, usableWindow } from "./contrast.ts";
 
 // The examples are the links with a data-url attribute in index.html, where
 // their sources and licenses are noted.
@@ -39,7 +40,7 @@ const METERS: Record<string, number> = {
 interface OmeroChannel {
   label?: string;
   color?: string;
-  window?: { start: number; end: number };
+  window?: { min?: number; max?: number; start: number; end: number };
 }
 
 /** One image to show: its Zarr URL, a name, and its translation (one number per axis, in the axes' units). */
@@ -376,51 +377,6 @@ function showLevels(rows: Omit<Level, "url">[]) {
   );
 }
 
-/**
- * A contrast range for an image without one: the 1st and 99th percentiles of
- * a chunk of its coarsest level where the view opens, when it is uncompressed or
- * gzip or zlib compressed (as NIfTI, DICOM and IMS chunks are), else
- * undefined. Neuroglancer would otherwise map the whole range of the data
- * type, which leaves most 16-bit images uniformly gray.
- */
-async function sampleRange(level: Level, axes: { name: string }[]): Promise<[number, number] | undefined> {
-  const a = level.meta;
-  const [first, ...rest] = a.codecs.map((c: { name: string }) => c.name);
-  const TYPES: Record<string, [number, (v: DataView, i: number, le: boolean) => number]> = {
-    uint8: [1, (v, i) => v.getUint8(i)], int8: [1, (v, i) => v.getInt8(i)],
-    uint16: [2, (v, i, le) => v.getUint16(i, le)], int16: [2, (v, i, le) => v.getInt16(i, le)],
-    uint32: [4, (v, i, le) => v.getUint32(i, le)], int32: [4, (v, i, le) => v.getInt32(i, le)],
-    float32: [4, (v, i, le) => v.getFloat32(i, le)], float64: [8, (v, i, le) => v.getFloat64(i, le)],
-  };
-  const type = TYPES[a.data_type];
-  if (first !== "bytes" || rest.some((c: string) => c !== "gzip" && c !== "zlib") || !type || a.chunk_grid.name !== "regular") {
-    return undefined;
-  }
-  const chunks = chunkShapeOf(a);
-  // The chunk the view opens on: the first time point, the middle elsewhere.
-  const index = a.shape.map((n: number, i: number) => axes[i]?.name === "t" ? 0 : Math.floor(Math.floor(n / 2) / chunks[i]));
-  const enc = a.chunk_key_encoding ?? { name: "default" };
-  const sep = enc.configuration?.separator ?? (enc.name === "v2" ? "." : "/");
-  const key = enc.name === "v2" ? index.join(sep) || "0" : ["c", ...index].join(sep);
-  const r = await fetch(`${level.url}${key}`);
-  if (!r.ok) return undefined;
-  let bytes = new Uint8Array(await r.arrayBuffer());
-  for (const c of [...rest].reverse()) {
-    const inflate = new DecompressionStream(c === "gzip" ? "gzip" : "deflate") as TransformStream<Uint8Array, Uint8Array>;
-    bytes = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(inflate)).arrayBuffer());
-  }
-  const [size, get] = type;
-  const le = a.codecs[0].configuration?.endian !== "big";
-  const view = new DataView(bytes.buffer);
-  const n = Math.floor(bytes.length / size);
-  const step = Math.max(1, Math.floor(n / 100000));
-  const values: number[] = [];
-  for (let i = 0; i < n; i += step) values.push(get(view, i * size, le));
-  values.sort((x, y) => x - y);
-  const lo = values[Math.floor(values.length * 0.01)], hi = values[Math.floor(values.length * 0.99)];
-  return lo < hi ? [lo, hi] : undefined;
-}
-
 let shown: View | undefined;
 
 /** Shows `view`: its levels, and a Neuroglancer link. */
@@ -431,31 +387,45 @@ async function showView(view: View) {
   $("view-note").textContent = view.note ?? "";
   showLevels(view.levels);
   const level0 = view.levels[0].meta;
-  // A window of integers narrower than one value maps every value to black
-  // or white (a CZI's display setting can be such a window): leave it out.
-  const omero = view.omero.map((ch) =>
-    ch.window && /int/.test(level0.data_type) && ch.window.end - ch.window.start < 1 ? { ...ch, window: undefined } : ch
-  );
+  const dataType: string = level0.data_type;
+  const coarsest = view.levels[view.levels.length - 1];
+  const sample = (channels?: number[]) =>
+    sampleRanges(coarsest.url, coarsest.meta, view.axes, chunkShapeOf(coarsest.meta), channels);
+  // Each channel's contrast: the file's window when it is usable, else one
+  // sampled from the data (contrast.ts). 8-bit data keeps its full range.
+  let omero = view.omero;
+  const c = view.axes.findIndex((a) => a.name === "c");
+  const nc = c >= 0 ? level0.shape[c] : 0;
+  if (dataType !== "uint8" && nc > 1 && nc <= 16) {
+    const need = Array.from({ length: nc }, (_, k) => k).filter((k) => !usableWindow(omero[k]?.window, dataType));
+    const ranges = need.length > 0 ? await sample(need) : [];
+    omero = Array.from({ length: nc }, (_, k) => {
+      const ch = omero[k] ?? {};
+      if (usableWindow(ch.window, dataType)) return ch;
+      // A sampled range, or else (the chunks hold every channel, or their
+      // codec is not decoded here) the file's window unless it is too narrow.
+      const r = ranges[need.indexOf(k)];
+      if (r !== undefined) return { ...ch, window: { start: r[0], end: r[1] } };
+      return { ...ch, window: ch.window && !tooNarrow(ch.window, dataType) ? ch.window : undefined };
+    });
+  }
   const state = neuroglancerState(
-    view.images, view.axes, view.scale, level0.shape, chunkShapeOf(level0), level0.data_type, omero, view.labels,
+    view.images, view.axes, view.scale, level0.shape, chunkShapeOf(level0), dataType, omero, view.labels,
   );
+  // An image shown with Neuroglancer's default shader gets a sampled range too.
+  const plain = state.layers.filter((l) => l.type === "image" && !("shader" in l));
+  if (plain.length > 0 && dataType !== "uint8") {
+    const [range] = await sample();
+    if (range !== undefined) {
+      for (const l of plain) {
+        Object.assign(l, { shader: `#uicontrol invlerp normalized(range=[${range[0]}, ${range[1]}])\nvoid main() {\n  emitGrayscale(normalized());\n}\n` });
+      }
+    }
+  }
+  if (shown !== view) return;
   const ng = $<HTMLAnchorElement>("open-ng");
   ng.hidden = false;
-  const link = () => {
-    ng.href = new URL(`neuroglancer/#!${encodeURIComponent(JSON.stringify(state))}`, location.href).href;
-  };
-  link();
-  // An image shown with Neuroglancer's default shader, without a contrast
-  // range, gets one from its data.
-  const plain = state.layers.filter((l) => l.type === "image" && !("shader" in l));
-  if (plain.length > 0 && level0.data_type !== "uint8") {
-    const range = await sampleRange(view.levels[view.levels.length - 1], view.axes).catch(() => undefined);
-    if (range === undefined || shown !== view) return;
-    for (const l of plain) {
-      Object.assign(l, { shader: `#uicontrol invlerp normalized(range=[${range[0]}, ${range[1]}])\nvoid main() {\n  emitGrayscale(normalized());\n}\n` });
-    }
-    link();
-  }
+  ng.href = new URL(`neuroglancer/#!${encodeURIComponent(JSON.stringify(state))}`, location.href).href;
 }
 
 async function virtualize(url: string) {

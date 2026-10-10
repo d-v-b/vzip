@@ -51,7 +51,10 @@ node js/demo/serve.mjs 8080
 The demo opens images in Neuroglancer, and Sentinel-2 SAFE products on a map
 (`map.html`: OpenLayers' GeoZarr source, with zarrita's registry given an
 `imagecodecs_jpeg2k` codec that decodes with the fork's JPEG 2000 wasm
-module, which the build copies from `$NEUROGLANCER`).
+module, which the build copies from `$NEUROGLANCER`). An image whose
+metadata has no usable contrast window gets one sampled from a chunk of its
+coarsest level (`demo/contrast.ts`), decoded in the page, JPEG 2000 and
+JPEG XR chunks with the fork's wasm modules.
 
 Live demo: https://d-v-b.github.io/vzip-demo/image-to-zarr/ (formerly `tiff-to-zarr/`, which now redirects). `js/demo/pages.sh`
 publishes it, with the Neuroglancer build, to its own directory of the demo
