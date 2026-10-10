@@ -1,5 +1,5 @@
 //! The declared types of `value` elements and the one generic decoder (the
-//! round-1 grammar of `vzip/ir/types.py`, plus `utf16[n]` and the text types of
+//! round-1 grammar of the Python prototype's `types.py`, now removed, plus `utf16[n]` and the text types of
 //! parsed documents):
 //!
 //! ```text

@@ -1,7 +1,7 @@
-//! The source mirror (ARCHITECTURE.md §3.4) of an IR: one projection for every
+//! The source mirror (design/ARCHITECTURE.md §3.4) of an IR: one projection for every
 //! format, written under `vzip_source`. It never reads the source.
 //!
-//! The mirror is canonical (conventions/README.md §8.8): a function of the IR alone,
+//! The mirror is canonical (spec/conventions.md §8.8): a function of the IR alone,
 //! so two producers write the same entries for one source. [`canonical`] expands the
 //! IR's runs, leaves out the derived spaces past the budget, numbers the elements in
 //! canonical order (`canon.rs`) and sorts the interned strings; [`table`] folds the

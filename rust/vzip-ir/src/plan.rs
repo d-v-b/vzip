@@ -1,4 +1,4 @@
-//! The read planner's policy (ARCHITECTURE.md §3.5), sans-IO: which requests to
+//! The read planner's policy (design/ARCHITECTURE.md §3.5), sans-IO: which requests to
 //! make for a parser's batch of ranges. The host performs the requests (HTTP,
 //! a local file, the browser's `fetch`), reports each one's bytes and time,
 //! and gets the batch's bytes back; the planner never reads.

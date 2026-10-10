@@ -61,7 +61,7 @@ jobs:
       - run: sudo apt-get install -y --no-install-recommends binaryen
       - run: uv sync --all-groups --locked
       - run: just ir-build
-      - run: just web::wasm
+      - run: just js::wasm
       - uses: actions/cache@v4
         with:
           path: /tmp/vzip-proxy-cache
@@ -96,7 +96,7 @@ jobs:
       - run: sudo apt-get install -y --no-install-recommends binaryen
       - run: uv sync --all-groups --locked
       - run: just ir-build
-      - run: just web::wasm
+      - run: just js::wasm
       # A new seed each night (the run number), printed so that a failure can be rerun.
       - run: |
           echo "mutants seed ${{ github.run_number }}"

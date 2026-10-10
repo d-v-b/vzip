@@ -1,5 +1,5 @@
-"""CZI pixel types, compressions and codec headers (conventions/czi/README.md
-§3.1–§3.2, profiles/czi.md §13.4)."""
+"""CZI pixel types, compressions and codec headers (spec/virtualize/czi.md
+§3.1–§3.2, spec/virtualize.md §13.4)."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ HILO_TYPES = frozenset({1, 4})  # Gray16, Bgr48: the only types hi-lo packing is
 MAX_HEADER = 1 << 16  # codec headers are scanned within this many bytes of the data
 ZSTD = {"name": "zstd", "configuration": {"level": 0, "checksum": False}}
 SHUFFLE = {"name": "numcodecs.shuffle", "configuration": {"elementsize": 2}}
-# JPEG XR pixel format GUIDs (as stored) each pixel type admits (profiles/czi.md §13.4).
+# JPEG XR pixel format GUIDs (as stored) each pixel type admits (spec/virtualize.md §13.4).
 WIC = bytes.fromhex("24C3DD6F034EFE4BB1853D77768DC9")
 JXR_FORMATS = {
     0: {WIC + b"\x08"},
@@ -56,7 +56,7 @@ def bytes_codec(data_type: str) -> dict:
 
 
 def codec_chain(pixel_type: int, compression: int, hilo: bool) -> list[dict]:
-    """The codecs after `transpose` (conventions/czi/README.md §3.1)."""
+    """The codecs after `transpose` (spec/virtualize/czi.md §3.1)."""
     data_type = PIXEL_TYPES[pixel_type][1]
     if compression == JPEG:
         return [{"name": "imagecodecs_jpeg"}]
@@ -187,7 +187,7 @@ def coded_size(pixel_type: int, compression: int, width: int, height: int, n: in
                ) -> tuple[int, int, bool, int] | None:
     """(coded width, coded height, hi-lo flag, header length) of a subblock whose
     stored size is width x height and whose data is n bytes, or None when it has
-    no coded size (conventions/czi/README.md §3.2)."""
+    no coded size (spec/virtualize/czi.md §3.2)."""
     q = PIXEL_TYPES[pixel_type][3]
     pixels = width * height * q
     if compression == UNCOMPRESSED:

@@ -62,7 +62,7 @@ uv run python -m vzip.virtualize https://janelia-cosem-datasets.s3.amazonaws.com
 {"format": "zarr2", "groups": 0, "arrays": 1, "chunks": 24, "emptyChunks": 0, "objects": 25, "otherObjects": 0, "listingRequests": 1}
 ```
 
-This took about 1 s and wrote a 3.6 KB archive, at VIRTUALIZE.md revision 16
+This took about 1 s and wrote a 3.6 KB archive, at spec/virtualize.md revision 16
 ([overview](../README.md#formats)). (`otherObjects`, the objects kept under
 `vzip_source/objects/`, is new since then; it is 0 here, as the store's 25
 objects are its `.zarray` and 24 chunks.) The store's root is an
@@ -90,7 +90,7 @@ zarr-python's own Zarr v2 reader gives the same values from the store.
 NDPI and ND2. A local build of the demo (see the [overview](../README.md))
 virtualizes this store, but its page shows only OME-Zarr images, so for a
 bare array it reports `not an OME-Zarr multiscale image`; the service
-worker still serves the Zarr v3 store, and `node web/conformance/virtualize.ts
+worker still serves the Zarr v3 store, and `node js/conformance/virtualize.ts
 <url> out.vzip` writes the archive with the browser code. A store that lists
 more than 100000 objects fails in the browser with HTTP 507.
 
@@ -141,7 +141,7 @@ Notes:
 - **Listing:** S3 returns 1000 keys per request, sequentially. An
   OpenOrganelle N5 level of 382288 chunks took 328 s, almost all listing,
   and gave a 43.7 MB archive
-  ([REVISIONS.md](../../../conformance/virtualize/REVISIONS.md), revision
+  ([REVISIONS.md](../../../spec/history/virtualize/REVISIONS.md), revision
   12).
 - **Many small groups cost one request per document.** The `.zgroup`,
   `.zarray` and `.zattrs` documents are read concurrently, 16 requests at a
@@ -157,15 +157,15 @@ Notes:
 
 ## How it's verified
 
-`web/test/zarr2/verify.py` virtualizes the synthetic Zarr v2 stores in
-[web/test/fixtures/zarr2/](../../../web/test/fixtures/zarr2/) (including
+`js/test/zarr2/verify.py` virtualizes the synthetic Zarr v2 stores in
+[fixtures/zarr2/](../../../fixtures/zarr2/) (including
 stores to reject) with the browser code and compares every array, read
-through `src/vzip` and zarr-python, with zarr-python's own Zarr v2 reader.
+through `python/src/vzip` and zarr-python, with zarr-python's own Zarr v2 reader.
 `compare.py` checks that the Python and browser outputs are equivalent on
 those stores and on the 6 OpenOrganelle stores of
 [corpus_zarr2.txt](../../../conformance/virtualize/corpus_zarr2.txt).
 
-- Profile: [profiles/zarr2.md](../../../profiles/zarr2.md)
-- Python: [src/vzip/virtualize/zarr2/](../../../src/vzip/virtualize/zarr2/)
-- Browser: [web/src/virtualize/zarr2/](../../../web/src/virtualize/zarr2/)
-- Fixtures: [web/test/fixtures/zarr2/](../../../web/test/fixtures/zarr2/)
+- Profile: [spec/virtualize/zarr2.md](../../../spec/virtualize/zarr2.md#part-2-the-profile)
+- Python: [python/src/vzip/virtualize/zarr2/](../../../python/src/vzip/virtualize/zarr2/)
+- Browser: [js/src/virtualize/zarr2/](../../../js/src/virtualize/zarr2/)
+- Fixtures: [fixtures/zarr2/](../../../fixtures/zarr2/)

@@ -18,7 +18,7 @@ pyramid level is a single JPEG strip, which can be tens of thousands of
 pixels wide. vzip cuts each strip into chunks of about 1024 × 1024 pixels at
 the JPEG restart markers the scanner wrote, and makes every chunk a complete
 JPEG stream out of byte ranges of the file and the strip's shared header. The
-198 MB CMU-1.ndpi became a 5.5 MB archive in about 15 s (at VIRTUALIZE.md
+198 MB CMU-1.ndpi became a 5.5 MB archive in about 15 s (at spec/virtualize.md
 revision 16, before the archive kept every tag on `vzip_source`).
 
 ## What you get
@@ -142,7 +142,7 @@ A chunk is about 128 pieces of the file, one per row of JPEG blocks
   modeled views of CMU-1 at 20 ms and 50 Mbit/s, that takes the total from
   41 s to 14 s. These are prototypes behind flags on that branch, not yet
   the default readers.
-- **The header is free.** Since VIRTUALIZE.md revision 14 the JPEG header
+- **The header is free.** Since spec/virtualize.md revision 14 the JPEG header
   is a `data` source in the archive, so a chunk read is one request (or one
   merged request) to the file instead of two. Reading all 130 chunks of
   CMU-1's level 1 went from 247 requests to 130.
@@ -153,16 +153,16 @@ requests.
 
 ## How it's verified
 
-`web/test/ndpi/verify.py` virtualizes the 9 synthetic NDPI files (including
-inputs to reject) with the browser code, reads every level back through `src/vzip`
+`js/test/ndpi/verify.py` virtualizes the 9 synthetic NDPI files (including
+inputs to reject) with the browser code, reads every level back through `python/src/vzip`
 and zarr-python, and compares the pixels with tifffile. `compare.py` checks
 that the Python and browser outputs are equivalent on those files and on the
 3 NDPI slides of
 [corpus_tiff.txt](../../../conformance/virtualize/corpus_tiff.txt), among
 them the 6.9 GB Hamamatsu-1.ndpi.
 
-- Profile: [profiles/ndpi.md](../../../profiles/ndpi.md), which builds on
-  [profiles/tiff.md](../../../profiles/tiff.md)
-- Python: [src/vzip/virtualize/ndpi/](../../../src/vzip/virtualize/ndpi/)
-- Browser: [web/src/virtualize/ndpi/](../../../web/src/virtualize/ndpi/)
-- Fixtures: [web/test/fixtures/ndpi/](../../../web/test/fixtures/ndpi/)
+- Profile: [spec/virtualize/ndpi.md](../../../spec/virtualize/ndpi.md#part-2-the-profile), which builds on
+  [spec/virtualize/tiff.md](../../../spec/virtualize/tiff.md#part-2-the-profile)
+- Python: [python/src/vzip/virtualize/ndpi/](../../../python/src/vzip/virtualize/ndpi/)
+- Browser: [js/src/virtualize/ndpi/](../../../js/src/virtualize/ndpi/)
+- Fixtures: [fixtures/ndpi/](../../../fixtures/ndpi/)

@@ -35,6 +35,11 @@ dependencies = [
 requires = ["uv_build>=0.12.13,<0.13.0"]
 build-backend = "uv_build"
 
+[tool.uv.build-backend]
+# the package is python/src/vzip; this file stays at the root, where the conformance
+# harnesses, the fixture generators and the Rust core's `maturin develop` share its environment
+module-root = "python/src"
+
 [dependency-groups]
 dev = [
     "czifile>=2026.8.16",

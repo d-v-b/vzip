@@ -1,4 +1,4 @@
-//! References to elements of an IR, checked against the IR (ARCHITECTURE.md §3.3,
+//! References to elements of an IR, checked against the IR (design/ARCHITECTURE.md §3.3,
 //! "the end of the amplification class"): every reference is charged to the run's
 //! budget, and so is every repeated one, a reference to bytes a reference already
 //! used, which the IR can only reach through an alias (it claims no byte twice),

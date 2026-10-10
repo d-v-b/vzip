@@ -1,0 +1,43 @@
+# The browser implementation: a service worker serving vzip archives and
+# virtualized image files (TIFF, NDPI, ND2, CZI, DICOM, NIfTI, IMS) and N5,
+# Zarr v2 and OME-Zarr 0.4 stores, and Sentinel-2 SAFE products, as plain HTTP Zarr.
+# TIFF, ND2 and CZI are virtualized by the Rust core (rust/vzip-ir) built for
+# wasm32, which `wasm` builds (not committed).
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+[private]
+default:
+    @just --list
+
+# Install the pinned development dependencies
+install:
+    npm ci
+
+# Build the Rust core for wasm32 (rust/vzip-ir/target/wasm/vzip_ir.wasm; optimized by wasm-opt when installed)
+wasm:
+    ../rust/vzip-ir/wasm/build.sh
+
+# Bundle the service worker and demo, with the Rust core's module beside them (build.mjs)
+build: wasm
+    node build.mjs
+
+# Type-check the sources
+typecheck:
+    npx tsc -p .
+
+# Build the Rust core's test module: the same with test-only hooks (rust/vzip-ir/target/web-test)
+wasm-test:
+    ../rust/vzip-ir/wasm/build.sh test
+
+# Type-check, then run the Node tests
+test: wasm wasm-test typecheck
+    node --test "test/**/*.test.ts"
+
+# Serve the demo locally (default port 8000)
+serve port="8000":
+    node demo/serve.mjs {{port}}
+
+# Virtualize an image file or store URL with the browser code into a .vzip archive
+virtualize url out:
+    node conformance/virtualize.ts {{quote(url)}} {{quote(out)}}

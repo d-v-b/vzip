@@ -59,7 +59,7 @@ uv run python -m vzip.virtualize https://downloads.openmicroscopy.org/images/Ima
 {"format": "ims", "levels": 4, "sizes": {"t": 1, "c": 2, "z": 64, "y": 1567, "x": 2048}, "dataType": "uint8", "chunkShape": [16, 256, 256], "compressed": [true, true, true, true], "chunks": 612, "channels": ["CollagenIV (TxRed)", "GFAP (FITC)"]}
 ```
 
-This took 6 s and wrote an 80 KB archive, at VIRTUALIZE.md revision 16
+This took 6 s and wrote an 80 KB archive, at spec/virtualize.md revision 16
 ([overview](../README.md#formats)); the archive now also mirrors the HDF5
 file's other objects, so it is larger.
 
@@ -140,15 +140,15 @@ Rejected, with the message the command prints:
 
 ## How it's verified
 
-`web/test/ims/verify.py` virtualizes 42 synthetic IMS files (including
-inputs to reject) with the browser code, reads them back through `src/vzip`
+`js/test/ims/verify.py` virtualizes 42 synthetic IMS files (including
+inputs to reject) with the browser code, reads them back through `python/src/vzip`
 and zarr-python, and compares the pixels with h5py (cropped to the image
 size). `compare.py` checks that the Python and browser outputs are
 equivalent on those files and on the 21 public files of
 [corpus_ims.txt](../../../conformance/virtualize/corpus_ims.txt), two of
 which must be rejected (the LZ4 file and a scene file).
 
-- Profile: [profiles/ims.md](../../../profiles/ims.md)
-- Python: [src/vzip/virtualize/ims/](../../../src/vzip/virtualize/ims/)
-- Browser: [web/src/virtualize/ims/](../../../web/src/virtualize/ims/)
-- Fixtures: [web/test/fixtures/ims/](../../../web/test/fixtures/ims/)
+- Profile: [spec/virtualize/ims.md](../../../spec/virtualize/ims.md#part-2-the-profile)
+- Python: [python/src/vzip/virtualize/ims/](../../../python/src/vzip/virtualize/ims/)
+- Browser: [js/src/virtualize/ims/](../../../js/src/virtualize/ims/)
+- Fixtures: [fixtures/ims/](../../../fixtures/ims/)

@@ -1,5 +1,5 @@
-//! XML variant chunks (conventions/nd2/README.md §5.1): the tag scan of the TIFF
-//! convention's OME-XML reading (conventions/tiff §3), and the `variant` document
+//! XML variant chunks (spec/virtualize/nd2.md §5.1): the tag scan of the TIFF
+//! convention's OME-XML reading (spec/virtualize/tiff.md §3), and the `variant` document
 //! as a tree with the positions of its elements and value attributes.
 
 pub struct Tag {
@@ -100,7 +100,7 @@ impl<'a> TagRef<'a> {
     }
 }
 
-/// The scan of conventions/tiff §3 as an iterator: it holds nothing but its position.
+/// The scan of spec/virtualize/tiff.md §3 as an iterator: it holds nothing but its position.
 pub struct Scan<'a> {
     x: &'a str,
     i: usize,
@@ -397,7 +397,7 @@ pub fn variant(data: &[u8]) -> Option<El> {
     if stack.is_empty() { root } else { None }
 }
 
-// ---- values (conventions/nd2/README.md §5.1)
+// ---- values (spec/virtualize/nd2.md §5.1)
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Scalar {
@@ -507,7 +507,7 @@ pub fn scalar(runtype: Option<&str>, value: &str) -> Scalar {
     Scalar::Str(value.to_string())
 }
 
-/// An element read as an object (conventions/nd2 §5.2): its children by name,
+/// An element read as an object (spec/virtualize/nd2.md §5.2): its children by name,
 /// first position, last value; None for an element with a value.
 pub fn as_object(e: &El) -> Option<Vec<(String, &El)>> {
     if e.value.is_some() {
@@ -523,7 +523,7 @@ pub fn as_object(e: &El) -> Option<Vec<(String, &El)>> {
     Some(out)
 }
 
-/// The streams `CustomDataV2_0` declares (conventions/nd2 §5.2): (ID, data type, member index).
+/// The streams `CustomDataV2_0` declares (spec/virtualize/nd2.md §5.2): (ID, data type, member index).
 pub fn declared_streams(doc: &El) -> Vec<(String, &'static str, usize)> {
     let mut out: Vec<(String, &'static str, usize)> = Vec::new();
     let Some(top) = as_object(doc) else {
@@ -560,7 +560,7 @@ pub fn declared_streams(doc: &El) -> Vec<(String, &'static str, usize)> {
     out
 }
 
-/// A decimal value (conventions/tiff §3), finite (and above 0 when `positive`), or None.
+/// A decimal value (spec/virtualize/tiff.md §3), finite (and above 0 when `positive`), or None.
 pub fn decimal_value(v: &str, positive: bool) -> Option<f64> {
     if !decimal(v) {
         return None;

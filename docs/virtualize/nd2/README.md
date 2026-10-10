@@ -49,7 +49,7 @@ each stage position `p` is an image at `<p>/` with one array, `<p>/0`.
   and its decoded metadata chunks (image attributes, experiment, picture
   metadata, text info and the like) that fit the root's budget. Everything
   else is on `vzip_source`, the file's IR mirror
-  ([conventions §8](../../../conventions/README.md#8-the-ir-mirror)): a
+  ([conventions §8](../../../spec/conventions.md#8-the-ir-mirror)): a
   table under `vzip_source/ir/` that accounts for every byte of the file
   (every chunk, the chunk map, the frames and their timestamps, padding), so
   that the file can be rebuilt from it and the file's bytes, and a JSON view
@@ -57,7 +57,7 @@ each stage position `p` is an image at `<p>/` with one array, `<p>/0`.
 
 ## Try it
 
-The outputs below were recorded at VIRTUALIZE.md revision 16
+The outputs below were recorded at spec/virtualize.md revision 16
 ([overview](../README.md#formats)). The summary line now also has the
 members `planner` (the read planner's counts of batches, ranges and
 requests), `elements` (the size of the file's IR) and `folded` (how the
@@ -153,13 +153,13 @@ Rejected:
 
 ## How it's verified
 
-`web/test/nd2/verify.py` virtualizes 76 synthetic ND2 files (compressed
+`js/test/nd2/verify.py` virtualizes 76 synthetic ND2 files (compressed
 frames, padded rows, multi-phase time loops, disabled positions, missing
 frames, float data, and inputs to reject) with the browser code (the Rust
 core as WebAssembly) and compares every chunk with the pixels their
 generator wrote; the `nd2` package reads the same files. It also rebuilds
 each file from its archive's IR mirror and checks that it is the file, byte
-for byte. `experiments/verify_nd2_vzip.py` compares archives of public files
+for byte. `design/experiments/verify_nd2_vzip.py` compares archives of public files
 with the `nd2` package. `compare.py` compares three virtualizers
 ([overview](../README.md#the-implementations-agree)) on the synthetic files
 and the 17 public files of
@@ -168,13 +168,13 @@ and browser hosts of the core must write the same archive, `vzip_source`
 included, and both must match, outside `vzip_source`, the frozen reference:
 the Python ND2 profile vzip shipped before the core.
 
-- Profile: [profiles/nd2.md](../../../profiles/nd2.md); convention:
-  [conventions/nd2](../../../conventions/nd2/README.md)
+- Profile: [spec/virtualize/nd2.md](../../../spec/virtualize/nd2.md#part-2-the-profile); convention:
+  [spec/virtualize/nd2.md](../../../spec/virtualize/nd2.md)
 - Rust core: [rust/vzip-ir/src/nd2.rs](../../../rust/vzip-ir/src/nd2.rs)
   (the parser) and [rust/vzip-ir/src/project/nd2.rs](../../../rust/vzip-ir/src/project/nd2.rs)
   (the projection)
-- Python host: [src/vzip/ir/](../../../src/vzip/ir/); browser host:
-  [web/src/virtualize/ir/](../../../web/src/virtualize/ir/)
+- Python host: [python/src/vzip/ir/](../../../python/src/vzip/ir/); browser host:
+  [js/src/virtualize/ir/](../../../js/src/virtualize/ir/)
 - Frozen reference: [conformance/virtualize/reference/vzip_reference/nd2/](../../../conformance/virtualize/reference/vzip_reference/nd2/)
-  and [web/conformance/reference/nd2/](../../../web/conformance/reference/nd2/)
-- Fixtures: [web/test/fixtures/nd2/](../../../web/test/fixtures/nd2/)
+  and [conformance/virtualize/reference/ts/nd2/](../../../conformance/virtualize/reference/ts/nd2/)
+- Fixtures: [fixtures/nd2/](../../../fixtures/nd2/)

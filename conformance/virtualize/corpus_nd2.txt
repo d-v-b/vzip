@@ -1,4 +1,4 @@
-# url|name of the public ND2 files in the corpus (sources and licenses: experiments/out/nd2/README.md)
+# url|name of the public ND2 files in the corpus (sources and licenses: design/experiments/out/nd2/README.md)
 https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/1-SR_1_9_6hPre-C_MC1.nd2|biad3015_1-SR_1_9_6hPre-C_MC1|ends-sha256=0e99d7309d2b78163ce6080d6b289d41901edaed3245d66905ea8d0ca2f2f1c7
 https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/2-SR_1_9_6hPre-C_1mM_IPTG_TS_MC1.nd2|biad3015_2-SR_1_9_6hPre-C_1mM_IPTG_TS_MC1|ends-sha256=3382996004ad0dcfb278f74923db253cf27485f416f27521cdf2a1ebe8531d9a
 https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/2-SR_1_9_6hPre-C_1mM_IPTG_TS_MC2.nd2|biad3015_2-SR_1_9_6hPre-C_1mM_IPTG_TS_MC2|ends-sha256=e3c2175b94a0c373a92227df25c9d7e9c7292086dd828b78ea41c5f25100b428

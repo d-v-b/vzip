@@ -1,0 +1,268 @@
+"""The Python N5 virtualizer (spec/virtualize/n5.md) on the synthetic stores.
+
+Equivalence with the browser virtualizer is checked by
+conformance/virtualize/compare.py, and pixel correctness against an
+independent block reader and zarr-n5 by js/test/n5/verify.py.
+"""
+
+import json
+import zipfile
+from pathlib import Path
+
+import pytest
+
+from vzip.virtualize import Rejected, virtualize
+from vzip.virtualize.common import declare
+
+FIXTURES = Path(__file__).parents[2] / "fixtures" / "n5"
+URL = "https://data.test/n5/{}/"
+
+T = lambda n: {"name": "transpose", "configuration": {"order": list(range(n - 1, -1, -1))}}  # noqa: E731
+BIG = {"name": "bytes", "configuration": {"endian": "big"}}
+ONE = {"name": "bytes"}
+
+
+def n5(*inner):
+    return [{"name": "n5_default", "configuration": {"codecs": list(inner)}}]
+
+
+# store: (summary members, {array path: (shape, chunk shape, data type, codecs, dimension names)},
+#         {group path: ome multiscale (without datasets) or None}, (first chunk key, size) or None)
+CASES = {
+    "n5_compressions": (
+        {"arrays": 8, "groups": 1, "images": [], "chunks": 10},
+        {
+            "raw_u16": ([10, 7], [10, 4], "uint16", n5(T(2), BIG), None),
+            "gzip_i32_padded": ([9, 5, 3], [5, 6, 3], "int32",
+                                n5(T(3), BIG, {"name": "gzip", "configuration": {"level": 6}}), None),
+            "zlib_f64": ([6, 6], [6, 6], "float64", n5(T(2), BIG, {"name": "zlib", "configuration": {"level": 6}}), None),
+            "zstd_f32": ([5, 9], [6, 9], "float32",
+                         n5(T(2), BIG, {"name": "zstd", "configuration": {"level": 3, "checksum": False}}), None),
+            "blosc_u8": ([8, 6, 5], [8, 6, 5], "uint8", n5(T(3), ONE, {"name": "blosc", "configuration": {
+                "cname": "lz4", "clevel": 5, "shuffle": "shuffle", "typesize": 1, "blocksize": 0}}), None),
+            "blosc_i16_bitshuffle": ([7, 7], [8, 8], "int16", n5(T(2), BIG, {"name": "blosc", "configuration": {
+                "cname": "zstd", "clevel": 3, "shuffle": "bitshuffle", "typesize": 2, "blocksize": 0}}), None),
+            "blosc_u64_noshuffle_noblocksize": ([5, 3], [5, 3], "uint64", n5(T(2), BIG, {
+                "name": "blosc", "configuration": {"cname": "zlib", "clevel": 1, "shuffle": "noshuffle",
+                                                   "typesize": 8, "blocksize": 0}}), None),
+            "legacy_gzip_i8": ([6, 4], [6, 4], "int8", n5(T(2), ONE, {"name": "gzip", "configuration": {"level": 6}}),
+                               None),
+        },
+        {"": None}, ("blosc_i16_bitshuffle/0/0", None)),
+    "n5_root_dataset": ({"arrays": 1, "groups": 0, "chunks": 1}, {"": ([11, 3, 2], [11, 3, 2], "uint16", None, None)}, {},
+                        ("0/0/0", None)),
+    "n5_hierarchy": (
+        {"arrays": 3, "groups": 6, "chunks": 3, "emptyChunks": 1},
+        {"a/b/sparse": ([8, 8], [3, 8], "uint16", None, None), "c/d/e": ([3], [4], "float32", None, None),
+         "f g/h é": ([4, 2], [4, 2], "uint8", None, None)},
+        {"": None, "a": None, "a/b": None, "c": None, "c/d": None, "f g": None}, ("a/b/sparse/0/0", 60)),
+    "n5_cosem": (
+        {"images": [{"path": "em/fibsem-uint8", "convention": "cosem"}]},
+        {"em/fibsem-uint8/s1": ([6, 5, 4], [12, 10, 8], "uint8", None, ["x", "y", "z"])},
+        {"em/fibsem-uint8": {"name": "em/fibsem-uint8", "axes": [
+            {"name": "x", "type": "space", "unit": "nanometer"}, {"name": "y", "type": "space", "unit": "nanometer"},
+            {"name": "z", "type": "space", "unit": "nanometer"}]}}, None),
+    "n5_cosem_array_transforms": (
+        {"images": [{"path": "img", "convention": "cosem"}]}, {"img/s0": ([12, 10, 8], [12, 10, 8], "uint8", None,
+                                                                           ["x", "y", "z"])},
+        {"img": {"axes": [{"name": a, "type": "space", "unit": "micrometer"} for a in "xyz"]}}, None),
+    "n5_viewer_scales": (
+        {"images": [{"path": "setup0/timepoint0", "convention": "n5-viewer"}]}, {},
+        {"setup0/timepoint0": {"axes": [{"name": a, "type": "space", "unit": "micrometer"} for a in "xyz"]}}, None),
+    "n5_viewer_downsampling": (
+        {"images": [{"path": "g", "convention": "n5-viewer"}]}, {"g/s2": ([4, 3], [13, 9], "uint16", None, ["x", "y"])},
+        {"g": {"axes": [{"name": "x", "type": "space"}, {"name": "y", "type": "space"}]}}, None),
+    "n5_viewer_time_first": (
+        {"images": [{"path": "t", "convention": "n5-viewer"}]}, {"t/s1": ([2, 2, 3, 3], [2, 4, 6, 6], "float32", None,
+                                                                           ["t", "z", "y", "x"])},
+        {"t": {"axes": [{"name": "t", "type": "time"}] + [{"name": a, "type": "space", "unit": "nanometer"}
+                                                           for a in "zyx"]}}, None),
+    "n5_multiscales_unrecognized": (
+        {"images": [], "arrays": 4}, {"bad_scale/s0": ([12, 10, 8], [12, 10, 8], "uint8", None, None)},
+        {"bad_scale": None, "bad_axes": None, "four_d": None, "dotdot": None}, None),
+    # Two recognized groups share a level with different axis names: the first keeps its image.
+    "n5_shared_levels": (
+        {"images": [{"path": "a", "convention": "cosem"}]}, {"a/b/s0": ([3, 4, 5], [3, 4, 5], "uint8", None,
+                                                                         ["x", "y", "z"])},
+        {"a": {"axes": [{"name": c, "type": "space", "unit": "nanometer"} for c in "xyz"]}, "a/b": None}, None),
+    "n5_edge_varlength_block": ({"chunks": 2}, {"v": ([4, 4], [2, 4], "uint8", n5(T(2), ONE), None)}, {}, None),
+    # The compression levels, which the codecs carry.
+    "n5_source_metadata": (
+        {"arrays": 7, "otherObjects": 0},
+        {"gzip_9": ([4], [4], "uint8", n5(T(1), ONE, {"name": "gzip", "configuration": {"level": 9}}), None),
+         "gzip_no_level": ([4], [4], "uint8", n5(T(1), ONE, {"name": "gzip", "configuration": {"level": 6}}), None),
+         "zlib_default": ([4], [4], "uint8", n5(T(1), ONE, {"name": "zlib", "configuration": {"level": 6}}), None),
+         "zstd_extra": ([4], [4], "uint8", n5(T(1), ONE, {"name": "zstd", "configuration": {"level": -5,
+                                                                                            "checksum": False}}), None),
+         "both": ([4], [4], "uint8", n5(T(1), ONE), None)},
+        {"": None, "version_only": None}, None),
+    "n5_objects": ({"arrays": 1, "chunks": 1, "otherObjects": 4}, {"a": ([4], [4], "uint8", n5(T(1), ONE), None)},
+                   {"": None, "g": None}, ("a/0", None)),
+}
+
+# The scales and translations of the COSEM and n5-viewer images, level by level.
+TRANSFORMS = {
+    "n5_cosem": ("em/fibsem-uint8", [[4.0, 4.0, 5.24], [8.0, 8.0, 10.48], [16.0, 16.0, 20.96]],
+                 [[0.0, 0.0, 0.0], [2.0, 2.0, 2.62], [6.0, 6.0, 7.86]]),
+    "n5_cosem_array_transforms": ("img", [[1.0, 1.0, 3.0], [2.0, 2.0, 6.0]], [[0, 0, 0], [0, 0, 0]]),
+    # n5-viewer: a level downsampled by f is offset by (f - 1) / 2 voxels of s0.
+    "n5_viewer_scales": ("setup0/timepoint0", [[0.25, 0.25, 1.5], [0.5, 0.5, 1.5], [1.0, 1.0, 3.0]],
+                         [[0, 0, 0], [0.125, 0.125, 0], [0.375, 0.375, 0.75]]),
+    "n5_viewer_downsampling": ("g", [[0.5, 0.75], [1.0, 1.5], [2.0, 3.0]], [[0, 0], [0.25, 0.375], [0.75, 1.125]]),
+    "n5_viewer_time_first": ("t", [[1.0, 2.0, 0.5, 0.5], [1.0, 4.0, 1.0, 1.0]], [[0, 0, 0, 0], [0, 1.0, 0.25, 0.25]]),
+}
+
+
+def key(path: str) -> str:
+    return f"{path}/zarr.json" if path else "zarr.json"
+
+
+def test_virtualizes_the_synthetic_stores(tmp_path):
+    for name, (summary, arrays, groups, chunk) in CASES.items():
+        fmt, out = virtualize(str(FIXTURES / name), url=URL.format(name))
+        assert fmt == "n5", name
+        assert {**out.summary, **summary} == out.summary, name
+        for path, (shape, chunks, dtype, codecs, names) in arrays.items():
+            doc = out.docs[key(path)]
+            assert (doc["shape"], doc["chunk_grid"]["configuration"]["chunk_shape"], doc["data_type"]) == \
+                (shape, chunks, dtype), (name, path)
+            assert doc["chunk_key_encoding"] == {"name": "v2", "configuration": {"separator": "/"}}
+            assert doc["fill_value"] == 0
+            if codecs is not None:
+                assert doc["codecs"] == codecs, (name, path)
+            assert doc.get("dimension_names") == names, (name, path)
+            assert set(doc["attributes"]) <= {"zarr_conventions", "vzip_virtualized"}, (name, path)
+            kept = doc["attributes"].get("vzip_virtualized", {}).get("n5", {}).get("attributes", {})
+            assert not {"dimensions", "blockSize", "dataType", "compression", "n5"} & set(kept), (name, path)
+        for path, ms in groups.items():
+            doc = out.docs[key(path)]
+            assert doc["node_type"] == "group" and "n5" not in doc["attributes"], (name, path)
+            if ms is None:
+                assert "ome" not in doc["attributes"], (name, path)
+            else:
+                got = dict(doc["attributes"]["ome"]["multiscales"][0])
+                assert doc["attributes"]["ome"]["version"] == "0.5"
+                del got["datasets"]
+                assert got == ms, (name, path)
+        # One source per chunk entry, in key order, each the whole object.
+        keys = [k for k, _ in out.chunks]
+        assert keys == sorted(keys) and all(n > 0 for _, n in out.chunks), name
+        assert out.sources == [URL.format(name) + k.removeprefix("vzip_source/objects/").replace(" ", "%20")
+                               .replace("é", "%C3%A9") for k in keys]
+        assert out.refs() == {k: [(i, 0, n)] for i, (k, n) in enumerate(out.chunks)}
+        if chunk is not None:
+            assert chunk[0] in keys, name
+            if chunk[1] is not None:
+                assert dict(out.chunks)[chunk[0]] == chunk[1], name
+    for name, (group, scales, translations) in TRANSFORMS.items():
+        _, out = virtualize(str(FIXTURES / name), url=URL.format(name))
+        datasets = out.docs[key(group)]["attributes"]["ome"]["multiscales"][0]["datasets"]
+        flat = lambda xs: [v for x in xs for v in x]  # noqa: E731
+        assert flat(d["coordinateTransformations"][0]["scale"] for d in datasets) == pytest.approx(flat(scales)), name
+        if translations is None:
+            assert all(len(d["coordinateTransformations"]) == 1 for d in datasets), name
+        else:
+            got = flat(d["coordinateTransformations"][1]["translation"] for d in datasets)
+            assert got == pytest.approx(flat(translations)), name
+    # Every node's attributes.json is its source metadata (spec/virtualize/n5.md §5): the
+    # attributes, and the version n5; nodes inside datasets and stray objects are other objects (§6).
+    _, out = virtualize(str(FIXTURES / "n5_hierarchy"), url=URL.format("n5_hierarchy"))
+    assert out.docs["zarr.json"]["attributes"] == declare(
+        {}, "n5", URL.format("n5_hierarchy"), {"attributes": {"description": "groups"}, "metadata": {"n5": "4.0.0"}})
+    assert out.docs["c/zarr.json"]["attributes"] == declare(
+        {}, "n5", None, {"attributes": {"kind": "explicit group"}, "metadata": {"n5": "x"}})
+    assert out.docs["a/zarr.json"] == {"zarr_format": 3, "node_type": "group", "attributes": {}}
+    assert "a/b/sparse/0/zarr.json" not in out.docs and "docs/zarr.json" not in out.docs
+    assert [k for k, _ in out.chunks if k.startswith("vzip_source/")] == [
+        "vzip_source/objects/a/b/sparse/0/attributes.json", "vzip_source/objects/a/b/sparse/01/0",
+        "vzip_source/objects/a/b/sparse/9/9", "vzip_source/objects/c/notes.txt", "vzip_source/objects/docs/README.txt"]
+    # The missing block (1/0) and the empty one (2/0) have no entry.
+    assert [k for k, _ in out.chunks if k.startswith("a/b/sparse/")] == ["a/b/sparse/0/0"]
+    # The empty block's key is listed with the empty objects (§3.1, §6).
+    assert out.docs["vzip_source/zarr.json"]["attributes"]["vzip_virtualized"]["n5"] == {"empty": ["a/b/sparse/2/0"]}
+    # Block keys follow the grid in N5 dimension order (two blocks along the second, two along the first).
+    _, out = virtualize(str(FIXTURES / "n5_compressions"), url=URL.format("n5_compressions"))
+    assert [k for k, _ in out.chunks if k.startswith(("raw_u16/", "gzip_i32_padded/"))] == [
+        "gzip_i32_padded/0/0/0", "gzip_i32_padded/1/0/0", "raw_u16/0/0", "raw_u16/0/1"]
+    _, out = virtualize(str(FIXTURES / "n5_root_dataset"), url=URL.format("n5_root_dataset"))
+    doc = {k: v for k, v in json.loads((FIXTURES / "n5_root_dataset" / "attributes.json").read_text()).items()
+           if k not in ("dimensions", "blockSize", "dataType", "compression", "n5")}
+    assert out.docs["zarr.json"]["attributes"] == declare({}, "n5", URL.format("n5_root_dataset"),
+                                                          {"attributes": doc, "metadata": {"n5": "4.0.0"}})
+    _, out = virtualize(str(FIXTURES / "n5_multiscales_unrecognized"), url=URL.format("x"))
+    # A group whose attributes.json already has `ome` is not recognized; that `ome` is copied.
+    attrs = out.docs["has_ome/zarr.json"]["attributes"]
+    assert "ome" not in attrs and attrs["vzip_virtualized"]["n5"]["attributes"]["ome"] == {"version": "0.5",
+                                                                                          "custom": True}
+    # A compression's members that its codec does not carry are metadata, as are the version n5 and
+    # a compressionType next to a compression; integers beyond 2^53 are kept exact.
+    url = URL.format("n5_source_metadata")
+    _, out = virtualize(str(FIXTURES / "n5_source_metadata"), url=url)
+    s = lambda p: out.docs[key(p)]["attributes"].get("vzip_virtualized", {}).get("n5")  # noqa: E731
+    assert s("") == {"attributes": {"id": 18446744073709551615, "neg": -9007199254740993},
+                     "metadata": {"n5": "4.0.0"}}
+    assert s("zstd_extra") == {"metadata": {"compression": {"nbWorkers": 2}}}
+    assert s("both") == {"metadata": {"n5": "4.0.0", "compressionType": "gzip"}}
+    assert s("version_only") == {"metadata": {"n5": "4.0.0"}}
+    assert s("gzip_9") is None and out.docs["layout_only/zarr.json"]["attributes"] == {}
+    archive = tmp_path / "s.vzip"
+    out.write(str(archive))
+    with zipfile.ZipFile(archive) as z:
+        assert b'"id":18446744073709551615,"neg":-9007199254740993' in z.read("zarr.json")
+    _, out = virtualize(str(FIXTURES / "n5_compressions"), url=URL.format("n5_compressions"))
+    assert out.docs["blosc_u8/zarr.json"]["attributes"]["vzip_virtualized"]["n5"] == {
+        "metadata": {"compression": {"nthreads": 1}}}
+    # A dataset nested in a dataset, a stray object and a README are kept whole (spec/virtualize/n5.md §6).
+    url = URL.format("n5_objects")
+    _, out = virtualize(str(FIXTURES / "n5_objects"), url=url)
+    assert [k for k, _ in out.chunks] == ["a/0", "vzip_source/objects/README", "vzip_source/objects/a/labels/0",
+                                          "vzip_source/objects/a/labels/attributes.json",
+                                          "vzip_source/objects/g/notes.txt"]
+    # The empty g/empty is listed in vzip_source's source metadata.
+    assert out.docs["vzip_source/zarr.json"]["attributes"] == declare({}, "n5", None, {"empty": ["g/empty"]})
+    assert "a/labels/zarr.json" not in out.docs
+    # An object named zarr.json is escaped with ~ (one to one); empty objects are vzip_source's.
+    _, out = virtualize(str(FIXTURES / "n5_node_names"), url=URL.format("n5_node_names"))
+    assert {k: out.origins[k] for k, _ in out.chunks if k.startswith("vzip_source/")} == {
+        "vzip_source/objects/zarr.json~": "zarr.json", "vzip_source/objects/g/zarr.json~~": "g/zarr.json~",
+        "vzip_source/objects/a/zarr.json~": "a/zarr.json"}
+    assert out.docs["vzip_source/zarr.json"]["attributes"] == declare({}, "n5", None, {"empty": ["e"]})
+
+
+@pytest.mark.parametrize("name,message", [
+    ("n5_reject_datatype_string", "dataType 'string'"),
+    ("n5_reject_datatype_object", "dataType 'object'"),
+    ("n5_reject_compression_lz4", "compression 'lz4'"),
+    ("n5_reject_compression_xz", "compression 'xz'"),
+    ("n5_reject_compression_bzip2", "compression 'bzip2'"),
+    ("n5_reject_compression_jpeg", "compression 'jpeg'"),
+    ("n5_reject_compression_no_type", "string type"),
+    ("n5_reject_no_compression", "no compression"),
+    ("n5_reject_gzip_usezlib_string", "useZlib"),
+    ("n5_reject_blosc_cname", "cname 'lz5'"),
+    ("n5_reject_blosc_clevel", "clevel 10"),
+    ("n5_reject_blosc_shuffle_missing", "shuffle None"),
+    ("n5_reject_dimensions_empty", "dimensions \\[\\]"),
+    ("n5_reject_dimensions_negative", "dimensions \\[4, -1\\]"),
+    ("n5_reject_dimensions_fraction", "dimensions \\[4, 2.5\\]"),
+    ("n5_reject_dimensions_huge", "dimensions"),
+    ("n5_reject_blocksize_mismatch", "blockSize \\[2\\]"),
+    ("n5_reject_blocksize_zero", "blockSize \\[2, 0\\]"),
+    ("n5_reject_blocksize_huge", "blockSize"),
+    ("n5_reject_attributes_not_object", "not a JSON object"),
+    ("n5_reject_json_nan", "literal NaN"),
+    ("n5_reject_json_bom", "byte order mark"),
+    ("n5_reject_json_not_utf8", "not UTF-8"),
+    ("n5_reject_json_trailing_comma", "invalid JSON"),
+    ("n5_reject_json_overflow", "not finite"),
+    ("n5_reject_json_too_deep", "nests more than 256"),
+    ("n5_reject_json_empty_object", "invalid JSON"),
+    ("n5_reject_reserved_key", "__vz__"),
+    ("n5_reject_no_root_attributes", "not an N5, Zarr v2 or SAFE store"),
+    ("n5_reject_gzip_level", "gzip level 10"),
+    ("n5_reject_zstd_level", "zstd level 2.5"),
+    ("n5_reject_objects_collision", "the node vzip_source is where"),
+])
+def test_rejects(name, message):
+    with pytest.raises(Rejected, match=message):
+        virtualize(str(FIXTURES / name), url=URL.format(name))

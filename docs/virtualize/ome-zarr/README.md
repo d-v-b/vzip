@@ -56,7 +56,7 @@ uv run python -m vzip.virtualize https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/i
 {"format": "ome-zarr", "groups": 3, "arrays": 7, "chunks": 1462, "emptyChunks": 0, "objects": 1475, "images": 2, "labels": 1, "droppedLabelLevels": 1, "plates": 0, "wells": 0, "fields": 0, "omeXml": 0, "otherObjects": 0, "listingRequests": 2}
 ```
 
-This took 4 s and wrote a 201 KB archive, at VIRTUALIZE.md revision 16
+This took 4 s and wrote a 201 KB archive, at spec/virtualize.md revision 16
 ([overview](../README.md#formats)). (`otherObjects`, the objects kept under
 `vzip_source/objects/`, is new since then; it is 0 here, as every object is
 a document or a chunk.) The label image had 4 levels to
@@ -146,8 +146,8 @@ not migrated: the Zarr v2 profile keeps its attributes, unchanged, under
 
 ## How it's verified
 
-`web/test/ome-zarr/verify.py` virtualizes the synthetic OME-Zarr 0.4 stores in
-[web/test/fixtures/ome-zarr/](../../../web/test/fixtures/ome-zarr/)
+`js/test/ome-zarr/verify.py` virtualizes the synthetic OME-Zarr 0.4 stores in
+[fixtures/ome-zarr/](../../../fixtures/ome-zarr/)
 (including stores to reject) with the browser code, validates every accepted
 input as OME-Zarr 0.4 and every output group as OME-Zarr 0.5 with the
 `ome-zarr-models` package, and compares every array with zarr-python's Zarr
@@ -157,8 +157,8 @@ equivalent on those stores and on the 15 IDR stores of
 (images, labels, plates and a bioformats2raw plate; the 102114-object plate
 with the Python command only).
 
-- Profile: [profiles/ome-zarr.md](../../../profiles/ome-zarr.md), which
-  builds on [profiles/zarr2.md](../../../profiles/zarr2.md)
-- Python: [src/vzip/virtualize/ome_zarr/](../../../src/vzip/virtualize/ome_zarr/)
-- Browser: [web/src/virtualize/ome-zarr/](../../../web/src/virtualize/ome-zarr/)
-- Fixtures: [web/test/fixtures/ome-zarr/](../../../web/test/fixtures/ome-zarr/)
+- Profile: [spec/virtualize/ome-zarr.md](../../../spec/virtualize/ome-zarr.md#part-2-the-profile), which
+  builds on [spec/virtualize/zarr2.md](../../../spec/virtualize/zarr2.md#part-2-the-profile)
+- Python: [python/src/vzip/virtualize/ome_zarr/](../../../python/src/vzip/virtualize/ome_zarr/)
+- Browser: [js/src/virtualize/ome-zarr/](../../../js/src/virtualize/ome-zarr/)
+- Fixtures: [fixtures/ome-zarr/](../../../fixtures/ome-zarr/)

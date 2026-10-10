@@ -1,0 +1,433 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/spec/virtualize/ndpi/schema.json",
+  "title": "vzip NDPI convention, version 0",
+  "description": "The zarr.json of a node that declares the vzip NDPI convention (https://github.com/d-v-b/vzip/blob/main/spec/virtualize/ndpi.md)",
+  "type": "object",
+  "properties": {
+    "zarr_format": {
+      "type": "integer",
+      "const": 3
+    },
+    "node_type": {
+      "type": "string",
+      "enum": [
+        "group",
+        "array"
+      ]
+    },
+    "attributes": {
+      "type": "object",
+      "properties": {
+        "ome": {
+          "type": "object",
+          "description": "OME-NGFF 0.5 metadata"
+        },
+        "zarr_conventions": {
+          "type": "array",
+          "contains": {
+            "$ref": "#/$defs/conventionMetadata"
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        "vzip_virtualized": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/rootProperty"
+            },
+            {
+              "$ref": "#/$defs/nodeProperty"
+            }
+          ]
+        }
+      },
+      "required": [
+        "zarr_conventions",
+        "vzip_virtualized"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "zarr_format",
+    "node_type",
+    "attributes"
+  ],
+  "$defs": {
+    "conventionMetadata": {
+      "type": "object",
+      "description": "The NDPI convention's metadata object in zarr_conventions",
+      "properties": {
+        "uuid": {
+          "type": "string",
+          "const": "6cac71ef-dbb2-4acd-b60c-00389aa4238a"
+        },
+        "schema_url": {
+          "type": "string",
+          "const": "https://raw.githubusercontent.com/d-v-b/vzip/refs/heads/main/spec/virtualize/ndpi/schema.json"
+        },
+        "spec_url": {
+          "type": "string",
+          "const": "https://github.com/d-v-b/vzip/blob/main/spec/virtualize/ndpi.md"
+        },
+        "name": {
+          "type": "string",
+          "const": "vzip_virtualized"
+        },
+        "description": {
+          "type": "string",
+          "const": "The Zarr layout of a NDPI source virtualized by vzip, and the source's metadata"
+        }
+      },
+      "required": [
+        "uuid"
+      ],
+      "additionalProperties": false
+    },
+    "rootProperty": {
+      "type": "object",
+      "description": "The root's property: the profile and version that produced the hierarchy, its source, and the root's source metadata",
+      "properties": {
+        "profile": {
+          "type": "string",
+          "const": "ndpi"
+        },
+        "version": {
+          "type": "integer",
+          "const": 0
+        },
+        "revision": {
+          "type": "integer",
+          "const": 24,
+          "description": "The spec/virtualize.md revision that produced the hierarchy (version 0 only)"
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "The URL of the source file"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false
+        },
+        "ndpi": {
+          "$ref": "#/$defs/sourceMetadata"
+        }
+      },
+      "required": [
+        "profile",
+        "version",
+        "revision",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "sourceMetadata": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sourceNode"
+        },
+        {
+          "$ref": "#/$defs/ifd"
+        }
+      ]
+    },
+    "headerValue": {
+      "description": "A translated header value (spec/conventions.md §6)",
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "$ref": "#/$defs/text"
+        },
+        {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "text": {
+      "description": "A text value: a string (UTF-8), or its ISO 8859-1 reading when it is not UTF-8",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "latin1": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "latin1"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "sourceNode": {
+      "type": "object",
+      "description": "vzip_source's: the number of IFDs in the main chain, each a group at ifds/<i>",
+      "properties": {
+        "ifd_count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "ifd_count"
+      ],
+      "additionalProperties": false
+    },
+    "ifd": {
+      "type": "object",
+      "description": "An IFD's group",
+      "properties": {
+        "tags": {
+          "type": "object",
+          "description": "Each tag but the layout and pointer tags, by its number in decimal",
+          "propertyNames": {
+            "pattern": "^(0|[1-9][0-9]*)$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/tag"
+          }
+        },
+        "pointers": {
+          "type": "object",
+          "description": "Each pointer tag, by its number in decimal",
+          "propertyNames": {
+            "pattern": "^(0|[1-9][0-9]*)$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/pointer"
+          }
+        },
+        "duplicates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/duplicate"
+          },
+          "description": "The entries after the first of their tag"
+        },
+        "record": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The IFD's record number, when a pointer tag's array refers to it"
+        },
+        "same_as": {
+          "type": "object",
+          "description": "Each array or family of bytes the IFD shares with one kept earlier, by its name: the earlier one's path under vzip_source",
+          "propertyNames": {
+            "pattern": "^(data|strips|jpeg_q_tables|jpeg_dc_tables|jpeg_ac_tables|0|[1-9][0-9]*)$"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "sof0": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "description": "A McuStarts level's strip's SOF0 segment, which its chunks replace"
+        }
+      },
+      "required": [
+        "tags"
+      ],
+      "additionalProperties": false
+    },
+    "tag": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "count": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          ]
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/text"
+            },
+            {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "field": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "description": "The value field of an entry whose field type TIFF does not define"
+        }
+      },
+      "required": [
+        "type",
+        "count"
+      ],
+      "additionalProperties": false
+    },
+    "duplicate": {
+      "type": "object",
+      "properties": {
+        "tag": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "type": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "count": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          ]
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/text"
+            },
+            {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "field": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "description": "The value field of an entry whose field type TIFF does not define"
+        }
+      },
+      "required": [
+        "tag",
+        "type",
+        "count"
+      ],
+      "additionalProperties": false
+    },
+    "pointer": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "count": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          ]
+        },
+        "ifds": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "maxItems": 64,
+          "description": "For each value (at most 64; with more, they are the array <path>/<tag> of record numbers), the path under vzip_source of the IFD it leads to, or null"
+        }
+      },
+      "required": [
+        "type",
+        "count"
+      ],
+      "additionalProperties": false
+    },
+    "nodeProperty": {
+      "type": "object",
+      "description": "Any other node's property: its source metadata only",
+      "properties": {
+        "ndpi": {
+          "$ref": "#/$defs/sourceMetadata"
+        }
+      },
+      "required": [
+        "ndpi"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

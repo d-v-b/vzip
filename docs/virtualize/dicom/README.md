@@ -17,7 +17,7 @@ otherwise have to decode and rewrite every frame.
 vzip reads the DICOM header and the frame table and writes an archive in which
 every Zarr chunk is one frame (or one tile of a slide) of the file, still
 JPEG, JPEG 2000 or raw as stored. A 60 MB whole-slide level from the IDC
-became a 704 KB archive (at VIRTUALIZE.md revision 16, before the archive
+became a 704 KB archive (at spec/virtualize.md revision 16, before the archive
 kept every element of the file).
 
 ## What you get
@@ -178,8 +178,8 @@ LUTs, palettes and overlays. The values are the stored ones.
 
 ## How it's verified
 
-`web/test/dicom/verify.py` virtualizes 68 synthetic DICOM files (including
-inputs to reject) with the browser code, reads them back through `src/vzip`
+`js/test/dicom/verify.py` virtualizes 68 synthetic DICOM files (including
+inputs to reject) with the browser code, reads them back through `python/src/vzip`
 and zarr-python, and compares the pixels with pydicom. `compare.py` checks
 that the Python and browser outputs are equivalent on those files and on the
 17 public files of
@@ -187,7 +187,7 @@ that the Python and browser outputs are equivalent on those files and on the
 pydicom's test files and six whole-slide levels from the IDC, with JPEG,
 JPEG 2000 and native tiles.
 
-- Profile: [profiles/dicom.md](../../../profiles/dicom.md)
-- Python: [src/vzip/virtualize/dicom/](../../../src/vzip/virtualize/dicom/)
-- Browser: [web/src/virtualize/dicom/](../../../web/src/virtualize/dicom/)
-- Fixtures: [web/test/fixtures/dicom/](../../../web/test/fixtures/dicom/)
+- Profile: [spec/virtualize/dicom.md](../../../spec/virtualize/dicom.md#part-2-the-profile)
+- Python: [python/src/vzip/virtualize/dicom/](../../../python/src/vzip/virtualize/dicom/)
+- Browser: [js/src/virtualize/dicom/](../../../js/src/virtualize/dicom/)
+- Fixtures: [fixtures/dicom/](../../../fixtures/dicom/)

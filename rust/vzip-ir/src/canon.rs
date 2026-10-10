@@ -1,4 +1,4 @@
-//! The canonical order of an IR's elements (conventions/README.md §8.8): depth
+//! The canonical order of an IR's elements (spec/conventions.md §8.8): depth
 //! first, a parent before its children; siblings by name group (the groups in order
 //! of their first byte, the least start of an element with a length in their
 //! subtrees), then by name index (none last), then by first byte. The mirror's table

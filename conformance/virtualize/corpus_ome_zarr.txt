@@ -1,7 +1,7 @@
 # url|name[|py-only] of the public OME-Zarr 0.4 stores in the corpus (store URLs end in "/"), from the
 # IDR's OME-NGFF samples (https://idr.github.io/ome-ngff-samples/, CC BY 4.0) on EMBL-EBI's Embassy
 # S3, listed anonymously with path-style ListObjectsV2 (bucket "idr"). Each is migrated to OME-Zarr
-# 0.5 by the OME-Zarr profile (profiles/ome-zarr.md, §11).
+# 0.5 by the OME-Zarr profile (spec/virtualize.md, §11).
 #
 # Images (3-D to 5-D), an image with two label images, an HCS plate (72 wells, 1440 fields) and a
 # bioformats2raw plate with OME-XML.
@@ -21,6 +21,6 @@ https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0101A/13457539.zarr/|idr0101_13
 https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0047A/4496763.zarr/|idr0047_4496763_labels|listing-sha256=b5ea027e49da2283e7b3047d005eb4e4f5a6b5bb7a916d805ee8018490429a46
 https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0052A/5514375.zarr/|idr0052_5514375_two_labels|listing-sha256=8a809a5eb2a70d1b700ef0cc4a35a54466ba2321928669079e6b426abe25e4d2
 https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0079A/idr0079_images.zarr/|idr0079_bioformats2raw_labels|listing-sha256=6368fb34779858234eaec96d29fab2be3d0a370776728037e5311a682ec3f444
-# A plate of 96 wells with labels, 102114 objects: past the browser limit (VIRTUALIZE.md §12), so
+# A plate of 96 wells with labels, 102114 objects: past the browser limit (spec/virtualize.md §12), so
 # only the Python reference runs it, with --large.
 https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0001A/2551.zarr/|idr0001_2551_plate_labels|py-only

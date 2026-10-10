@@ -1,7 +1,7 @@
 {
   "source_model": "czi",
   "version": 1,
-  "about": "The source model of a Zeiss CZI file (ZISRAW; conventions/czi, profiles/czi.md §13): the elements a parser emits, the tables of pixel types and compressions, and the roles a segment, a directory entry, a subblock, an attachment, an image or a tile array plays, each with the constraints a file must meet to have the CZI convention's layout. A parser checks this schema while it parses, at the point the profile meets each role; projections read a valid IR and check nothing.",
+  "about": "The source model of a Zeiss CZI file (ZISRAW; spec/virtualize/czi.md, spec/virtualize.md §13): the elements a parser emits, the tables of pixel types and compressions, and the roles a segment, a directory entry, a subblock, an attachment, an image or a tile array plays, each with the constraints a file must meet to have the CZI convention's layout. A parser checks this schema while it parses, at the point the profile meets each role; projections read a valid IR and check nothing.",
   "limits": {
     "max_safe": 9007199254740991,
     "max_entries": 2097152,
@@ -175,7 +175,7 @@
       ]
     },
     "entry": {
-      "about": "a directory entry's 32 bytes (conventions/czi §2.3)",
+      "about": "a directory entry's 32 bytes (spec/virtualize/czi.md §2.3)",
       "given": {
         "i": "",
         "ends": "it ends within the directory's used bytes",
@@ -285,7 +285,7 @@
       ]
     },
     "image": {
-      "about": "a series with an image: its levels (conventions/czi §3.5)",
+      "about": "a series with an image: its levels (spec/virtualize/czi.md §3.5)",
       "given": {"levels": ""},
       "constraints": [{"require": "levels <= max_levels", "message": "an image of {levels} levels, more than {max_levels}"}]
     },
@@ -299,7 +299,7 @@
       ]
     },
     "extent": {
-      "about": "each dimension of an image's or a tile array's shape (conventions/czi §4.2): a tile array's y and x are its coded size",
+      "about": "each dimension of an image's or a tile array's shape (spec/virtualize/czi.md §4.2): a tile array's y and x are its coded size",
       "given": {"extent": ""},
       "constraints": [{"require": "extent <= max_extent", "message": "an array dimension of {extent}, more than 2^31"}]
     },
@@ -309,5 +309,5 @@
       "constraints": [{"require": "all_finite", "message": "a translation is not finite"}]
     }
   },
-  "about_builtins": "What the parser's code computes and the roles above check: a subblock's coded size from its codec header (conventions/czi §3.2: Zstd0 and Zstd1 frame headers, a JPEG frame header, JPEG XR's image size and pixel format, within the first 2^16 bytes of its data); placement (a subblock whose copy of its entry agrees with the directory's and that has a coded size; an entry whose subblock another entry names first is not placed again); series, layers, levels, tiles and row bands (conventions/czi §3.3–§4.4, layout.py), with a band floor: when the largest divisor band of an uncompressed tile holds less than band_floor bytes, bands are the most rows within max_band bytes and the last band of each tile row is shorter (a rectilinear grid); the metadata XML's values (§2.7) in one streaming pass, with no tree (an end tag closes back to the innermost open element of its name, found by a count per name); the walk over the segments nothing references (profiles/czi.md §13.2 step 6)."
+  "about_builtins": "What the parser's code computes and the roles above check: a subblock's coded size from its codec header (spec/virtualize/czi.md §3.2: Zstd0 and Zstd1 frame headers, a JPEG frame header, JPEG XR's image size and pixel format, within the first 2^16 bytes of its data); placement (a subblock whose copy of its entry agrees with the directory's and that has a coded size; an entry whose subblock another entry names first is not placed again); series, layers, levels, tiles and row bands (spec/virtualize/czi.md §3.3–§4.4, layout.py), with a band floor: when the largest divisor band of an uncompressed tile holds less than band_floor bytes, bands are the most rows within max_band bytes and the last band of each tile row is shorter (a rectilinear grid); the metadata XML's values (§2.7) in one streaming pass, with no tree (an end tag closes back to the innermost open element of its name, found by a count per name); the walk over the segments nothing references (spec/virtualize.md §13.2 step 6)."
 }

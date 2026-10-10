@@ -1,4 +1,4 @@
-"""The CZI source metadata node (conventions/czi/README.md §5)."""
+"""The CZI source metadata node (spec/virtualize/czi.md §5)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from vzip.virtualize.common import Plan, Reader, blob_chunks, family_plans, grid
 from vzip_reference.czi.segments import LETTERS, Attachment, Directory, MetadataSegment, Subblocks, guid
 from vzip_reference.nd2.source import copied_bytes, json_size
 
-MAX_COPIED = 1 << 16  # the chunk limit of copied columns (conventions/czi/README.md §5.3)
+MAX_COPIED = 1 << 16  # the chunk limit of copied columns (spec/virtualize/czi.md §5.3)
 MAX_NODE = 1 << 16  # vzip_source's S, past which the attachment list is an array (§5.6)
 MAX_EVENTS = 1 << 20  # an event list is decoded up to this many events
 MAX_EVENT_BYTES = 1 << 26  # and this many bytes
@@ -30,7 +30,7 @@ def bytes_plan(path: str, offset: int, length: int, attributes: dict | None = No
 
 
 def directory_plans(d: Directory) -> list[Plan]:
-    """The directory's columns (conventions/czi/README.md §5.3)."""
+    """The directory's columns (spec/virtualize/czi.md §5.3)."""
     n = d.count
     if n == 0:
         return []
@@ -54,7 +54,7 @@ def directory_plans(d: Directory) -> list[Plan]:
 
 def subblock_plans(read: Reader, d: Directory, s: Subblocks, unplaced: list[int],
                    trailing: list[tuple[int, int, int]]) -> list[Plan]:
-    """The subblock families (conventions/czi/README.md §5.4); `trailing` lists (i, offset, length)."""
+    """The subblock families (spec/virtualize/czi.md §5.4); `trailing` lists (i, offset, length)."""
     n = d.count
     metadata, attachment, data, entry = [], [], [], []
     for i in range(n):
@@ -103,7 +103,7 @@ def _events(data: bytes, count: int) -> list[tuple[int, int, int]] | None:
 
 
 def attachment_plans(read: Reader, atts: list[Attachment]) -> tuple[list, list[Plan]]:
-    """The attachment list and the attachments' arrays (conventions/czi/README.md §5.6)."""
+    """The attachment list and the attachments' arrays (spec/virtualize/czi.md §5.6)."""
     listed, plans = [], []
     for k, a in enumerate(atts):
         if not a.a1:
@@ -166,7 +166,7 @@ def node_metadata(listed: list) -> tuple[dict, list[Plan]]:
 
 
 def segment_plans(read: Reader, segments: list[tuple[int, bytes, int, int]]) -> list[Plan]:
-    """The segments nothing references (conventions/czi/README.md §5.7)."""
+    """The segments nothing references (spec/virtualize/czi.md §5.7)."""
     if not segments:
         return []
     count = len(segments)

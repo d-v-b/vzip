@@ -1,34 +1,42 @@
 # vzip: virtual zip
 
-## about
-
 A spec for storing two kinds of things in a Zip archive:
 1. bytes
 2. pointers to ranges of bytes in external objects
 
-read the [pitch](https://github.com/d-v-b/vzip/blob/main/PITCH.md), or the [spec](https://github.com/d-v-b/vzip/blob/main/SPEC.md). there are some implementations here too.
+Read the [pitch](design/PITCH.md), or the [spec](spec/archive.md). [docs/](docs/README.md) is
+for users: the live demos, and how to virtualize image files and stores.
 
-[COMPARISON.md](COMPARISON.md) compares vzip with kerchunk JSON, kerchunk Parquet and Icechunk on the same virtual dataset, read over HTTP.
+Status: experimental, proof of concept, anything can change.
 
-## demos
+## Layout
 
-live demos are at https://d-v-b.github.io/vzip-demo/. for example, [image files to zarr](https://d-v-b.github.io/vzip-demo/image-to-zarr/) virtualizes a remote TIFF (including OME-TIFF and Aperio SVS), Hamamatsu NDPI or Nikon ND2 file into a vzip archive in the browser and opens it in Neuroglancer.
+Specifications, documentation and design notes are organized by component;
+code is organized by language.
 
-## virtualizing image files and stores
+| directory | holds |
+|---|---|
+| [spec/](spec/) | the specifications: the archive format ([archive.md](spec/archive.md)), virtualization ([virtualize.md](spec/virtualize.md)), the conventions every virtualized hierarchy shares ([conventions.md](spec/conventions.md)), one document per format with its Zarr convention and its profile ([virtualize/](spec/virtualize/), each `<format>.md` beside `<format>/schema.json`), the wire schema ([proto/](spec/proto/)), and earlier revisions ([history/](spec/history/)) |
+| [docs/](docs/README.md) | user documentation: a page per format in [docs/virtualize/](docs/virtualize/README.md) |
+| [design/](design/) | design notes and studies: [ARCHITECTURE.md](design/ARCHITECTURE.md), [FINDINGS.md](design/FINDINGS.md), [PITCH.md](design/PITCH.md), [COMPARISON.md](design/COMPARISON.md), the IR notes ([IR_NOTES.md](design/IR_NOTES.md)), the conformance rounds' notes and proposals, and the experiment scripts the notes cite |
+| [python/](python/) | the Python package `vzip` (`python/src/vzip`) and its tests (`python/tests`); its `pyproject.toml` is at the root |
+| [js/](js/README.md) | the TypeScript library (`js/src`), its Node tests, and the browser demo (`js/demo`) |
+| [rust/vzip-ir](rust/vzip-ir/) | the Rust IR core and parsers, built for Python (PyO3) and for the browser (wasm32) |
+| [fixtures/](fixtures/) | the synthetic test inputs every implementation shares, one directory per format, and their generators ([fixtures/generators/](fixtures/generators/)) |
+| [conformance/](conformance/) | the conformance harnesses: [archive/](conformance/archive/HARNESS.md) for the archive format, [virtualize/](conformance/virtualize/HARNESS.md) for virtualization (with the frozen reference implementations, Python and TypeScript), and the agent-written independent implementations ([impls/](conformance/impls/README.md)) |
 
-vzip can present TIFF, NDPI, ND2, CZI, DICOM, NIfTI and Imaris files, and N5, Zarr v2 and OME-Zarr 0.4 stores, as OME-Zarr, and Sentinel-2 SAFE products as GeoZarr, without copying their pixels. TIFF, ND2 and CZI are read by a Rust core ([rust/vzip-ir](rust/vzip-ir/)) that runs natively from Python and as WebAssembly in the browser. [docs/virtualize/](docs/virtualize/README.md) has a page per format: who it is for, what you get, and how to run it from Python or in the browser.
+`just` lists the recipes: `just test` (Python), `just js::test` (Node),
+`just ir-test` (Rust), `just compare` and `just compare-mutants` (the
+virtualizers against the frozen reference), `just conformance` (the archive
+format's independent implementations).
 
-## status
-
-experimental, proof of concept, anything can change
-
-## how this was made
+## How this was made
 
 I prompted Claude to explore serialization formats for the kind of virtual zarr stores created by [VirtualiZarr](https://virtualizarr.readthedocs.io/en/stable/index.html). Key to the prompt was the goal
 of re-using "boring" technology like Zip archives. Once Claude had cooked up a rough spec, I instructed Claude to have subagents write Python, Typescript, and Rust implementations, and to take notes along the way. 
 This ran in a loop, refining the spec each time. After 7 revs, we got something convergent.
 
-## license
+## License
 
 Licensed under either of
 
@@ -43,9 +51,9 @@ submit for inclusion in this repository, as defined in the Apache-2.0
 license, is dual licensed as above, without any additional terms or
 conditions.
 
-### third-party data
+### Third-party data
 
-Some files in `experiments/out/` derive from IDR study
+Some files in `design/experiments/out/` derive from IDR study
 [idr0096](https://doi.org/10.17867/10000170), "Quantification of Bone Marrow
 Compartments in Histological Sections" (Tratwal et al.,
 [doi:10.3389/fendo.2020.00480](https://doi.org/10.3389/fendo.2020.00480)),
@@ -57,7 +65,7 @@ licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/):
 - the screenshots in `ng_idr/` and `web_demo/` show the image.
 
 `just archives-nd2` writes virtualizations of public Nikon ND2 files from the
-BioImage Archive and Zenodo, some under CC BY 4.0, to `experiments/out/nd2/`;
-its [README](experiments/out/nd2/README.md) credits each source.
+BioImage Archive and Zenodo, some under CC BY 4.0, to `design/experiments/out/nd2/`;
+its [README](design/experiments/out/nd2/README.md) credits each source.
 
 These files are not covered by the licenses above.

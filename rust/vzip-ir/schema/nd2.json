@@ -1,7 +1,7 @@
 {
   "source_model": "nd2",
   "version": 1,
-  "about": "The source model of a Nikon ND2 file (format 3+): the elements a parser emits, the members of its lite-variant metadata it reads and checks, the quantities it derives, and the constraints a file must meet to have the ND2 convention's layout. A parser checks this schema while it parses; projections read a valid IR and check nothing. Kinds of members are those of conventions/nd2 §2.2: number, integer, color, flag, string, object, list, and members (an object or a list, read as its member values).",
+  "about": "The source model of a Nikon ND2 file (format 3+): the elements a parser emits, the members of its lite-variant metadata it reads and checks, the quantities it derives, and the constraints a file must meet to have the ND2 convention's layout. A parser checks this schema while it parses; projections read a valid IR and check nothing. Kinds of members are those of spec/virtualize/nd2.md §2.2: number, integer, color, flag, string, object, list, and members (an object or a list, read as its member values).",
   "limits": {
     "max_safe": 9007199254740991,
     "chunk_magic": 180276954,
@@ -279,5 +279,5 @@
     },
     {"require": "finite_translations", "message": "a stage position is not finite"}
   ],
-  "about_builtins": "Quantities the checker computes by name: loops (the flattening above, from the experiment), loops_product (the product of their counts), loops_distinct (no two loops of one kind), p_count, t_scale, z_scale (the position loop's count, the time loop's period, the z loop's step; absent without the loop), placed.* (over the placed frames, the frames f < N the chunk map names: count, unreadable (headers that are not an ND2 chunk header within the file, or at an offset or with a length past max_safe), min_name, max_name, min_data, max_pixels_end), finite_translations (each image's stage translation, conventions/nd2 §4.3, is finite), size (the file's)."
+  "about_builtins": "Quantities the checker computes by name: loops (the flattening above, from the experiment), loops_product (the product of their counts), loops_distinct (no two loops of one kind), p_count, t_scale, z_scale (the position loop's count, the time loop's period, the z loop's step; absent without the loop), placed.* (over the placed frames, the frames f < N the chunk map names: count, unreadable (headers that are not an ND2 chunk header within the file, or at an offset or with a length past max_safe), min_name, max_name, min_data, max_pixels_end), finite_translations (each image's stage translation, spec/virtualize/nd2.md §4.3, is finite), size (the file's)."
 }

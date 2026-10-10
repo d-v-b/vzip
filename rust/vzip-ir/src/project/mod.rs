@@ -1,5 +1,5 @@
-//! The image projections (ARCHITECTURE.md §3.4): a valid IR and its facts into
-//! today's Zarr hierarchy (conventions/{tiff,czi,nd2} §4, and ND2's root source
+//! The image projections (design/ARCHITECTURE.md §3.4): a valid IR and its facts into
+//! today's Zarr hierarchy (spec/virtualize/{tiff,czi,nd2}.md §4, and ND2's root source
 //! metadata of §5.1). A projection checks nothing (the parser checked the schema)
 //! and reads nothing (the IR holds what it needs).
 

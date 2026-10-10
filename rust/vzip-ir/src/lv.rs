@@ -1,4 +1,4 @@
-//! The lite variant (LV) encoding of ND2 metadata chunks (conventions/nd2/README.md
+//! The lite variant (LV) encoding of ND2 metadata chunks (spec/virtualize/nd2.md
 //! §2.2): a decoder to a tree of records with their positions, the object reading
 //! the convention defines, and the records' emission as IR elements.
 
@@ -108,7 +108,7 @@ pub fn base64(b: &[u8]) -> String {
     out
 }
 
-/// A name's exact form (conventions/nd2/README.md §5.1): its text, or U+0000 and
+/// A name's exact form (spec/virtualize/nd2.md §5.1): its text, or U+0000 and
 /// the base64 of its units when it is not well-formed.
 pub fn exact_name(units: &[u16]) -> String {
     if well_formed(units) {
@@ -399,7 +399,7 @@ pub fn decode(data: &[u8], limit: Option<u64>, exact: bool, room: Option<&mut i6
     }
 }
 
-// ---- reading (conventions/nd2/README.md §2.2): objects, lists and scalars
+// ---- reading (spec/virtualize/nd2.md §2.2): objects, lists and scalars
 
 #[derive(Clone, Copy)]
 pub struct Node<'a> {
@@ -513,7 +513,7 @@ fn record_type(r: &Rec, bytes: &[u8]) -> String {
 /// under `parent`: a scalar as one value element (the whole record), a level as a
 /// struct with its `header`, its records and its skipped `table`. Each record is
 /// named by its name as JSON (§5.1), made unique among its siblings by
-/// [`source_names`] (conventions/nd2 §5.3).
+/// [`source_names`] (spec/virtualize/nd2.md §5.3).
 pub fn emit(
     ir: &mut Ir,
     parent: u32,

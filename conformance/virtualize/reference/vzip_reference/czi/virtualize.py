@@ -1,4 +1,4 @@
-"""The CZI profile (profiles/czi.md, VIRTUALIZE.md §13)."""
+"""The CZI profile (spec/virtualize/czi.md, spec/virtualize.md §13)."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from vzip_reference.czi.source import (
 from vzip_reference.czi.xml import MAX_XML, XmlValues, read_xml_values
 
 MAGIC = b"ZISRAWFILE" + bytes(6)
-MAX_IMAGES = 1 << 16  # series with an image (profiles/czi.md §13.3)
+MAX_IMAGES = 1 << 16  # series with an image (spec/virtualize.md §13.3)
 MAX_LEVELS = 64  # levels per image
 MAX_EXTENT = 1 << 31  # each dimension of an array's shape
 MAX_OMERO = 64  # an image's channel indexes, for omero
@@ -114,7 +114,7 @@ def virtualize_czi(url: str, read: Reader, size: int) -> Output:
     att_allocated, atts = read_attachments(read, size, fh.attachments) if fh.attachments else (0, [])
     values = read_xml_values(read(meta.offset + 288, meta.xml)) if meta and 0 < meta.xml <= MAX_XML else XmlValues()
 
-    # Placement (conventions/czi/README.md §3.2).
+    # Placement (spec/virtualize/czi.md §3.2).
     placed: list[Placed] = []
     unplaced, trailing = [], []
     data: dict[int, tuple[int, int]] = {}

@@ -3,7 +3,7 @@
 vzip can present an image file, or a chunked array store, as an OME-Zarr
 dataset without converting or copying its pixels. A **virtualizer** reads
 only the input's structure (headers, tile tables, metadata documents) and
-writes a small vzip archive ([SPEC.md](../../SPEC.md)): a Zip file whose
+writes a small vzip archive ([spec/archive.md](../../spec/archive.md)): a Zip file whose
 metadata entries are OME-Zarr 0.5 (Zarr v3) documents and whose chunk entries
 are references to byte ranges of the original file, or to the store's own
 chunk objects. A Zarr reader that understands vzip then reads the pixels
@@ -11,24 +11,24 @@ straight from where they already are.
 
 Each input format has a **profile**: a specification, written for
 implementers, of exactly which archive a virtualizer produces from which
-input ([VIRTUALIZE.md](../../VIRTUALIZE.md)). The READMEs below are for users:
+input ([spec/virtualize.md](../../spec/virtualize.md)). The READMEs below are for users:
 who each one is for, what you get, and how to run it.
 
 ## Formats
 
 | format | for | README | profile |
 |---|---|---|---|
-| TIFF | OME-TIFF, plain tiled TIFF, and JPEG-tiled slides such as Aperio SVS | [tiff](tiff/README.md) | [§3](../../profiles/tiff.md) |
-| NDPI | Hamamatsu NDPI whole-slide images | [ndpi](ndpi/README.md) | [§4](../../profiles/ndpi.md) |
-| ND2 | Nikon NIS-Elements ND2 files | [nd2](nd2/README.md) | [§5](../../profiles/nd2.md) |
-| DICOM | DICOM files, including whole-slide images | [dicom](dicom/README.md) | [§6](../../profiles/dicom.md) |
-| NIfTI | NIfTI-1 and NIfTI-2 volumes (`.nii`) | [nifti](nifti/README.md) | [§7](../../profiles/nifti.md) |
-| IMS | Imaris `.ims` files | [ims](ims/README.md) | [§8](../../profiles/ims.md) |
-| N5 | N5 containers on S3 | [n5](n5/README.md) | [§9](../../profiles/n5.md) |
-| Zarr v2 | Zarr v2 hierarchies on S3 | [zarr2](zarr2/README.md) | [§10](../../profiles/zarr2.md) |
-| OME-Zarr | OME-Zarr 0.4 hierarchies, migrated to OME-Zarr 0.5 in place | [ome-zarr](ome-zarr/README.md) | [§11](../../profiles/ome-zarr.md) |
-| SAFE | Sentinel-2 Level-1C and Level-2A products, as a `.SAFE` directory or a `.SAFE.zip` | [convention](../../conventions/safe/README.md) | [§12](../../profiles/safe.md) |
-| CZI | Zeiss CZI files | [convention](../../conventions/czi/README.md) | [§13](../../profiles/czi.md) |
+| TIFF | OME-TIFF, plain tiled TIFF, and JPEG-tiled slides such as Aperio SVS | [tiff](tiff/README.md) | [§3](../../spec/virtualize/tiff.md#part-2-the-profile) |
+| NDPI | Hamamatsu NDPI whole-slide images | [ndpi](ndpi/README.md) | [§4](../../spec/virtualize/ndpi.md#part-2-the-profile) |
+| ND2 | Nikon NIS-Elements ND2 files | [nd2](nd2/README.md) | [§5](../../spec/virtualize/nd2.md#part-2-the-profile) |
+| DICOM | DICOM files, including whole-slide images | [dicom](dicom/README.md) | [§6](../../spec/virtualize/dicom.md#part-2-the-profile) |
+| NIfTI | NIfTI-1 and NIfTI-2 volumes (`.nii`) | [nifti](nifti/README.md) | [§7](../../spec/virtualize/nifti.md#part-2-the-profile) |
+| IMS | Imaris `.ims` files | [ims](ims/README.md) | [§8](../../spec/virtualize/ims.md#part-2-the-profile) |
+| N5 | N5 containers on S3 | [n5](n5/README.md) | [§9](../../spec/virtualize/n5.md#part-2-the-profile) |
+| Zarr v2 | Zarr v2 hierarchies on S3 | [zarr2](zarr2/README.md) | [§10](../../spec/virtualize/zarr2.md#part-2-the-profile) |
+| OME-Zarr | OME-Zarr 0.4 hierarchies, migrated to OME-Zarr 0.5 in place | [ome-zarr](ome-zarr/README.md) | [§11](../../spec/virtualize/ome-zarr.md#part-2-the-profile) |
+| SAFE | Sentinel-2 Level-1C and Level-2A products, as a `.SAFE` directory or a `.SAFE.zip` | [convention](../../spec/virtualize/safe.md) | [§12](../../spec/virtualize/safe.md#part-2-the-profile) |
+| CZI | Zeiss CZI files | [convention](../../spec/virtualize/czi.md) | [§13](../../spec/virtualize/czi.md#part-2-the-profile) |
 
 TIFF, NDPI, ND2, DICOM, NIfTI, IMS and CZI read one file (a URL, or a local
 path). N5, Zarr v2 and OME-Zarr read a store: a URL ending in `/` that
@@ -48,7 +48,7 @@ Their public test inputs are listed in [corpus_safe.txt](../../conformance/virtu
 [corpus_czi.txt](../../conformance/virtualize/corpus_czi.txt).
 
 **Numbers in these pages.** The outputs, timings, request counts and archive
-sizes quoted in the format pages were measured at VIRTUALIZE.md revision 16.
+sizes quoted in the format pages were measured at spec/virtualize.md revision 16.
 The current revision is 24. Since revision 16, the archives also keep the
 source's whole metadata (below), so they are larger than the sizes quoted.
 TIFF and ND2 are now read through a read planner, so their request counts
@@ -83,7 +83,7 @@ store by the objects at its root. Options:
 - `--url <url>`: the URL to record as the source, for a local file or
   directory that will be served from that URL (a local directory needs it);
 - `--checksums`: also record the CRC-32C of every referenced range
-  ([SPEC.md §5.2](../../SPEC.md#52-range)), which reads every byte the
+  ([spec/archive.md §5.2](../../spec/archive.md#52-range)), which reads every byte the
   archive references (off by default);
 - `--allow-private-hosts`: let a file at an http(s) URL be read from a
   loopback, private or link-local host (below; unsafe);
@@ -96,11 +96,11 @@ store by the objects at its root. Options:
 
 Every `url` source records the size of the object it names. The input
 file's source also records its ETag when every response gave the same
-strong one ([SPEC.md §6.1](../../SPEC.md#61-pins)). A reader then notices a
+strong one ([spec/archive.md §6.1](../../spec/archive.md#61-pins)). A reader then notices a
 source that has changed since the archive was written.
 
 **Reader policy.** A file at an http(s) URL is read under the reader policy
-of [SPEC.md §8.7](../../SPEC.md#87-reader-policy). A host that is, or
+of [spec/archive.md §8.7](../../spec/archive.md#87-reader-policy). A host that is, or
 resolves to, a loopback, private, link-local or other special address is
 refused, and so is a request that would go through a proxy the reader cannot
 check. To virtualize a file served from your own machine or network (for
@@ -122,7 +122,7 @@ g = zarr.open_group(VZipStore("out.vzip"), mode="r")
 ```
 
 **The browser.** The same virtualizers run in a service worker
-([web/](../../web/README.md)): the Rust core, built for WebAssembly, for
+([js/](../../js/README.md)): the Rust core, built for WebAssembly, for
 TIFF, ND2 and CZI, and TypeScript implementations of the other formats. The
 service worker serves the
 result to any Zarr reader on the page's origin as a plain HTTP Zarr store. The
@@ -133,7 +133,7 @@ archive for download. Two limits apply:
 
 - The live demo currently virtualizes TIFF, NDPI and ND2 files only. CZI,
   DICOM, NIfTI, IMS, SAFE and the store formats work in a local build of the
-  demo (`just web::build && node web/serve.mjs 8080`; the build compiles the
+  demo (`just js::build && node js/demo/serve.mjs 8080`; the build compiles the
   Rust core to WebAssembly first, `dist/vzip_ir.wasm`, so it needs a Rust
   toolchain with the `wasm32` target), which is not yet deployed.
 - The host must allow cross-origin reads (CORS). zenodo.org, ftp.ebi.ac.uk,
@@ -143,10 +143,10 @@ archive for download. Two limits apply:
   files can be virtualized only with the command line.
 
 The browser code also runs under Node:
-`node web/conformance/virtualize.ts <url> out.vzip [--checksums]
+`node js/conformance/virtualize.ts <url> out.vzip [--checksums]
 [--allow-private-hosts]` writes an archive equivalent to the Python one. For
 TIFF, ND2 and CZI it runs the same Rust core as Python, built for wasm32
-(`just web::wasm`).
+(`just js::wasm`).
 
 **Store reads.** Listing a store is sequential (S3 returns 1000 keys per
 request). Its metadata documents (`attributes.json`, `.zgroup`, `.zarray`,
@@ -158,10 +158,10 @@ holding at most 64 MiB of documents ahead of the virtualizer.
 
 A virtual hierarchy looks like any other Zarr, so it says what it is. Each
 format has a [Zarr convention](https://github.com/zarr-conventions/zarr-conventions-spec)
-of its own, specified in [conventions/](../../conventions/README.md): the
+of its own, specified in [spec/conventions.md](../../spec/conventions.md): the
 hierarchy's whole Zarr layout, and the translation of the source's header
 into JSON. Every output's root records, under the key `vzip_virtualized`,
-the format, the convention's version, the revision of VIRTUALIZE.md that
+the format, the convention's version, the revision of spec/virtualize.md that
 produced it, and the source. The nodes also hold what the source says about
 them, under the same key. Metadata that is large, or that grows with the
 data, is on the group `vzip_source`, a child of the root that OME-NGFF
@@ -169,7 +169,7 @@ readers ignore and whose documents are fetched only when it is opened. Where
 each format's metadata is:
 
 - **TIFF (and SVS), ND2 and CZI:** `vzip_source` is the source's **IR
-  mirror** ([conventions §8](../../conventions/README.md#8-the-ir-mirror)).
+  mirror** ([conventions §8](../../spec/conventions.md#8-the-ir-mirror)).
   It is a table under `vzip_source/ir/` that accounts for every byte of the
   file, so that, with the source's bytes, the file is rebuilt byte for byte
   with no knowledge of the format, and a JSON view of it under
@@ -216,10 +216,10 @@ every convention is at version 0 and promises nothing: any revision may
 change a layout, and the recorded revision tells two layouts apart. From the
 release, conventions start at version 1, a convention's version increases
 only when its layout changes for some source, and hierarchies no longer
-record a revision ([conventions §1](../../conventions/README.md#1-conventions)).
+record a revision ([conventions §1](../../spec/conventions.md#1-conventions)).
 The record names the source by its URL only; the archive's source table
 pins the sources (above). Each convention has a JSON Schema next to it,
-`conventions/<format>/schema.json`.
+`spec/virtualize/<format>/schema.json`.
 
 ## The implementations agree
 
@@ -227,7 +227,7 @@ pins the sources (above). Each convention has a JSON Schema next to it,
 files of every profile (including inputs each must reject) and on the public
 files and stores listed in
 [conformance/virtualize/](../../conformance/virtualize/) (`corpus_*.txt`),
-and checks that their outputs are equivalent (VIRTUALIZE.md §1.1):
+and checks that their outputs are equivalent (spec/virtualize.md §1.1):
 
 - `ref`, the reference (`conformance/virtualize/reference/cli.py`): for
   TIFF, ND2 and CZI, the Python profiles vzip shipped before these formats

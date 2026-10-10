@@ -1,5 +1,5 @@
 """An ND2 file's metadata chunks as JSON, and its numeric streams as arrays:
-the source metadata of the ND2 convention (conventions/nd2/README.md §5)."""
+the source metadata of the ND2 convention (spec/virtualize/nd2.md §5)."""
 
 from __future__ import annotations
 
@@ -23,12 +23,12 @@ MAX_ROOT_TOTAL = 1 << 16  # the most JSON of the root's chunks
 MAX_NODE_TOTAL = 1 << 16  # the most JSON of vzip_source's source metadata
 NODE_RESERVE = 128  # of it, what its chunks leave for its braces, keys, and other and empty as paths
 LISTS = {"other": "other/names", "empty": "other/empty"}  # where other and empty go past the budget
-MAX_COPIED = 1 << 16  # the chunk limit of an array of copied values (conventions/README.md §7)
+MAX_COPIED = 1 << 16  # the chunk limit of an array of copied values (spec/conventions.md §7)
 MAX_FAMILY = 1 << 24  # a family member's index is less than this
 MAX_STAMPS = 1 << 20  # the frame times' written chunks hold at most this many bytes, or 512 per placed frame
-MAX_TAG_JSON = 1 << 14  # the most JSON of a declared stream's tag (conventions/nd2/README.md §5.2)
+MAX_TAG_JSON = 1 << 14  # the most JSON of a declared stream's tag (spec/virtualize/nd2.md §5.2)
 DOCUMENTS = ("zarr.json", ".zarray", ".zgroup")  # names a path segment cannot have
-TAGS = ("utf16", "int", "float")  # the names of the tags (conventions/nd2/README.md §5.1)
+TAGS = ("utf16", "int", "float")  # the names of the tags (spec/virtualize/nd2.md §5.1)
 # Streams that every ND2 writer uses without declaring them: one value per frame.
 STREAMS = {"AcqTimesCache": "float64", "AcqTimes2Cache": "float64", "X": "float64", "Y": "float64",
            "Z": "float64", "Z1": "float64", "Z2": "float64", "AcqFramesCache": "int32"}
@@ -48,7 +48,7 @@ def small_int(digits: bytes) -> int | None:
     return int(digits) if len(digits) <= 20 else None
 
 
-# ---- JSON (conventions/nd2/README.md §5.1)
+# ---- JSON (spec/virtualize/nd2.md §5.1)
 
 def _pair_like(j) -> bool:
     return isinstance(j, list) and len(j) == 2 and isinstance(j[0], str)
@@ -67,7 +67,7 @@ def pairs_or_object(records: list):
 
 def number_json(v):
     """A number as JSON: itself, or a tag when JSON cannot hold it exactly
-    (conventions/nd2/README.md §5.1)."""
+    (spec/virtualize/nd2.md §5.1)."""
     if isinstance(v, float):
         if math.isnan(v):
             return {"float": "NaN"}
@@ -132,7 +132,7 @@ def _js_string_size(s: str) -> int:
 
 def json_size(v) -> int:
     """The length in UTF-8 bytes of `v` as ECMAScript's JSON.stringify writes it,
-    without whitespace (conventions/nd2/README.md §5.1)."""
+    without whitespace (spec/virtualize/nd2.md §5.1)."""
     if v is None or v is True:
         return 4
     if v is False:
@@ -148,10 +148,10 @@ def json_size(v) -> int:
     return 2 + sum(_js_string_size(k) + 1 + json_size(x) for k, x in v.items()) + max(0, len(v) - 1)
 
 
-# ---- XML variants (conventions/nd2/README.md §5.1)
+# ---- XML variants (spec/virtualize/nd2.md §5.1)
 
 def _decode(v: str) -> str:
-    """Character references as conventions/tiff §3 reads them, without parsing long digit strings."""
+    """Character references as spec/virtualize/tiff.md §3 reads them, without parsing long digit strings."""
     def ref(m):
         if m[3]:
             return {"lt": "<", "gt": ">", "amp": "&", "quot": '"', "apos": "'"}[m[3]]
@@ -164,7 +164,7 @@ def _decode(v: str) -> str:
 
 
 def _tags(xml: str):
-    """The tags of `xml`, as (closing, name, attributes, self-closing) (conventions/tiff §3)."""
+    """The tags of `xml`, as (closing, name, attributes, self-closing) (spec/virtualize/tiff.md §3)."""
     for m in SCAN.finditer(xml):
         if m["tag"] is not None:
             attrs: dict = {}
@@ -252,7 +252,7 @@ def declared_streams(doc) -> dict:
     return out
 
 
-# ---- paths (conventions/nd2/README.md §5.3)
+# ---- paths (spec/virtualize/nd2.md §5.3)
 
 def _segment(s: str) -> bool:
     return (s.strip(".") != "" and not s.startswith("__") and "/" not in s and "\0" not in s
@@ -297,7 +297,7 @@ class Source:
 
 @dataclass
 class Frames:
-    """What the image takes from the frames (profiles/nd2.md §5.3)."""
+    """What the image takes from the frames (spec/virtualize.md §5.3)."""
     count: int  # N
     placed: dict[int, int]  # each placed frame's chunk offset
     stamps: dict[int, int]  # each placed frame's timestamp offset
@@ -315,7 +315,7 @@ def _frame_scaled(name: bytes) -> bool:
 
 def grid_index(loops: list[dict], f: int) -> int:
     """Frame f's index in the frame grid, row-major over the loops, with a
-    flipped z index when the z loop flips (conventions/nd2/README.md §4.3).
+    flipped z index when the z loop flips (spec/virtualize/nd2.md §4.3).
     (The flip is its own inverse: the frame at grid index g is grid_index(g).)"""
     coords, rest = [], f
     for l in reversed(loops):
@@ -329,7 +329,7 @@ def grid_index(loops: list[dict], f: int) -> int:
 
 
 def grid_cut(shape: list[int], item: int, limit: int = MAX_CHUNK) -> tuple[int, int]:
-    """The cut axis `a` and the chunk length `c` along it that conventions/README.md §7
+    """The cut axis `a` and the chunk length `c` along it that spec/conventions.md §7
     gives contiguous values of `shape` with the chunk limit `limit` (as
     common.grid_chunks cuts them), without listing the chunks: of the counts
     with the same `c` (and so the same padding), only the first is tried."""
@@ -381,12 +381,12 @@ def grid_chunk(shape: list[int], a: int, c: int, g: int) -> tuple[tuple, int, in
 
 
 def _lv_named(name: bytes) -> bool:
-    """A chunk whose name says it holds LV data (conventions/nd2/README.md §5.1)."""
+    """A chunk whose name says it holds LV data (spec/virtualize/nd2.md §5.1)."""
     return name.endswith(b"LV!") or b"LV|" in name
 
 
 def source_metadata(read: Reader, size: int, chunks: dict[bytes, int], loops: list[dict], frames: Frames) -> Source:
-    """The chunk map's chunks (conventions/nd2/README.md §5), in map order, sharing one budget."""
+    """The chunk map's chunks (spec/virtualize/nd2.md §5), in map order, sharing one budget."""
     out = Source()
     n_frames = frames.count
     grid = [l["count"] for l in loops] or [1]

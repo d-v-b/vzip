@@ -61,7 +61,7 @@ uv run python -m vzip.virtualize https://janelia-cosem-datasets.s3.amazonaws.com
 {"format": "n5", "groups": 1, "arrays": 5, "chunks": 1612, "emptyChunks": 0, "objects": 1618, "otherObjects": 0, "images": [{"path": "", "convention": "cosem"}], "listingRequests": 2}
 ```
 
-This took 5 s and wrote a 198 KB archive, at VIRTUALIZE.md revision 16
+This took 5 s and wrote a 198 KB archive, at spec/virtualize.md revision 16
 ([overview](../README.md#formats)). (`otherObjects`, the objects kept under
 `vzip_source/objects/`, is new since then; it is 0 here, as the store's 1618
 objects are its 6 documents and 1612 blocks.)
@@ -156,7 +156,7 @@ Notes:
   `jrc_hela-2.n5/em/fibsem-uint16/s0` (382288 blocks) took 328 s, almost all
   of it the 383 listing requests, and gave a 43.7 MB archive (40.1 MB of it
   block URLs, which deflate to 0.98 MB) that opens in 1.2 s
-  ([REVISIONS.md](../../../conformance/virtualize/REVISIONS.md), revision 12).
+  ([REVISIONS.md](../../../spec/history/virtualize/REVISIONS.md), revision 12).
 - **The archive grows with the number of blocks:** one `url` source and one
   entry per block, about 115 bytes each. Prefer virtualizing the levels or
   groups you need.
@@ -167,16 +167,16 @@ Notes:
 
 ## How it's verified
 
-`web/test/n5/verify.py` virtualizes the synthetic N5 stores in
-[web/test/fixtures/n5/](../../../web/test/fixtures/n5/) (including stores to
+`js/test/n5/verify.py` virtualizes the synthetic N5 stores in
+[fixtures/n5/](../../../fixtures/n5/) (including stores to
 reject) with the browser code, and compares every array, read through
-`src/vzip` and zarr-python's `n5_default`, with an independent block reader
+`python/src/vzip` and zarr-python's `n5_default`, with an independent block reader
 in the script and with `zarr-n5`. `compare.py` checks that the Python and
 browser outputs are equivalent on those stores and on the 7 OpenOrganelle
 stores of [corpus_n5.txt](../../../conformance/virtualize/corpus_n5.txt)
 (the full-resolution level with the Python command only).
 
-- Profile: [profiles/n5.md](../../../profiles/n5.md)
-- Python: [src/vzip/virtualize/n5/](../../../src/vzip/virtualize/n5/)
-- Browser: [web/src/virtualize/n5/](../../../web/src/virtualize/n5/)
-- Fixtures: [web/test/fixtures/n5/](../../../web/test/fixtures/n5/)
+- Profile: [spec/virtualize/n5.md](../../../spec/virtualize/n5.md#part-2-the-profile)
+- Python: [python/src/vzip/virtualize/n5/](../../../python/src/vzip/virtualize/n5/)
+- Browser: [js/src/virtualize/n5/](../../../js/src/virtualize/n5/)
+- Fixtures: [fixtures/n5/](../../../fixtures/n5/)
