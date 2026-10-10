@@ -28,7 +28,7 @@ neuroglancer="${NEUROGLANCER:-$(cd .. && pwd)/neuroglancer}"
 ng_commit="$(git -C "$neuroglancer" rev-parse --short HEAD)"
 
 (cd "$neuroglancer" && npm run build)
-(cd js && npm install --no-audit --no-fund --silent && node build.mjs)
+(cd js && npm install --no-audit --no-fund --silent && NEUROGLANCER="$neuroglancer" node build.mjs)
 
 site="$(mktemp -d)"
 trap 'rm -rf "$site"' EXIT

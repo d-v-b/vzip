@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Image files to Zarr in the browser</title>
-<meta name="description" content="Paste the URL of a remote image file, such as an (OME-)TIFF or a Nikon ND2: a service worker virtualizes it into a vzip archive in the browser and serves it as plain Zarr, opened here in Neuroglancer.">
+<meta name="description" content="Paste the URL of a remote image file or store, such as an OME-TIFF, a Zeiss CZI, a DICOM, an N5 or a Sentinel-2 SAFE product: a service worker virtualizes it into a vzip archive in the browser and serves it as plain Zarr, opened here in Neuroglancer or on a map.">
 <style>
   :root {
     --bg: #fafaf8; --fg: #1d1d1b; --muted: #6b6b66; --line: #deddd8;
@@ -34,8 +34,16 @@
   th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); }
   th { color: var(--muted); font-weight: 500; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-  .examples { font-size: 0.9rem; color: var(--muted); margin-top: 8px; }
-  .examples a { color: var(--accent); }
+  .examples { font-size: 0.9rem; color: var(--muted); margin: 12px 0 0; padding: 0; list-style: none;
+    display: grid; grid-template-columns: max-content 1fr; gap: 8px 12px; }
+  .examples dt { font-weight: 500; }
+  .examples dd { margin: 0; }
+  .examples a { color: var(--accent); display: block; padding: 1px 0; }
+  @media (max-width: 560px) { .examples { grid-template-columns: 1fr; } .examples dd { margin-bottom: 6px; } }
+  [hidden] { display: none !important; }
+  .table { overflow-x: auto; }
+  #view-row { margin: 4px 0; }
+  #view-note { color: var(--muted); }
   footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 0.9rem; color: var(--muted); }
   footer a { color: var(--accent); }
 </style>
@@ -43,35 +51,73 @@
 <body>
 <main>
   <h1>Image files to Zarr in the browser</h1>
-  <p class="lede">Paste the URL of an image file or a .vzip archive. Tiled TIFF and OME-TIFF, Aperio SVS,
-    Hamamatsu NDPI and Nikon ND2 files are supported; the format is detected from the file's first bytes. A
-    service worker reads the file's structure with a few range requests, writes a vzip archive in
-    memory (by <a href="https://github.com/d-v-b/vzip/blob/main/VIRTUALIZE.md">spec/virtualize.md</a>), and
-    serves it as plain Zarr at a local URL that any Zarr viewer on this site can open. Pixel data is
-    read from the original file only when a viewer asks for it.</p>
+  <p class="lede">Paste the URL of an image file, a Zarr or N5 store, or a .vzip archive. TIFF and OME-TIFF,
+    Aperio SVS, Hamamatsu NDPI, Nikon ND2, Zeiss CZI, DICOM, NIfTI and Imaris IMS files, N5, Zarr v2 and
+    OME-Zarr 0.4 stores, and Sentinel-2 SAFE products are supported; the format is detected from the file's
+    first bytes, or the store's metadata. A service worker reads the input's structure with a few range
+    requests, writes a vzip archive in memory (by <a href="https://github.com/d-v-b/vzip/blob/main/spec/virtualize.md">spec/virtualize.md</a>),
+    and serves it as plain Zarr at a local URL that any Zarr viewer on this site can open: Neuroglancer, or
+    for Sentinel-2 a map. Pixel data is read from the original only when a viewer asks for it.</p>
   <form id="form">
     <input id="url" type="url" required aria-label="image file or vzip URL">
     <button type="submit">Virtualize</button>
   </form>
-  <div class="examples">Examples: <a href="#" id="example">IDR idr0096, mouse bone marrow (OME-TIFF, 487 MB, JPEG 2000)</a>
-    · <a href="#" id="example-nd2">S-BIAD3015, E. coli time-lapse (Nikon ND2, 4.6 GB)</a>
-    · <a href="#" id="example-nd2-zstack">S-BIAD2077, 5-channel z-stack (Nikon ND2, 263 MB)</a>
-    · <a href="#" id="example-svs">TCGA colon H&amp;E (Aperio SVS, JPEG 2000, 538 MB)</a>
-    · <a href="#" id="example-ndpi">QuPath Ki67 lymphoma (Hamamatsu NDPI, 221 MB)</a></div>
+  <!--
+    Examples, with their sources and licenses:
+    - IDR idr0096 (CC BY 4.0), BioImage Archive S-BIAD3015, S-BIAD2077, S-BIAD1759, S-BIAD3625 (EMBL-EBI
+      BioImage Archive; S-BIAD1759 CC BY 4.0, S-BIAD3625 CC0), IDR idr0011 and idr0047 (CC BY 4.0).
+    - TCGA-CM-4752 (Zenodo 7189465, CC BY 4.0); QuPath's Ki67 lymphoma tutorial slide (Zenodo 18302140,
+      CC BY 4.0). Zenodo can be slow to serve range requests.
+    - Prostate-MRI-US-Biopsy, via the NCI Imaging Data Commons (CC BY 4.0; TCIA, doi:10.7937/TCIA.2020.A61IOC1A).
+    - dcm_qa_philips by Chris Rorden (BSD-2-Clause), https://github.com/neurolabusc/dcm_qa_philips.
+    - OpenOrganelle jrc_hela-21 and jrc_hela-2 (Janelia COSEM, CC BY 4.0).
+    - Sentinel-2 L2A tile T32UPU of 2019-05-24, from Mendeley Data doi:10.17632/ckcxh6jskz.1 by Lukas Graf
+      (CC BY 4.0); contains modified Copernicus Sentinel data 2019. The URL is Mendeley's own S3 object,
+      which may not stay stable.
+  -->
+  <dl class="examples" aria-label="examples">
+    <dt>Microscopy</dt>
+    <dd><a href="#" id="example" data-url="https://ftp.ebi.ac.uk/pub/databases/IDR/idr0096-tratwal-marrowquant/20210609-ftp-ome-tiffs/4000_d11_m5_LT_2%20(20x_01).ome.tiff">IDR idr0096, mouse bone marrow (OME-TIFF, 487 MB, JPEG 2000)</a>
+      <a href="#" id="example-nd2" data-url="https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/015/S-BIAD3015/Files/1-SR_1_9_6hPre-C_MC1.nd2">S-BIAD3015, E. coli time-lapse (Nikon ND2, 4.6 GB)</a>
+      <a href="#" id="example-nd2-zstack" data-url="https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/077/S-BIAD2077/Files/373_230614_A1_Blk_Reg2_40x.nd2">S-BIAD2077, 5-channel z-stack (Nikon ND2, 263 MB)</a>
+      <a href="#" id="example-czi" data-url="https://ftp.ebi.ac.uk/pub/databases/IDR/idr0011-ledesmafernandez-dad4/20150826-peter_thorpe/Stinger%20plates-extra%20images%20screen%20T34%20x%20TS-more%20repeats/Plate1-Blue-A_TS-Stinger/Plate1-Blue-A-02-Scene-1-P2-E1-01.czi">IDR idr0011, yeast 3-channel z-stack (Zeiss CZI, 44 MB)</a>
+      <a href="#" id="example-ims" data-url="https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/759/S-BIAD1759/Files/BEHAV3D_Tumor_Profiler/DMG/2430F12/2430F12_pos1_CL1_1.ims">S-BIAD1759, 4-channel intravital time-lapse (Imaris IMS, 163 MB)</a>
+      <a href="#" id="example-ome-zarr" data-url="https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0047A/4496763.zarr/">IDR idr0047, yeast smFISH z-stack with labels (OME-Zarr 0.4, 740 MB)</a></dd>
+    <dt>Slides</dt>
+    <dd><a href="#" id="example-svs" data-url="https://zenodo.org/api/records/7189465/files/TCGA-CM-4752.svs/content">TCGA colon H&amp;E (Aperio SVS, JPEG 2000, 538 MB)</a>
+      <a href="#" id="example-ndpi" data-url="https://zenodo.org/api/records/18302140/files/ki67_lymphoma.ndpi/content">QuPath Ki67 lymphoma (Hamamatsu NDPI, 221 MB)</a>
+      <a href="#" id="example-czi-pyramid" data-url="https://ftp.ebi.ac.uk/pub/databases/biostudies/S-BIAD/625/S-BIAD3625/Files/Elena_Kratz_atherosclerosis/ID4.czi">S-BIAD3625, atherosclerotic plaque slide (Zeiss CZI, JPEG XR pyramid, 1.0 GB)</a></dd>
+    <dt>Medical</dt>
+    <dd><a href="#" id="example-dicom" data-url="https://idc-open-data.s3.amazonaws.com/d8d93a71-dfc8-43da-90ca-11e9aaf45cfe/8afac71d-a7c8-4ca4-b4c0-2e0261dfa384.dcm">IDC Prostate-MRI-US-Biopsy, 3-D ultrasound (DICOM, 27 MB)</a>
+      <a href="#" id="example-nifti" data-url="https://raw.githubusercontent.com/neurolabusc/dcm_qa_philips/74efdbc01eb62540fbb702787c3a7a2c0e22f9eb/Ref/DT_HIGH_32DIR_SENSE_1201.nii">dcm_qa_philips, 33-volume diffusion MRI (NIfTI, 65 MB)</a></dd>
+    <dt>Electron microscopy</dt>
+    <dd><a href="#" id="example-n5" data-url="https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-21/jrc_hela-21.n5/em/fibsem-uint8/">OpenOrganelle jrc_hela-21, FIB-SEM multiscale (N5, 10 GB)</a>
+      <a href="#" id="example-zarr2" data-url="https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8/s4/">OpenOrganelle jrc_hela-2, FIB-SEM array (Zarr v2, 16 MB)</a></dd>
+    <dt>Earth observation</dt>
+    <dd><a href="#" id="example-safe" data-url="https://prod-dcd-datasets-public-files-eu-west-1.s3.eu-west-1.amazonaws.com/4ee3c7fe-7ed9-489f-98d7-708ba7f426f9">Sentinel-2 L2A T32UPU, 2019-05-24 (SAFE zip, 945 MB)</a></dd>
+  </dl>
   <div id="status" role="status"></div>
   <section id="result" hidden>
     <div><strong id="name"></strong></div>
-    <div id="series-row" hidden><span id="series-count"></span></div>
+    <div id="view-row" hidden><label>Show <select id="view" aria-label="what to show"></select></label></div>
+    <div id="view-note"></div>
     <div>Zarr URL: <code id="zarr-url"></code></div>
-    <table><thead><tr><th>level</th><th>shape</th><th>chunk</th><th>data type</th><th>codecs</th></tr></thead>
-      <tbody id="levels"></tbody></table>
+    <div class="table"><table><thead><tr><th>array</th><th>shape</th><th>chunk</th><th>data type</th><th>codecs</th></tr></thead>
+      <tbody id="levels"></tbody></table></div>
     <div class="actions">
       <a class="button" id="open-ng" target="_blank" rel="noopener">Open in Neuroglancer</a>
+      <a class="button" id="open-map" target="_blank" rel="noopener" hidden>View on a map</a>
       <a class="button secondary" id="download">Download .vzip</a>
     </div>
   </section>
   <footer>Part of <a href="https://github.com/d-v-b/vzip">vzip</a>, a ZIP container for
-    byte-range references: specification, implementations and the source of this demo.</footer>
+    byte-range references: specification, implementations and the source of this demo.
+    Viewers: a fork of <a href="https://github.com/google/neuroglancer">Neuroglancer</a> (Apache-2.0) with
+    more Zarr codecs, and <a href="https://openlayers.org/">OpenLayers</a> (BSD-2-Clause).
+    The examples' data are their authors' (see each source): IDR, the BioImage Archive, the NCI Imaging Data
+    Commons and TCIA, OpenOrganelle and Zenodo records under CC BY 4.0 or CC0; dcm_qa_philips under
+    BSD-2-Clause; the Sentinel-2 example contains modified Copernicus Sentinel data 2019 (Mendeley Data,
+    doi:10.17632/ckcxh6jskz.1, CC BY 4.0).</footer>
 </main>
 <script type="module" src="demo.js"></script>
 </body>

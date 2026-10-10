@@ -48,6 +48,11 @@ just js::build
 node js/demo/serve.mjs 8080
 ```
 
+The demo opens images in Neuroglancer, and Sentinel-2 SAFE products on a map
+(`map.html`: OpenLayers' GeoZarr source, with zarrita's registry given an
+`imagecodecs_jpeg2k` codec that decodes with the fork's JPEG 2000 wasm
+module, which the build copies from `$NEUROGLANCER`).
+
 Live demo: https://d-v-b.github.io/vzip-demo/image-to-zarr/ (formerly `tiff-to-zarr/`, which now redirects). `js/demo/pages.sh`
 publishes it, with the Neuroglancer build, to its own directory of the demo
 site (the `gh-pages` branch of `d-v-b/vzip-demo`, which hosts each vzip demo
@@ -230,6 +235,7 @@ uv run python js/test/czi/verify.py                         # CZI fixtures vs cz
 uv run python js/test/safe/verify.py                        # SAFE fixtures vs GDAL
 uv run python conformance/virtualize/compare.py /tmp/vcmp    # reference vs Python vs browser virtualizer
 node js/demo/e2e.mjs <image file url> <out dir>             # demo + Neuroglancer in Chromium
+node js/demo/e2e_examples.mjs <out dir> [example id …]      # every demo example, with its viewer
 ```
 
 - `run_write.py` checks every unpaged write case with `conformance/archive/validate.py`
