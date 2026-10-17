@@ -8,7 +8,7 @@ pub mod uri;
 mod writer;
 
 pub use pb::{CdIndex, Page, Pinned, Range, Source, SourceKind};
-pub use writer::{deflate, Options, Writer, MAX_PAYLOAD, SPEC_REVISION};
+pub use writer::{deflate, EntryLayout, Layout, Options, Writer, MAX_PAYLOAD, SPEC_REVISION};
 
 /// The prefix of every hidden entry, and the format entries the writer writes itself
 /// (spec/bindings/vzip.md §11.4

@@ -43,10 +43,12 @@ ir-rust-test:
     cargo test --release --manifest-path rust/refkv-ir/Cargo.toml
     just python::cargo-test
 
-# Test the vzip archive writer (rust/refkv-vzip) and the `vzip convert` CLI (rust/refkv-cli), and
-# build the CLI (rust/refkv-cli/target/release/vzip)
+# Test the vzip archive writer (rust/refkv-vzip), the phkv store's reader and writers
+# (rust/refkv-phkv), and the `vzip convert` CLI (rust/refkv-cli), and build the CLI
+# (rust/refkv-cli/target/release/vzip)
 cli-test:
     cargo test --release --manifest-path rust/refkv-vzip/Cargo.toml
+    cargo test --release --manifest-path rust/refkv-phkv/Cargo.toml
     cargo test --release --manifest-path rust/refkv-cli/Cargo.toml
     cargo build --release --manifest-path rust/refkv-cli/Cargo.toml
 

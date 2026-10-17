@@ -519,9 +519,52 @@ impl<W: Write> Writer<W> {
         (r.off + LFH_SIZE + r.name.len() as u64 + if is_large(r.size, r.csize) { 20 } else { 0 }, r.csize)
     }
 
+    /// The length of a record's central directory record, which depends only on its name, extra
+    /// field, and whether it is large or its offset needs ZIP64 (as [`Self::cd_record`] writes it).
+    fn cd_record_len(r: &Rec) -> u64 {
+        let z64 = if is_large(r.size, r.csize) { 16 } else { 0 } + if r.off >= U32 { 8 } else { 0 };
+        46 + r.name.len() as u64 + r.extra.len() as u64 + if z64 > 0 { 4 + z64 } else { 0 }
+    }
+
+    /// The page index over the central directory's body records (every entry's but the format
+    /// entries', `extra` included, in key order), encoded.
+    fn encode_index(&self, page_size: u64, pinned: &[Pinned], extra: Option<&Rec>) -> Vec<u8> {
+        let trailer = |n: &str| n == SOURCES_KEY || n == INDEX_KEY;
+        let mut body: Vec<&Rec> = self.cd.iter().filter(|r| !trailer(&r.name)).chain(extra).collect();
+        body.sort_unstable_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
+        let mut pages = Vec::new();
+        let (mut first, mut start, mut pos) = (0usize, 0u64, 0u64);
+        for (i, r) in body.iter().enumerate() {
+            if pos - start >= page_size {
+                pages.push(Page { first_key: body[first].name.clone(), offset: start, length: pos - start });
+                first = i;
+                start = pos;
+            }
+            pos += Self::cd_record_len(r);
+        }
+        if !body.is_empty() {
+            pages.push(Page { first_key: body[first].name.clone(), offset: start, length: pos - start });
+        }
+        pb::encode_cd_index(&CdIndex { pages, pinned: pinned.to_vec() })
+    }
+
     /// Writes the source table, the late entries, the page index, the central directory and the
     /// end records, and gives the output back.
-    pub fn close(mut self) -> Result<W, Error> {
+    pub fn close(self) -> Result<W, Error> {
+        self.finish(None)
+    }
+
+    /// As [`Self::close`], with one more hidden STORED entry, `__vz__/<name>`, written last before
+    /// the central directory. Its body is what `build` gives for the archive's final layout: every
+    /// other entry's body offset, and how many bytes will follow the body (the central directory
+    /// and the end records), which a body such as a phkv container (spec/bindings/phkv.md §21
+    /// <https://github.com/d-v-b/refkv/blob/main/spec/bindings/phkv.md#21-hybrid-profile>) needs.
+    /// `build` is called again if its body's size changes whether the entry needs ZIP64.
+    pub fn close_with_trailer(self, name: &str, build: &mut dyn FnMut(&Layout) -> Result<Vec<u8>, Error>) -> Result<W, Error> {
+        self.finish(Some((name, build)))
+    }
+
+    fn finish(mut self, trailer: Option<(&str, &mut dyn FnMut(&Layout) -> Result<Vec<u8>, Error>)>) -> Result<W, Error> {
         let table: Vec<Source> = self
             .sources
             .iter()
@@ -545,30 +588,47 @@ impl<W: Write> Writer<W> {
         }
         self.check_sources()?;
 
-        let trailer = |n: &str| n == SOURCES_KEY || n == INDEX_KEY;
-        let mut body: Vec<usize> = (0..self.cd.len()).filter(|&i| !trailer(&self.cd[i].name)).collect();
-        body.sort_unstable_by(|&a, &b| self.cd[a].name.as_bytes().cmp(self.cd[b].name.as_bytes()));
-        let mut records: Vec<Vec<u8>> = body.iter().map(|&i| Self::cd_record(&self.cd[i])).collect();
-        if let Some(page_size) = self.opts.page_size {
-            let mut pages = Vec::new();
-            let (mut first, mut start, mut pos) = (0usize, 0u64, 0u64);
-            for (i, rec) in records.iter().enumerate() {
-                if pos - start >= page_size {
-                    pages.push(Page { first_key: self.cd[body[first]].name.clone(), offset: start, length: pos - start });
-                    first = i;
-                    start = pos;
+        let trailer_entry = match trailer {
+            None => None,
+            Some((name, build)) => {
+                let key = format!("{RESERVED_PREFIX}{name}");
+                if key == SOURCES_KEY || key == INDEX_KEY {
+                    return invalid(format!("{key:?} is written by the writer itself"));
                 }
-                pos += rec.len() as u64;
+                self.check_new_key(&key)?;
+                let body = self.trailer_body(&key, &table, &pinned, build)?;
+                Some((key, body))
             }
-            if !records.is_empty() {
-                pages.push(Page { first_key: self.cd[body[first]].name.clone(), offset: start, length: pos - start });
-            }
-            let index = pb::encode_cd_index(&CdIndex { pages, pinned });
+        };
+
+        if let Some(page_size) = self.opts.page_size {
+            // the trailer's record as it will be: its offset is where its body was built to start
+            let extra = trailer_entry.as_ref().map(|(key, (body, body_offset, _))| {
+                let len = body.len() as u64;
+                let lfh = LFH_SIZE + key.len() as u64 + if is_large(len, len) { 20 } else { 0 };
+                Rec { off: body_offset - lfh, ..self.trailer_rec(key, len) }
+            });
+            let index = self.encode_index(page_size, &pinned, extra.as_ref());
             self.entry(INDEX_KEY, &index, Vec::new(), true)?;
             let (o, n) = self.last_body();
             comment.extend_from_slice(&o.to_le_bytes());
             comment.extend_from_slice(&n.to_le_bytes());
         }
+        let expected_end = match trailer_entry {
+            Some((key, body)) => {
+                self.entry(&key, &body.0, Vec::new(), false)?;
+                if self.last_body().0 != body.1 {
+                    return invalid(format!("{key:?}: its body is at {}, not where it was built for", self.last_body().0));
+                }
+                Some(self.pos + body.2)
+            }
+            None => None,
+        };
+
+        let trailer = |n: &str| n == SOURCES_KEY || n == INDEX_KEY;
+        let mut body: Vec<usize> = (0..self.cd.len()).filter(|&i| !trailer(&self.cd[i].name)).collect();
+        body.sort_unstable_by(|&a, &b| self.cd[a].name.as_bytes().cmp(self.cd[b].name.as_bytes()));
+        let mut records: Vec<Vec<u8>> = body.iter().map(|&i| Self::cd_record(&self.cd[i])).collect();
         records.extend(self.cd.iter().filter(|r| trailer(&r.name)).map(Self::cd_record));
 
         let cd_start = self.pos;
@@ -603,7 +663,93 @@ impl<W: Write> Writer<W> {
         t.extend_from_slice(&(comment.len() as u16).to_le_bytes());
         t.extend_from_slice(&comment);
         self.write(&t)?;
+        if let Some(e) = expected_end
+            && e != self.pos
+        {
+            return invalid(format!("the archive ends at {}, not at {e} as the trailer was built for", self.pos));
+        }
         self.w.flush()?;
         Ok(self.w)
     }
+
+    /// The central directory record a trailer entry of `len` bytes will have, written next.
+    fn trailer_rec(&self, key: &str, len: u64) -> Rec {
+        Rec { name: key.into(), off: 0, size: len, csize: len, method: 0, crc: 0, extra: Vec::new() }
+    }
+
+    /// The trailer's body, built for the layout it will have: (body, its offset, the bytes after
+    /// it). Its central directory record's length depends on whether the entry is large and whether
+    /// its offset needs ZIP64, which the page index before it depends on in turn: each is assumed,
+    /// and checked, until the assumptions hold.
+    fn trailer_body(&self, key: &str, table: &[u8], pinned: &[Pinned], build: &mut dyn FnMut(&Layout) -> Result<Vec<u8>, Error>) -> Result<(Vec<u8>, u64, u64), Error> {
+        let sources_stored = deflate(table);
+        let (mut large, mut far) = (false, false);
+        for _ in 0..4 {
+            let mut placeholder = self.trailer_rec(key, if large { U32 } else { 0 });
+            placeholder.off = if far { U32 } else { 0 };
+            let mut at = self.pos;
+            let mut entries: Vec<EntryLayout> = self.cd.iter().map(layout_of).collect();
+            let mut index_rec = None;
+            if let Some(page_size) = self.opts.page_size {
+                let index = self.encode_index(page_size, pinned, Some(&placeholder));
+                let csize = deflate(&index).len() as u64;
+                let rec = Rec { name: INDEX_KEY.into(), off: at, size: index.len() as u64, csize, method: 8, crc: 0, extra: Vec::new() };
+                entries.push(layout_of(&rec));
+                at += LFH_SIZE + INDEX_KEY.len() as u64 + csize;
+                index_rec = Some(rec);
+            }
+            if (at >= U32) != far {
+                far = !far;
+                continue;
+            }
+            placeholder.off = at;
+            let body_offset = at + LFH_SIZE + key.len() as u64 + if large { 20 } else { 0 };
+            let cd_size: u64 = self.cd.iter().chain(index_rec.as_ref()).chain(std::iter::once(&placeholder)).map(Self::cd_record_len).sum();
+            let comment_len = (MAGIC_COMMENT.len() + if self.opts.page_size.is_some() { 32 } else { 16 }) as u64;
+            let tail_len = cd_size + 56 + 20 + 22 + comment_len;
+            let body = build(&Layout { entries: &entries, sources_stored: &sources_stored, body_offset, tail_len })?;
+            if is_large(body.len() as u64, body.len() as u64) == large {
+                return Ok((body, body_offset, tail_len));
+            }
+            large = !large;
+        }
+        invalid(format!("{key:?}: its body's size keeps changing whether it needs ZIP64"))
+    }
+}
+
+/// An entry of the archive, as the builder of [`Writer::close_with_trailer`] sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntryLayout {
+    pub name: String,
+    /// the offset of its body
+    pub body_offset: u64,
+    /// its uncompressed and compressed sizes
+    pub size: u64,
+    pub csize: u64,
+    /// 0 (STORED) or 8 (DEFLATE)
+    pub method: u16,
+    /// a reference entry's extra field header ID (0x7a76 or 0x7a77) and payload
+    pub payload: Option<(u16, Vec<u8>)>,
+}
+
+/// What the builder of [`Writer::close_with_trailer`] is given.
+pub struct Layout<'a> {
+    /// every entry before the trailer, the format entries included, in the order they are written
+    pub entries: &'a [EntryLayout],
+    /// the body of `__vz__/sources`: the source table, DEFLATE-compressed
+    pub sources_stored: &'a [u8],
+    /// where the trailer's body starts
+    pub body_offset: u64,
+    /// the bytes that follow the trailer's body: the central directory and the end records
+    pub tail_len: u64,
+}
+
+fn layout_of(r: &Rec) -> EntryLayout {
+    let body_offset = r.off + LFH_SIZE + r.name.len() as u64 + if is_large(r.size, r.csize) { 20 } else { 0 };
+    let payload = (r.extra.len() >= 4).then(|| {
+        let id = u16::from_le_bytes([r.extra[0], r.extra[1]]);
+        let n = u16::from_le_bytes([r.extra[2], r.extra[3]]) as usize;
+        (id, r.extra[4..4 + n].to_vec())
+    });
+    EntryLayout { name: r.name.clone(), body_offset, size: r.size, csize: r.csize, method: r.method, payload }
 }

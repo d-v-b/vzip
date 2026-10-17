@@ -175,6 +175,7 @@ jobs:
           workspaces: |
             rust/refkv-ir
             rust/refkv-vzip
+            rust/refkv-phkv
             rust/refkv-cli
             conformance/impls/rust
             python

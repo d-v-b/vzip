@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 refkv-ir = { path = "../refkv-ir" }
 refkv-vzip = { path = "../refkv-vzip" }
+refkv-phkv = { path = "../refkv-phkv" }
 crc32c = "0.6"
 memmap2 = "0.9"
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }

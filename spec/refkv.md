@@ -11,7 +11,7 @@ Because the reference type does not depend on any backend, any storage
 backend that can tell a bytes value from a reference value can hold the same
 reference store.
 
-The specification has two parts, in two documents:
+The specification has three parts, in three documents:
 
 - [Part 1](#part-1-reference-values), this document, specifies the reference
   value type and everything that follows from it without a backend: the data
@@ -20,15 +20,20 @@ The specification has two parts, in two documents:
 - [Part 2](bindings/vzip.md#part-2-the-zip-binding), in
   [spec/bindings/vzip.md](bindings/vzip.md), is the **ZIP binding**: how a
   store is kept in a single ZIP file, a **vzip archive**.
+- [Part 3](bindings/phkv.md#part-3-the-perfect-hash-binding), in
+  [spec/bindings/phkv.md](bindings/phkv.md), is the **perfect-hash binding**,
+  a **draft**: how a store is kept in a single file indexed by a perfect hash,
+  a **phkv store**, on its own or inside a vzip archive.
 
-The two documents share this introduction, one format version and one
+The documents share this introduction, one format version and one
 revision, and number their sections as one specification: Part 2 starts at
-[§9](bindings/vzip.md#9-what-the-zip-binding-defines).
+[§9](bindings/vzip.md#9-what-the-zip-binding-defines), and Part 3 at
+[§16](bindings/phkv.md#16-what-the-phkv-binding-defines).
 
 A binding defines only three things ([§3](#3-bindings)): how a value is
 marked as a reference, where the store's source table is kept, and how keys
 map to the backend's names. ZIP is the one binding the specification makes
-normative.
+normative; the perfect-hash binding is a draft.
 
 A reference reads its bytes from external objects named by URL, from other
 values of the same store, or from literal bytes it carries. The motivating
@@ -268,14 +273,16 @@ its backend can get wrong, and limits that follow from its encoding, such as
 a maximum payload size. It MUST NOT add an error class, change what an
 operation returns for a valid store, or relax a requirement of Part 1.
 
-ZIP is the one normative binding. [§9](bindings/vzip.md#9-what-the-zip-binding-defines)
+ZIP is the one normative binding. The perfect-hash binding
+([Part 3](bindings/phkv.md), [§16](bindings/phkv.md#16-what-the-phkv-binding-defines))
+is a draft, and its own document says what it defines. [§9](bindings/vzip.md#9-what-the-zip-binding-defines)
 gives its three answers, and the rest of Part 2, in
 [spec/bindings/vzip.md](bindings/vzip.md), what the ZIP container needs.
 
 ### 3.2 Other backends (informative)
 
-Nothing in Part 1 needs ZIP. The specification has no other binding, but
-other backends could hold a store:
+Nothing in Part 1 needs ZIP. Besides ZIP, the specification has only the
+draft perfect-hash binding (Part 3), but other backends could hold a store:
 
 - **Object stores** (S3 and similar): each key is an object. A reference is
   an object whose `Content-Type` is a refkv media type, or whose user metadata

@@ -3,8 +3,13 @@
 //!
 //! ```text
 //! vzip convert <url or path> <out.vzip> [--url <source url>] [--checksums] [--allow-private-hosts]
-//!     [--connections N] [--byte-cost SECONDS_PER_MB] [--workers N]
+//!     [--connections N] [--byte-cost SECONDS_PER_MB] [--workers N] [--format vzip|phkv|hybrid]
 //! ```
+//!
+//! `--format` chooses the container: a vzip archive (the default), a standalone phkv store, or a
+//! vzip archive that also carries a phkv container (spec/bindings/phkv.md §16.2
+//! <https://github.com/d-v-b/refkv/blob/main/spec/bindings/phkv.md#162-profiles>). Only vzip
+//! archives match the Python virtualizer's output byte for byte.
 //!
 //! TIFF (NDPI included), ND2, CZI, DICOM, NIfTI, IMS and SAFE zip files, and Zarr v2, OME-Zarr, N5
 //! and SAFE stores (an http(s) URL ending in `/`, listed by S3 `ListObjectsV2`, or a local
@@ -50,7 +55,7 @@ pub enum Fail {
 }
 
 const USAGE: &str = "usage: vzip convert <url or path> <out.vzip> [--url <source url>] [--checksums] \
-[--allow-private-hosts] [--connections N] [--byte-cost SECONDS_PER_MB] [--workers N]\n\
+[--allow-private-hosts] [--connections N] [--byte-cost SECONDS_PER_MB] [--workers N] [--format vzip|phkv|hybrid]\n\
 (a URL ending in / or a directory is an N5, Zarr v2 or SAFE store; a directory needs --url;\n\
 a store's objects are read by up to N requests at a time, default 16)";
 
@@ -65,6 +70,7 @@ struct Args {
     connections: Option<usize>,
     byte_cost: Option<f64>,
     workers: usize,
+    format: output::Container,
 }
 
 /// Removes the first `flag` and its value from `args`. A flag without a value, like a value that
@@ -110,8 +116,12 @@ fn parse(argv: &[String]) -> Result<Args, Fail> {
     let byte_cost = take(&mut args, "--byte-cost")?.map(|v| number::<f64>("--byte-cost", &v)).transpose()?.map(|c| c * 1e-6);
     let url = take(&mut args, "--url")?;
     let workers = take(&mut args, "--workers")?.map(|v| number::<i64>("--workers", &v)).transpose()?.unwrap_or(store::WORKERS as i64);
+    let format = match take(&mut args, "--format")? {
+        None => output::Container::default(),
+        Some(f) => output::Container::parse(&f).ok_or_else(|| Fail::Usage(format!("--format {f:?} is not vzip, phkv or hybrid")))?,
+    };
     let [input, out] = <[String; 2]>::try_from(args).map_err(|_| Fail::Usage(USAGE.into()))?;
-    Ok(Args { input, out, url, checksums, allow_private_hosts, connections, byte_cost, workers: workers.max(1) as usize })
+    Ok(Args { input, out, url, checksums, allow_private_hosts, connections, byte_cost, workers: workers.max(1) as usize, format })
 }
 
 /// Virtualizes the input, and writes the archive; the summary.
@@ -143,7 +153,7 @@ fn convert(a: &Args) -> Result<serde_json::Value, Fail> {
         }
         (fmt.name().to_string(), summary, archive)
     };
-    output::save(&archive, &a.out, &policy)?;
+    output::save(&archive, &a.out, &policy, a.format)?;
     // {"format": fmt, **summary}: the summary's own format, if it has one, in the first place
     let mut info = serde_json::Map::new();
     info.insert("format".into(), fmt.into());
@@ -206,9 +216,12 @@ mod tests {
                 connections: Some(3),
                 byte_cost: Some(2e-6),
                 workers: 1,
+                format: output::Container::Vzip,
             }
         );
         assert_eq!(parse(&args("a b --connections 0")).unwrap().connections, None);
+        assert_eq!(parse(&args("a b --format hybrid")).unwrap().format, output::Container::Hybrid);
+        assert!(matches!(parse(&args("a b --format tar")), Err(Fail::Usage(_))));
     }
 
     #[test]

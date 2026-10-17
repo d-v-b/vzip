@@ -24,8 +24,9 @@ conformance/impls/typescript/test/.tmp/
 
 # The IR core's build output
 rust/refkv-ir/target/
-# the archive writer's and the CLI's (rust/refkv-vzip, rust/refkv-cli)
+# the archive writer's, the phkv crate's and the CLI's (rust/refkv-vzip, rust/refkv-phkv, rust/refkv-cli)
 rust/refkv-vzip/target/
+rust/refkv-phkv/target/
 rust/refkv-cli/target/
 # the Python bindings' build output
 python/target/
